@@ -1,6 +1,6 @@
 {
   "name": "@maximoai/maximo-syntax-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Your AI workspace for work. Write and edit code, build software, draft documents, analyze data, organize projects, and run agents — one native desktop app.",
   "homepage": "https://maximoai.co",
   "keywords": [
@@ -98,6 +98,7 @@
       "extendInfo": {
         "CFBundleDisplayName": "Maximo Syntax",
         "CFBundleName": "Maximo Syntax",
+        "NSUserNotificationAlertStyle": "alert",
         "NSHumanReadableCopyright": "Copyright © 2026 Maximo AI Ltd"
       },
       "hardenedRuntime": true,

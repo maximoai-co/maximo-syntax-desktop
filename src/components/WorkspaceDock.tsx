@@ -164,6 +164,18 @@ function paneLabel(pane: DockPane): string {
   return pane.filePath?.split(/[\\/]/).filter(Boolean).at(-1) ?? "File";
 }
 
+function readTerminalTheme(element: HTMLElement): { background: string; foreground: string; cursor: string; selectionBackground: string } {
+  const styles = getComputedStyle(element);
+  const read = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
+  const accent = read("--accent-strong", "#78d6c1");
+  return {
+    background: read("--terminal-background", "#0b0d0e"),
+    foreground: read("--terminal-foreground", "#d6dcdb"),
+    cursor: accent,
+    selectionBackground: read("--accent-soft", "rgba(120,214,193,.28)"),
+  };
+}
+
 function PaneIcon({ kind, size = 14 }: { kind: WorkspacePaneKind; size?: number }) {
   if (kind === "diff") return <Diff size={size} />;
   if (kind === "terminal") return <TerminalSquare size={size} />;
@@ -506,7 +518,7 @@ function TerminalViewport({ session, active, terminalFontSizePx = 12, terminalFo
        fontFamily: terminalFontFamily.trim() ? `"${terminalFontFamily.replace(/["';{}<>]/g, "").trim()}", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace` : "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
        fontSize: terminalFontSizePx,
       lineHeight: 1.35,
-      theme: { background: "#0b0d0e", foreground: "#d6dcdb", cursor: "#78d6c1", selectionBackground: "rgba(120, 214, 193, .28)" },
+       theme: readTerminalTheme(mount),
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -519,12 +531,17 @@ function TerminalViewport({ session, active, terminalFontSizePx = 12, terminalFo
       fit.fit();
       resizeRef.current(terminal.cols, terminal.rows);
     });
+    const themeObserver = typeof MutationObserver === "undefined" ? null : new MutationObserver(() => {
+      terminal.options.theme = readTerminalTheme(mount);
+    });
+    themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "data-theme-variant"] });
     observer?.observe(mount);
     onReady(terminal);
     resizeRef.current(terminal.cols, terminal.rows);
     if (active) terminal.focus();
     return () => {
       observer?.disconnect();
+      themeObserver?.disconnect();
       dataDisposable.dispose();
       onReady(null);
       terminal.dispose();
@@ -913,6 +930,28 @@ export default function WorkspaceDock(props: WorkspaceDockProps) {
     const pane = dock.panes.find((candidate) => candidate.id === paneId);
     if (pane?.kind === "diff") props.onCloseReview();
   };
+
+  useEffect(() => {
+    const closeActive = () => {
+      if (dock.activePaneId) closePane(dock.activePaneId);
+    };
+    const selectWorkspace = (event: Event) => {
+      const kind = (event as CustomEvent<"terminal" | "chat">).detail;
+      if (kind === "chat") {
+        props.onOpenChange(false);
+        return;
+      }
+      const pane = dock.panes.find((candidate) => candidate.kind === "terminal");
+      if (pane) setDock((current) => ({ ...current, activePaneId: pane.id }));
+      else openPane("terminal");
+    };
+    window.addEventListener("maximo:workspace-close-active", closeActive);
+    window.addEventListener("maximo:workspace-select", selectWorkspace);
+    return () => {
+      window.removeEventListener("maximo:workspace-close-active", closeActive);
+      window.removeEventListener("maximo:workspace-select", selectWorkspace);
+    };
+  }, [dock.activePaneId, dock.panes, props.onCloseReview, props.onOpenChange]);
 
   const activePane = dock.panes.find((pane) => pane.id === dock.activePaneId) ?? null;
   const hasChanges = Boolean(props.git?.files.length);

@@ -3,13 +3,14 @@ import { createPortal } from "react-dom";
 import {
   Activity as ActivityIcon, AlertCircle, Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
   File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, LogOut, Menu, SquarePen,
-  GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Paperclip, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, SlidersHorizontal,
-  RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, X, Zap,
+  GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
+  RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, X, Zap,
 } from "lucide-react";
 import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT } from "../desktop/types";
 import type {
-  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, Project, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, Thread, TimestampFormat, TodoItem, UsageSnapshot,
+  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, TimestampFormat, TodoItem, UsageSnapshot,
 } from "../desktop/types";
+import { createThemeShareString, buildThemeCssVariables, getThemePreset, normalizeFontFamily, normalizeHexColor, parseThemeShareString, resolveThemeVariant, THEME_PRESETS } from "../desktop/theme";
 import logoUrl from "./assets/maximoai-logo.svg";
 import modelOpenAiUrl from "./assets/model-openai.svg";
 import modelOpenAiCodexUrl from "./assets/model-openai-codex.svg";
@@ -38,6 +39,7 @@ import MessageTrail from "./components/MessageTrail";
 import WorkspaceDock, { type WorkspaceDockRequest, type WorkspacePaneKind } from "./components/WorkspaceDock";
 import WorkspaceEnvironment from "./components/WorkspaceEnvironment";
 import { composerKeyAction, composerSendShortcutLabel } from "./composerKeyboard";
+import { MAXIMO_SHORTCUTS, matchesShortcut, shortcutLabel } from "./shortcuts";
 
 type LiveRun = { text: string; activity: RunActivity[]; timeline: RunTimelineItem[]; logs: Array<{ level: string; text: string; timestamp: number }> };
 type WorkspaceSurface = "chat" | "activity" | "kanban" | "pull-requests";
@@ -417,6 +419,33 @@ function terminalFontStack(value: string): string {
   return normalized.includes(",") ? `${normalized}, monospace` : `"${normalized}", monospace`;
 }
 
+function playNotificationTone(): void {
+  try {
+    const AudioContextConstructor = window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextConstructor) return;
+    const context = new AudioContextConstructor();
+    const gain = context.createGain();
+    const oscillator = context.createOscillator();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(740, context.currentTime);
+    oscillator.frequency.exponentialRampToValueAtTime(988, context.currentTime + 0.09);
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.045, context.currentTime + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.18);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.19);
+    oscillator.addEventListener("ended", () => void context.close());
+  } catch {
+    // Notification sound is best effort and must never affect a run.
+  }
+}
+
+async function playNotificationSound(): Promise<void> {
+  const played = await window.maximoDesktop.notifications.playSound().catch(() => false);
+  if (!played) playNotificationTone();
+}
+
 type SelectOption<T extends string> = { value: T; label: string; description?: string; icon?: ReactNode };
 
 function CustomSelect<T extends string>({ value, options, onChange, icon, disabled = false, className = "", placement = "bottom", ariaLabel }: {
@@ -482,6 +511,28 @@ function ModelControl({ model, effort, models, modelOptions, disabled, onModel, 
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
+  useEffect(() => {
+    const onPicker = (event: Event) => {
+      const detail = (event as CustomEvent<"model" | "effort">).detail;
+      setOpen(true);
+      setSubmenu(detail === "effort" && selectedModel?.supportsEffort ? "effort" : "model");
+    };
+    const onCycle = (event: Event) => {
+      const direction = Number((event as CustomEvent<number>).detail) || 1;
+      if (modelOptions.length === 0) return;
+      const currentIndex = Math.max(0, modelOptions.findIndex((option) => option.value === model));
+      const next = modelOptions[(currentIndex + direction + modelOptions.length) % modelOptions.length];
+      if (!next) return;
+      onModel(next.value);
+      onEffort("");
+    };
+    window.addEventListener("maximo:model-picker", onPicker);
+    window.addEventListener("maximo:model-cycle", onCycle);
+    return () => {
+      window.removeEventListener("maximo:model-picker", onPicker);
+      window.removeEventListener("maximo:model-cycle", onCycle);
+    };
+  }, [model, modelOptions, onEffort, onModel, selectedModel?.supportsEffort]);
   const reset = () => { onModel(""); onEffort(""); setOpen(false); setSubmenu(null); };
   return <div className={`model-control effort-tone-${selectedEffortTone} ${open ? "open" : ""}`} ref={rootRef}>
     <button type="button" className="model-control-trigger" disabled={disabled} aria-label="Model and reasoning effort" aria-haspopup="menu" aria-expanded={open}
@@ -3082,9 +3133,259 @@ function SettingsModal({ state, engine, models, modelOptions, account, usage, ap
   );
 }
 
+type ProfileMeta = { name: string; handle: string; avatarColor: string };
+
+const DEFAULT_PROFILE_AVATAR = "#5dc86b";
+
+function profileDateKey(value: number): string {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function profileCompactNumber(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1).replace(/\.0$/, "")}k`;
+  return Math.round(value).toLocaleString();
+}
+
+function profileProviderForModel(model: string, account: AccountStatus | null): string {
+  const normalized = model.toLowerCase();
+  if (normalized.includes("kilo")) return "Kilo";
+  if (normalized.includes("claude") || normalized.includes("anthropic")) return "Claude";
+  if (normalized.includes("codex") || normalized.includes("gpt") || normalized.includes("openai")) return "Codex";
+  if (normalized.includes("cursor")) return "Cursor";
+  if (normalized.includes("grok") || normalized.includes("xai")) return "Grok";
+  if (normalized.includes("opencode")) return "OpenCode";
+  return account?.loggedIn ? providerLabel(account) : "Maximo AI";
+}
+
+function profileInitials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length > 1) return `${words[0]?.[0] ?? "M"}${words.at(-1)?.[0] ?? "X"}`.toUpperCase();
+  return (words[0]?.slice(0, 2) || "MX").toUpperCase();
+}
+
+function profileStreaks(activityDates: ReadonlySet<string>): { current: number; longest: number } {
+  const dates = [...activityDates].sort();
+  let longest = 0;
+  let run = 0;
+  let previous: Date | null = null;
+  for (const value of dates) {
+    const date = new Date(`${value}T00:00:00`);
+    if (previous && Math.round((date.getTime() - previous.getTime()) / 86_400_000) === 1) run += 1;
+    else run = 1;
+    longest = Math.max(longest, run);
+    previous = date;
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const cursor = new Date(today);
+  if (!activityDates.has(profileDateKey(cursor.getTime()))) cursor.setDate(cursor.getDate() - 1);
+  let current = 0;
+  while (activityDates.has(profileDateKey(cursor.getTime()))) {
+    current += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return { current, longest };
+}
+
+function ProfileStatsPanel({ state, account, models, skills }: { state: AppState; account: AccountStatus | null; models: EngineModel[]; skills: SlashCommand[] }) {
+  const accountName = account?.displayName || account?.email?.split("@")[0] || "Maximo user";
+  const defaultHandle = account?.email ? `@${account.email.split("@")[0]}` : "@maximo-user";
+  const [meta, setMeta] = useState<ProfileMeta>(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("maximo-syntax:profile:v1") ?? "null") as Partial<ProfileMeta> | null;
+      return {
+        name: typeof saved?.name === "string" && saved.name.trim() ? saved.name : accountName,
+        handle: typeof saved?.handle === "string" && saved.handle.trim() ? saved.handle : defaultHandle,
+        avatarColor: typeof saved?.avatarColor === "string" ? saved.avatarColor : DEFAULT_PROFILE_AVATAR,
+      };
+    } catch {
+      return { name: accountName, handle: defaultHandle, avatarColor: DEFAULT_PROFILE_AVATAR };
+    }
+  });
+  const [draft, setDraft] = useState(meta);
+  const [editing, setEditing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [hoveredDay, setHoveredDay] = useState<{ date: Date; tokens: number; activities: number; rect: DOMRect } | null>(null);
+  const messages = state.threads.flatMap((thread) => thread.messages.map((message) => ({ thread, message })));
+  const userMessages = messages.filter(({ message }) => message.role === "user");
+  const promptCount = userMessages.length;
+  const activityByDay = new Map<string, number>();
+  const promptCountByDay = new Map<string, number>();
+  const promptDays = new Set<string>();
+  const hourCounts = new Map<number, number>();
+  const projectCounts = new Map<string, number>();
+  const effortCounts = new Map<string, number>();
+  const modelPromptCounts = new Map<string, number>();
+  const skillCounts = new Map<string, number>();
+  const knownSkills = new Set(skills.map((skill) => skill.name.toLowerCase()));
+  for (const { thread, message } of userMessages) {
+    const day = profileDateKey(message.createdAt);
+    promptDays.add(day);
+    promptCountByDay.set(day, (promptCountByDay.get(day) ?? 0) + 1);
+    activityByDay.set(day, (activityByDay.get(day) ?? 0) + 1);
+    hourCounts.set(new Date(message.createdAt).getHours(), (hourCounts.get(new Date(message.createdAt).getHours()) ?? 0) + 1);
+    projectCounts.set(thread.projectId, (projectCounts.get(thread.projectId) ?? 0) + 1);
+    if (thread.effort) effortCounts.set(thread.effort, (effortCounts.get(thread.effort) ?? 0) + 1);
+    const model = message.model || thread.model || "CLI default";
+    modelPromptCounts.set(model, (modelPromptCounts.get(model) ?? 0) + 1);
+    for (const match of message.content.matchAll(/(^|\s)\/([a-zA-Z][a-zA-Z0-9:_-]*)/g)) {
+      const skill = match[2]?.toLowerCase();
+      if (skill && (knownSkills.size === 0 || knownSkills.has(skill))) skillCounts.set(skill, (skillCounts.get(skill) ?? 0) + 1);
+    }
+  }
+  const profile = state.profile ?? ({ totalTokens: 0, dailyTokens: {}, modelTokens: {}, threadTokenTotals: {} } satisfies ProfileUsage);
+  const fallbackTokens = state.threads.reduce((sum, thread) => sum + (thread.contextUsage?.totalProcessedTokens ?? 0), 0);
+  const derivedDailyTokens: Record<string, number> = { ...profile.dailyTokens };
+  if (Object.keys(derivedDailyTokens).length === 0) {
+    for (const thread of state.threads) {
+      const tokens = thread.contextUsage?.totalProcessedTokens ?? 0;
+      if (tokens > 0) {
+        const day = profileDateKey(thread.updatedAt);
+        derivedDailyTokens[day] = (derivedDailyTokens[day] ?? 0) + tokens;
+      }
+    }
+  }
+  const lifetimeTokens = profile.totalTokens || fallbackTokens;
+  if (Object.keys(derivedDailyTokens).length === 0 && lifetimeTokens > 0) {
+    const latestActivity = Math.max(...state.threads.map((thread) => thread.updatedAt), Date.now());
+    derivedDailyTokens[profileDateKey(latestActivity)] = lifetimeTokens;
+  }
+  for (const [day, tokens] of Object.entries(derivedDailyTokens)) activityByDay.set(day, (activityByDay.get(day) ?? 0) + Math.max(1, Math.round(tokens / 10_000)));
+  const activityDates = new Set(activityByDay.keys());
+  const streaks = profileStreaks(activityDates);
+  const peakDay = Math.max(0, ...Object.values(derivedDailyTokens));
+  const topHour = [...hourCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
+  const topProject = [...projectCounts.entries()].sort((left, right) => right[1] - left[1])[0];
+  const topEffort = [...effortCounts.entries()].sort((left, right) => right[1] - left[1])[0];
+  const modelRows = Object.entries(profile.modelTokens).length > 0
+    ? Object.entries(profile.modelTokens).sort((left, right) => right[1] - left[1]).map(([model, value]) => ({ model, value }))
+    : [...modelPromptCounts.entries()].sort((left, right) => right[1] - left[1]).map(([model, value]) => ({ model, value }));
+  const currentModelLabel = state.settings.defaultModel
+    || models.find((model) => model.isCurrent)?.displayName
+    || models.find((model) => model.value === "default")?.displayName
+    || "Current provider model";
+  const resolvedModelRows = modelRows.reduce<Array<{ model: string; value: number }>>((rows, row) => {
+    const model = row.model.toLowerCase() === "cli default" || row.model.toLowerCase() === "default" ? currentModelLabel : row.model;
+    const existing = rows.find((candidate) => candidate.model === model);
+    if (existing) existing.value += row.value;
+    else rows.push({ model, value: row.value });
+    return rows;
+  }, []);
+  const modelTotal = resolvedModelRows.reduce((sum, row) => sum + row.value, 0);
+  const safeModelTotal = Math.max(1, modelTotal);
+  const days = Array.from({ length: 365 }, (_, index) => {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - (364 - index));
+    return date;
+  });
+  const leadingCells = days[0]?.getDay() ?? 0;
+  const heatmapCells: Array<Date | null> = [...Array.from({ length: leadingCells }, () => null), ...days];
+  const maxActivity = Math.max(1, ...[...activityByDay.values()]);
+  const monthLabels = days.flatMap((date, index) => date.getDate() === 1 || index === 0 ? [{ label: date.toLocaleDateString([], { month: "short" }), column: Math.floor((leadingCells + index) / 7) + 1 }] : []);
+  const saveProfile = () => {
+    const next = { name: draft.name.trim() || accountName, handle: draft.handle.trim() || defaultHandle, avatarColor: draft.avatarColor };
+    setMeta(next);
+    setEditing(false);
+    try { window.localStorage.setItem("maximo-syntax:profile:v1", JSON.stringify(next)); } catch { /* local profile is best effort */ }
+  };
+  const shareProfile = async () => {
+    const summary = `${meta.name} ${meta.handle}\n${profileCompactNumber(lifetimeTokens)} lifetime tokens · ${promptCount} prompts · ${state.projects.length} projects`;
+    try {
+      await navigator.clipboard.writeText(summary);
+      setNotice("Profile summary copied");
+      window.setTimeout(() => setNotice(null), 2_000);
+    } catch {
+      setNotice("Clipboard access unavailable");
+    }
+  };
+  const topProvider = resolvedModelRows[0] ? profileProviderForModel(resolvedModelRows[0].model, account) : account?.loggedIn ? providerLabel(account) : "-";
+  return <div className="profile-settings-panel">
+    <div className="profile-settings-actions"><button type="button" className="settings-action" onClick={() => void shareProfile()}><Share2 size={13} />Share</button><button type="button" className="settings-action" onClick={() => { setDraft(meta); setEditing((value) => !value); }}><Pencil size={13} />{editing ? "Close" : "Edit"}</button></div>
+    {editing && <section className="profile-edit-card"><label><span>Name</span><input value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label><label><span>Handle</span><input value={draft.handle} onChange={(event) => setDraft((current) => ({ ...current, handle: event.target.value }))} /></label><div><span className="profile-edit-label">Avatar color</span><div className="profile-color-options">{["#5dc86b", "#4f8ed8", "#8b5cf6", "#d97706", "#db2777"].map((color) => <button type="button" aria-label={`Use ${color} avatar color`} className={draft.avatarColor === color ? "selected" : ""} style={{ background: color }} onClick={() => setDraft((current) => ({ ...current, avatarColor: color }))} key={color} />)}</div></div><button type="button" className="primary-button compact" onClick={saveProfile}>Save profile</button></section>}
+    <header className="profile-settings-identity"><span className="profile-avatar" style={{ background: meta.avatarColor }}>{profileInitials(meta.name)}</span><div><h2>{meta.name}</h2><p>{meta.handle}<span aria-hidden="true"> · </span><span className="profile-badge">Maximo</span></p></div></header>
+    {notice && <p className="profile-notice" role="status">{notice}</p>}
+    <div className="profile-stat-grid"><div><strong>{profileCompactNumber(lifetimeTokens)}</strong><span>Lifetime tokens</span></div><div><strong>{profileCompactNumber(peakDay)}</strong><span>Peak day</span></div><div><strong>{promptCount.toLocaleString()}</strong><span>Total prompts</span></div><div><strong>{streaks.current} {streaks.current === 1 ? "day" : "days"}</strong><span>Current streak</span></div><div><strong>{streaks.longest} {streaks.longest === 1 ? "day" : "days"}</strong><span>Longest streak</span></div></div>
+    <section className="profile-section"><h3>Activity</h3><div className="profile-heatmap-wrap"><div className="profile-heatmap-months">{monthLabels.map((item) => <span style={{ gridColumn: item.column }} key={`${item.label}-${item.column}`}>{item.label}</span>)}</div><div className="profile-heatmap" onMouseLeave={() => setHoveredDay(null)}>{heatmapCells.map((date, index) => { const dayKey = date ? profileDateKey(date.getTime()) : ""; const value = date ? activityByDay.get(dayKey) ?? 0 : 0; const level = value === 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((value / maxActivity) * 4))); return <span className={`profile-heatmap-cell level-${level}`} onMouseEnter={(event) => date && setHoveredDay({ date, tokens: derivedDailyTokens[dayKey] ?? 0, activities: promptCountByDay.get(dayKey) ?? 0, rect: event.currentTarget.getBoundingClientRect() })} key={`${date?.toISOString() ?? "empty"}-${index}`} />; })}</div></div>{hoveredDay && createPortal(<div className="profile-heatmap-tooltip profile-heatmap-tooltip-fixed" style={{ left: Math.min(window.innerWidth - 12, Math.max(12, hoveredDay.rect.left + hoveredDay.rect.width / 2)), top: hoveredDay.rect.top < 100 ? hoveredDay.rect.bottom + 9 : hoveredDay.rect.top - 9, transform: hoveredDay.rect.top < 100 ? "translate(-50%, 0)" : "translate(-50%, -100%)" }}><strong>{hoveredDay.date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</strong><span><b>{profileCompactNumber(hoveredDay.tokens)}</b> tokens</span><span><b>{hoveredDay.activities}</b> {hoveredDay.activities === 1 ? "activity" : "activities"}</span></div>, document.body)}</section>
+    <div className="profile-insights-grid"><section className="profile-section"><h3>Activity insights</h3><dl><div><dt>Most used provider</dt><dd>{topProvider}{resolvedModelRows.length > 0 ? ` · ${Math.round((resolvedModelRows[0]!.value / safeModelTotal) * 100)}%` : ""}</dd></div><div><dt>Most used reasoning</dt><dd>{topEffort ? effortLabel(topEffort[0]) : "-"}</dd></div><div><dt>Most active hour</dt><dd>{topHour === undefined ? "-" : new Date(2000, 0, 1, topHour).toLocaleTimeString([], { hour: "numeric" })}</dd></div><div><dt>Most worked project</dt><dd title={topProject ? state.projects.find((project) => project.id === topProject[0])?.name : undefined}>{topProject ? `${state.projects.find((project) => project.id === topProject[0])?.name ?? "Project"} · ${topProject[1]} prompts` : "-"}</dd></div><div><dt>Skills explored</dt><dd>{skillCounts.size}</dd></div><div><dt>Total skills used</dt><dd>{[...skillCounts.values()].reduce((sum, value) => sum + value, 0)}</dd></div><div><dt>Total threads</dt><dd>{state.threads.length}</dd></div></dl></section><section className="profile-section"><h3>Most used plugins</h3>{skillCounts.size > 0 ? <ul className="profile-plugin-list">{[...skillCounts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 6).map(([skill, count]) => <li key={skill}><span><Sparkles size={13} />{skill}</span><b>{count} runs</b></li>)}</ul> : <p className="profile-muted">No skills or agents used yet.</p>}</section></div>
+    <section className="profile-section"><h3>Model usage</h3>{resolvedModelRows.length > 0 ? <ul className="profile-model-list">{resolvedModelRows.slice(0, 6).map((row) => <li key={row.model}><div><span><Bot size={13} />{row.model}</span><b>{Math.round((row.value / safeModelTotal) * 100)}%</b></div><i style={{ width: `${Math.max(2, Math.min(100, (row.value / safeModelTotal) * 100))}%` }} /></li>)}</ul> : <p className="profile-muted">No model activity yet.</p>}</section>
+  </div>;
+}
+
+function ThemeColorControl({ label, color, onChange }: { label: string; color: string; onChange: (color: string) => void }) {
+  const [draft, setDraft] = useState(color);
+  useEffect(() => setDraft(color), [color]);
+  const commit = (value: string) => {
+    const normalized = normalizeHexColor(value, "");
+    if (!normalized) return;
+    setDraft(normalized);
+    onChange(normalized);
+  };
+  return <div className="theme-pack-row"><span><strong>{label}</strong><small>Set the {label.toLowerCase()} used by this theme slot.</small></span><div className="theme-color-control">
+    <input type="color" value={color} onChange={(event) => commit(event.target.value)} aria-label={`${label} color`} />
+    <input value={draft} maxLength={7} spellCheck={false} aria-label={`${label} hex color`} onChange={(event) => setDraft(event.target.value)} onBlur={() => commit(draft)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commit(draft); } }} />
+  </div></div>;
+}
+
+function ThemePackEditor({ variant, active, theme, onChange, onReset }: { variant: ThemeVariant; active: boolean; theme: ThemePack; onChange: (theme: ThemePack) => void; onReset: () => void }) {
+  const [notice, setNotice] = useState<string | null>(null);
+  const defaultTheme = DEFAULT_SETTINGS.themePacks[variant];
+  const title = variant === "dark" ? "Dark theme" : "Light theme";
+  const update = (patch: Partial<ThemePack>) => onChange({ ...theme, ...patch, preset: "custom" });
+  const presetOptions: SelectOption<ThemePresetId>[] = [
+    { value: "custom", label: "Custom" },
+    ...THEME_PRESETS.map((preset) => ({ value: preset.id, label: preset.label })),
+  ];
+  const applyPreset = (preset: ThemePresetId) => {
+    if (preset === "custom") {
+      onChange({ ...theme, preset });
+      return;
+    }
+    const next = getThemePreset(preset, variant);
+    onChange({ ...next, fonts: { ...theme.fonts }, translucentSidebar: theme.translucentSidebar, contrast: theme.contrast });
+  };
+  const copyTheme = async () => {
+    try {
+      await navigator.clipboard.writeText(createThemeShareString(variant, theme));
+      setNotice("Theme string copied");
+    } catch {
+      setNotice("Clipboard access unavailable");
+    }
+    window.setTimeout(() => setNotice(null), 2_000);
+  };
+  const importTheme = () => {
+    const value = window.prompt(`Paste a ${variant} theme string`, "");
+    if (!value) return;
+    try {
+      onChange(parseThemeShareString(value, variant));
+      setNotice("Theme imported");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Unable to import that theme.");
+    }
+    window.setTimeout(() => setNotice(null), 3_000);
+  };
+  return <section className={`settings-card theme-pack-card ${active ? "active" : ""}`}>
+    <div className="theme-pack-header">
+      <div><h3>{title}</h3><small>{active ? "Currently active" : variant === "dark" ? "Used when the app is dark" : "Used when the app is light"}</small></div>
+      <div className="theme-pack-actions"><button type="button" className="settings-action" onClick={importTheme} title={`Import ${variant} theme`}><Upload size={12} />Import</button><button type="button" className="settings-action" onClick={() => void copyTheme()} title={`Copy ${variant} theme`}><Copy size={12} />Copy</button><button type="button" className="settings-action" onClick={onReset} disabled={JSON.stringify(theme) === JSON.stringify(defaultTheme)} title={`Reset ${variant} theme`}><RotateCcw size={12} />Reset</button></div>
+    </div>
+    <div className="theme-pack-row theme-pack-preset"><span><strong>Theme preset</strong><small>Start with a coordinated color set, then customize it.</small></span><CustomSelect value={theme.preset} options={presetOptions} onChange={applyPreset} ariaLabel={`${title} preset`} className="theme-preset-select" /></div>
+    <ThemeColorControl label="Accent" color={theme.accent} onChange={(accent) => update({ accent })} />
+    <ThemeColorControl label="Background" color={theme.background} onChange={(background) => update({ background })} />
+    <ThemeColorControl label="Foreground" color={theme.foreground} onChange={(foreground) => update({ foreground })} />
+    <label className="theme-pack-row"><span><strong>UI font</strong><small>Used by the app interface when system UI font is off.</small></span><input className="settings-text-control" value={theme.fonts.ui} onChange={(event) => update({ fonts: { ...theme.fonts, ui: normalizeFontFamily(event.target.value) } })} placeholder="System default" aria-label={`${title} UI font`} /></label>
+    <label className="theme-pack-row"><span><strong>Code font</strong><small>Used for code blocks, diffs, and source previews.</small></span><input className="settings-text-control" value={theme.fonts.code} onChange={(event) => update({ fonts: { ...theme.fonts, code: normalizeFontFamily(event.target.value) } })} placeholder="Default monospace" aria-label={`${title} code font`} /></label>
+    <label className="theme-pack-row"><span><strong>Translucent sidebar</strong><small>Blend the sidebar with the themed surface and keep the soft depth effect.</small></span><input type="checkbox" checked={theme.translucentSidebar} onChange={(event) => update({ translucentSidebar: event.target.checked })} aria-label={`${title} translucent sidebar`} /></label>
+    <label className="theme-pack-row theme-contrast-row"><span><strong>Contrast</strong><small>Increase surface, border, and text separation without changing the base colors.</small></span><span className="theme-contrast-control"><input type="range" min={0} max={100} step={1} value={theme.contrast} onChange={(event) => update({ contrast: Number(event.target.value) })} aria-label={`${title} contrast`} /><output>{theme.contrast}</output></span></label>
+    {notice && <p className="theme-pack-notice" role="status">{notice}</p>}
+  </section>;
+}
+
 type EnhancedSettingsSectionId = "general" | "profile" | "appearance" | "behavior" | "shortcuts" | "defaults" | "models" | "skills" | "notifications" | "account" | "integrations" | "engine" | "advanced" | "archived";
 
-function EnhancedSettingsModal({ state, engine, models, modelOptions, account, usage, appVersion, appDataPath, skills, onClose, onSave, onRepair, onAccount, onUsage, onRefreshSkills, onResetProvider, onRevealDataPath, onRestoreThread, onDeleteArchivedThread }: {
+function EnhancedSettingsModal({ state, engine, models, modelOptions, account, usage, appVersion, appDataPath, skills, initialSection = "general", onClose, onSave, onRepair, onAccount, onUsage, onRefreshSkills, onResetProvider, onRevealDataPath, onRestoreThread, onDeleteArchivedThread }: {
   state: AppState;
   engine: EngineStatus | null;
   models: EngineModel[];
@@ -3094,6 +3395,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
   appVersion: string;
   appDataPath: string;
   skills: SlashCommand[];
+  initialSection?: EnhancedSettingsSectionId;
   onClose: () => void;
   onSave: (patch: Partial<AppState["settings"]>) => Promise<void>;
   onRepair: () => Promise<void>;
@@ -3106,9 +3408,12 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
   onDeleteArchivedThread: (threadId: string) => Promise<void>;
 }) {
   const [values, setValues] = useState(state.settings);
-  const [section, setSection] = useState<EnhancedSettingsSectionId>("general");
+  const [section, setSection] = useState<EnhancedSettingsSectionId>(initialSection);
   const [search, setSearch] = useState("");
+  const [shortcutQuery, setShortcutQuery] = useState("");
+  const [notificationStatus, setNotificationStatus] = useState<string | null>(null);
   const [customModelDraft, setCustomModelDraft] = useState("");
+  const [systemDark, setSystemDark] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   const sendShortcutLabel = composerSendShortcutLabel();
   const selectedModel = models.find((item) => (item.value === "default" ? "" : item.value) === values.defaultModel);
   const selectableModelOptions = [...modelOptions, ...values.customModelSlugs
@@ -3165,6 +3470,16 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
   const activeSection = visibleSections.some((item) => item.id === section) ? section : (visibleSections[0]?.id ?? "general");
   const activeNav = navItems.find((item) => item.id === activeSection) ?? navItems[0]!;
   const update = <Key extends keyof AppState["settings"]>(key: Key, value: AppState["settings"][Key]) => setValues((current) => ({ ...current, [key]: value }));
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => setSystemDark(media.matches);
+    onChange();
+    media.addEventListener?.("change", onChange);
+    return () => media.removeEventListener?.("change", onChange);
+  }, []);
+  const resolvedThemeVariant = resolveThemeVariant(values.theme, systemDark);
+  const updateThemePack = (variant: ThemeVariant, theme: ThemePack) => update("themePacks", { ...values.themePacks, [variant]: theme });
   const resetToDefaults = () => {
     if (!window.confirm("Restore all Maximo Syntax settings to their defaults?")) return;
     setValues({ ...DEFAULT_SETTINGS, customModelSlugs: [...DEFAULT_SETTINGS.customModelSlugs] });
@@ -3176,12 +3491,14 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     setCustomModelDraft("");
   };
   const testNotification = async () => {
-    if (typeof Notification === "undefined") return;
-    if (Notification.permission !== "granted") {
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") return;
-    }
-    new Notification("Maximo Syntax", { body: "Activity notifications are working." });
+    if (values.enableNotificationSound) await playNotificationSound();
+    const supported = await window.maximoDesktop.notifications.isSupported().catch(() => false);
+    const shown = await window.maximoDesktop.notifications.show({
+      title: "Maximo Syntax",
+      body: "Activity notifications are working.",
+      silent: true,
+    }).catch(() => false);
+    setNotificationStatus(shown ? "Test notification sent to macOS Notification Center." : supported ? "Notification was not shown. Check macOS System Settings > Notifications for Maximo Syntax." : "Desktop notifications are unavailable in this build.");
   };
   const booleanRow = (key: keyof AppState["settings"], title: string, description: string) => (
     <label className="settings-row">
@@ -3189,16 +3506,14 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
       <input type="checkbox" checked={Boolean(values[key])} onChange={(event) => update(key, event.target.checked as AppState["settings"][typeof key])} />
     </label>
   );
-  const shortcutRows = [
-    ["Search workspace", "Cmd/Ctrl + K"],
-    ["New chat", "Cmd/Ctrl + N"],
-    ["Open project", "Cmd/Ctrl + O"],
-    ["Open files", "Cmd/Ctrl + P"],
-    ["Toggle sidebar", "Cmd/Ctrl + Shift + B"],
-    ["Toggle workspace dock", "Cmd/Ctrl + Shift + I"],
-    ["Send message", values.sendWithEnter ? "Enter" : sendShortcutLabel],
-    ["New composer line", values.sendWithEnter ? "Shift + Enter" : "Enter"],
-  ];
+  const shortcutRows = MAXIMO_SHORTCUTS.filter((definition) => {
+    const needle = shortcutQuery.trim().toLowerCase();
+    return !needle || `${definition.label} ${definition.description} ${shortcutLabel(definition.chord)}`.toLowerCase().includes(needle);
+  });
+  const shortcutGroups = ["Navigation", "Chat", "Projects", "Models", "Workspace"].flatMap((category) => {
+    const entries = shortcutRows.filter((definition) => definition.category === category);
+    return entries.length > 0 ? [{ category, entries }] : [];
+  });
   const allSkills = [...new Map(skills.map((skill) => [skill.name.toLowerCase(), skill])).values()];
   const archivedThreads = state.threads.filter((thread) => thread.archived).sort((left, right) => right.updatedAt - left.updatedAt);
   const projectName = (projectId: string) => state.projects.find((project) => project.id === projectId)?.name ?? "Unknown project";
@@ -3210,8 +3525,8 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
         {booleanRow("environmentPanelDefaultOpen", "Open Environment by default", "Remember the Environment panel as the starting surface for normal chats.")}
       </section>
       <section className="settings-card"><h2>Sidebar organization</h2>
-        <label className="settings-row"><span><strong>Project order</strong><small>Choose how projects are arranged in the main sidebar.</small></span><select className="settings-native-select" value={values.sidebarProjectSortOrder} onChange={(event) => update("sidebarProjectSortOrder", event.target.value as AppState["settings"]["sidebarProjectSortOrder"])}><option value="manual">Manual order</option><option value="updated_at">Recently active</option><option value="created_at">Recently added</option></select></label>
-        <label className="settings-row"><span><strong>Chat order</strong><small>Choose how chats are arranged in Recent and each project.</small></span><select className="settings-native-select" value={values.sidebarThreadSortOrder} onChange={(event) => update("sidebarThreadSortOrder", event.target.value as AppState["settings"]["sidebarThreadSortOrder"])}><option value="updated_at">Recently active</option><option value="created_at">Newest first</option></select></label>
+        <div className="settings-row"><span><strong>Project order</strong><small>Choose how projects are arranged in the main sidebar.</small></span><CustomSelect value={values.sidebarProjectSortOrder} options={[{ value: "manual", label: "Manual order" }, { value: "updated_at", label: "Recently active" }, { value: "created_at", label: "Recently added" }]} onChange={(value) => update("sidebarProjectSortOrder", value)} ariaLabel="Project order" className="settings-select" /></div>
+        <div className="settings-row"><span><strong>Chat order</strong><small>Choose how chats are arranged in Recent and each project.</small></span><CustomSelect value={values.sidebarThreadSortOrder} options={[{ value: "updated_at", label: "Recently active" }, { value: "created_at", label: "Newest first" }]} onChange={(value) => update("sidebarThreadSortOrder", value)} ariaLabel="Chat order" className="settings-select" /></div>
       </section>
       <section className="settings-card"><h2>Environment panel</h2><p>Keep the core Git controls visible and choose which supporting sections appear.</p>
         {booleanRow("showEnvironmentUsage", "Usage remaining", "Show the provider usage shortcut in Environment.")}
@@ -3230,17 +3545,13 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
       <section className="settings-card"><h2>Safety</h2>{booleanRow("hideFullAccessWarning", "Hide Full Access warning", "Do not show the elevated-access reminder above the composer.")}</section>
     </div>;
 
-    if (activeSection === "profile") {
-      const sentThreads = state.threads.filter((thread) => thread.messages.some((message) => message.role === "user"));
-      const promptCount = state.threads.reduce((count, thread) => count + thread.messages.filter((message) => message.role === "user").length, 0);
-      const completedCount = state.threads.filter((thread) => thread.status === "complete").length;
-      const pinnedCount = state.threads.reduce((count, thread) => count + (thread.pinnedMessages?.length ?? 0), 0);
-      const topProject = [...state.projects].sort((left, right) => right.lastOpenedAt - left.lastOpenedAt)[0];
-      return <div className="settings-panel-stack"><section className="settings-card settings-profile-card"><div className="settings-profile-identity"><span className="settings-profile-avatar"><UserRound size={18} /></span><span><strong>{account?.displayName || account?.email || "Local Maximo user"}</strong><small>{accountDetailText(account)}</small></span></div><div className="settings-profile-stat-grid"><div><strong>{promptCount}</strong><small>Prompts</small></div><div><strong>{sentThreads.length}</strong><small>Chats</small></div><div><strong>{completedCount}</strong><small>Completed</small></div><div><strong>{pinnedCount}</strong><small>Pinned</small></div></div></section><section className="settings-card"><h2>Workspace insights</h2><div className="settings-row"><span><strong>Projects</strong><small>Folders currently organized in this desktop workspace.</small></span><span className="setting-value">{state.projects.length}</span></div><div className="settings-row"><span><strong>Most recently active project</strong><small>The project opened most recently on this computer.</small></span><span className="setting-value" title={topProject?.path}>{topProject?.name || "-"}</span></div><div className="settings-row"><span><strong>Current provider</strong><small>Provider detected from the signed-in account.</small></span><span className="setting-value">{account?.loggedIn ? providerLabel(account) : "Not signed in"}</span></div></section></div>;
-    }
+    if (activeSection === "profile") return <ProfileStatsPanel state={state} account={account} models={models} skills={skills} />;
 
     if (activeSection === "appearance") return <div className="settings-panel-stack">
-      <section className="settings-card"><h2>Theme</h2><p>Use your system appearance or keep Maximo Syntax in one mode.</p><div className="theme-choice-grid">{(["system", "light", "dark"] as ThemeMode[]).map((theme) => <button type="button" className={values.theme === theme ? "active" : ""} onClick={() => update("theme", theme)} key={theme}><span className={`theme-mini-preview ${theme}`}><i /><i /><i /></span><strong>{theme === "system" ? "System" : theme === "light" ? "Light" : "Dark"}</strong>{values.theme === theme && <Check size={13} />}</button>)}</div></section>
+      <section className="settings-card"><h2>Theme</h2><p>Choose how Maximo Syntax looks across the app. Light and dark themes can be customized independently.</p><div className="theme-choice-grid">{(["system", "light", "dark"] as ThemeMode[]).map((theme) => <button type="button" className={values.theme === theme ? "active" : ""} onClick={() => update("theme", theme)} key={theme}><span className={`theme-mini-preview ${theme}`}><i /><i /><i /></span><strong>{theme === "system" ? "System" : theme === "light" ? "Light" : "Dark"}</strong>{values.theme === theme && <Check size={13} />}</button>)}</div></section>
+      <div className="theme-pack-stack">
+        {(resolvedThemeVariant === "dark" ? (["dark", "light"] as ThemeVariant[]) : (["light", "dark"] as ThemeVariant[])).map((variant) => <ThemePackEditor key={variant} variant={variant} active={resolvedThemeVariant === variant} theme={values.themePacks[variant]} onChange={(theme) => updateThemePack(variant, theme)} onReset={() => updateThemePack(variant, { ...DEFAULT_SETTINGS.themePacks[variant], fonts: { ...DEFAULT_SETTINGS.themePacks[variant].fonts } })} />)}
+      </div>
       <section className="settings-card"><h2>Typography and spacing</h2>
         {booleanRow("useSystemUiFont", "Use system UI font", "Use the native operating system font instead of Maximo's bundled Manrope family.")}
         <div className="settings-row"><span><strong>UI density</strong><small>Adjust spacing in the sidebar, composer, chat gutters, and settings rows.</small></span><div className="settings-segmented" role="radiogroup" aria-label="UI density">{(["compact", "comfortable", "spacious"] as const).map((density) => <button type="button" key={density} className={values.uiDensity === density ? "active" : ""} onClick={() => update("uiDensity", density)}>{density}</button>)}</div></div>
@@ -3248,7 +3559,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
         <label className="settings-row"><span><strong>Terminal font size</strong><small>Adjust terminal text independently.</small></span><span className="settings-number-control"><input type="number" min={10} max={22} value={values.terminalFontSizePx} onChange={(event) => update("terminalFontSizePx", Math.min(22, Math.max(10, Number(event.target.value) || 12)))} /><small>px</small></span></label>
         <label className="settings-row"><span><strong>Terminal font</strong><small>Type any installed monospace family. Leave blank for the default stack.</small></span><input className="settings-text-control" value={values.terminalFontFamily} onChange={(event) => update("terminalFontFamily", event.target.value.replace(/[;{}<>\n\r]/g, "").slice(0, 256))} placeholder="Default monospace" /></label>
       </section>
-      <section className="settings-card"><h2>Time and reading</h2><label className="settings-row"><span><strong>Time format</strong><small>System default follows your OS clock preference.</small></span><select className="settings-native-select" value={values.timestampFormat} onChange={(event) => update("timestampFormat", event.target.value as TimestampFormat)}><option value="locale">System default</option><option value="12-hour">12-hour</option><option value="24-hour">24-hour</option></select></label></section>
+      <section className="settings-card"><h2>Time and reading</h2><div className="settings-row"><span><strong>Time format</strong><small>System default follows your OS clock preference.</small></span><CustomSelect value={values.timestampFormat} options={[{ value: "locale", label: "System default" }, { value: "12-hour", label: "12-hour" }, { value: "24-hour", label: "24-hour" }]} onChange={(value) => update("timestampFormat", value)} ariaLabel="Time format" className="settings-select" /></div></section>
     </div>;
 
     if (activeSection === "behavior") return <div className="settings-panel-stack">
@@ -3259,9 +3570,10 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
 
     if (activeSection === "notifications") return <div className="settings-panel-stack"><section className="settings-card"><h2>Activity alerts</h2>{booleanRow("enableTaskCompletionToasts", "Activity toasts", "Show an in-app toast when a background chat finishes or needs attention.")}
       <div className="settings-row"><span><strong>Desktop notifications</strong><small>Show an operating-system notification when a background chat finishes.</small></span><div className="settings-row-actions"><button type="button" className="settings-action" onClick={() => void testNotification()}>Test</button><input type="checkbox" checked={values.enableSystemTaskCompletionNotifications} onChange={(event) => update("enableSystemTaskCompletionNotifications", event.target.checked)} /></div></div>
+      <div className="settings-row"><span><strong>Notification sound</strong><small>Play a short alert tone with desktop activity notifications.</small></span><div className="settings-row-actions"><button type="button" className="settings-action" onClick={() => void playNotificationSound()}>Preview</button><input type="checkbox" checked={values.enableNotificationSound} onChange={(event) => update("enableNotificationSound", event.target.checked)} /></div></div>{notificationStatus && <p className="settings-notification-status" role="status">{notificationStatus}</p>}
     </section></div>;
 
-    if (activeSection === "shortcuts") return <div className="settings-panel-stack"><section className="settings-card"><h2>Keyboard shortcuts</h2><p>These shortcuts are available in the desktop workspace. Composer shortcuts follow your Message composer setting.</p><div className="settings-shortcut-list">{shortcutRows.map(([label, shortcut]) => <div className="settings-shortcut-row" key={label}><span>{label}</span><kbd>{shortcut}</kbd></div>)}</div></section></div>;
+    if (activeSection === "shortcuts") return <div className="settings-panel-stack"><section className="settings-card"><h2>Keyboard shortcuts</h2><p>These shortcuts are available throughout Maximo Syntax. Search by action, description, or key combination.</p><input className="settings-shortcut-search" value={shortcutQuery} onChange={(event) => setShortcutQuery(event.target.value)} placeholder="Search shortcuts..." aria-label="Search shortcuts" />{shortcutRows.length > 0 ? <div className="settings-shortcut-list">{shortcutGroups.map((group) => <section className="settings-shortcut-group" key={group.category}><h3>{group.category}</h3>{group.entries.map((definition) => <div className="settings-shortcut-row" key={definition.command}><span><strong>{definition.label}</strong><small>{definition.description}</small></span><kbd>{shortcutLabel(definition.chord)}</kbd></div>)}</section>)}</div> : <div className="settings-empty-state">No shortcuts match “{shortcutQuery}”.</div>}</section></div>;
 
     if (activeSection === "defaults") return <div className="settings-panel-stack"><section className="settings-card"><h2>New chats</h2><div className="settings-row"><span><strong>Model</strong><small>Loaded from the active provider account and saved custom slugs.</small></span><CustomSelect value={values.defaultModel} options={selectableModelOptions} onChange={(defaultModel) => setValues((current) => ({ ...current, defaultModel, defaultEffort: "" }))} ariaLabel="Default model" className="settings-select" /></div>{selectedModel?.supportsEffort && <div className="settings-row"><span><strong>Reasoning effort</strong><small>Used for new chats with the selected model.</small></span><CustomSelect value={values.defaultEffort} options={effortOptionsFor(selectedModel)} onChange={(defaultEffort) => update("defaultEffort", defaultEffort)} ariaLabel="Default reasoning effort" className="settings-select" /></div>}<div className="settings-row"><span><strong>Permissions</strong><small>Choose the default approval behavior for new chats.</small></span><CustomSelect value={values.defaultPermission} options={permissionOptions} onChange={(defaultPermission) => update("defaultPermission", defaultPermission)} ariaLabel="Default permissions" className="settings-select" /></div></section></div>;
 
@@ -3588,6 +3900,8 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(() => Math.min(340, Math.max(270, Math.round(window.innerWidth * 0.18))));
   const [inspectorWidth, setInspectorWidth] = useState(() => Math.min(365, Math.max(290, Math.round(window.innerWidth * 0.2))));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSectionRequest, setSettingsSectionRequest] = useState<EnhancedSettingsSectionId>("general");
+  const [systemDark, setSystemDark] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   const [accountOpen, setAccountOpen] = useState(false);
   const [account, setAccount] = useState<AccountStatus | null>(null);
   const [accountLoaded, setAccountLoaded] = useState(false);
@@ -3603,6 +3917,34 @@ export default function App() {
   const [navigation, setNavigation] = useState<NavigationState>({ ids: [], index: -1 });
   const stateRef = useRef<AppState | null>(null);
   stateRef.current = state;
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => setSystemDark(media.matches);
+    onChange();
+    media.addEventListener?.("change", onChange);
+    return () => media.removeEventListener?.("change", onChange);
+  }, []);
+
+  const resolvedThemeVariant = state ? resolveThemeVariant(state.settings.theme, systemDark) : "light";
+  const appearanceVariables = useMemo(() => {
+    if (!state) return {};
+    return buildThemeCssVariables(state.settings.themePacks[resolvedThemeVariant], resolvedThemeVariant, {
+      systemUiFont: state.settings.useSystemUiFont,
+      uiDensity: state.settings.uiDensity,
+      chatFontSizePx: state.settings.chatFontSizePx,
+      terminalFontSizePx: state.settings.terminalFontSizePx,
+      terminalFontFamily: state.settings.terminalFontFamily,
+    });
+  }, [resolvedThemeVariant, state]);
+
+  useEffect(() => {
+    if (!state) return;
+    const rootStyle = document.documentElement.style;
+    for (const [name, value] of Object.entries(appearanceVariables)) rootStyle.setProperty(name, value);
+    document.documentElement.dataset.themeVariant = resolvedThemeVariant;
+  }, [appearanceVariables, resolvedThemeVariant, state]);
 
   const refreshState = useCallback(async () => setState(await window.maximoDesktop.loadState()), []);
   const engineModelsRefreshAtRef = useRef(0);
@@ -3745,19 +4087,23 @@ export default function App() {
   }, [refreshDiscoveredSkills, currentProject?.path]);
 
   useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setSearchOpen(true); }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") { event.preventDefault(); setInspectorVisible(true); setDockRequest({ id: Date.now(), kind: "explorer" }); }
-      if (event.key === "Escape") { setSearchOpen(false); setCreateProjectOpen(false); setAttachmentPreview(null); }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  useEffect(() => {
     let frame: number | null = null;
     const pendingEvents: RunEvent[] = [];
     const processRunEvent = (event: RunEvent) => {
+    const notifyBackground = (title: string, body: string, threadId: string) => {
+      const latestState = stateRef.current;
+      if (!latestState || latestState.selectedThreadId === threadId) return;
+      if (latestState.settings.enableTaskCompletionToasts) showToast(`${title}: ${body}`);
+      if (latestState.settings.enableSystemTaskCompletionNotifications) {
+        if (latestState.settings.enableNotificationSound) void playNotificationSound();
+        void window.maximoDesktop.notifications.show({
+          title,
+          body,
+          threadId,
+          silent: true,
+        }).catch(() => false);
+      }
+    };
     if (event.type === "commands") {
       setSlashCommands(event.commands);
       setSkillCommands(event.skills?.length ? event.skills : []);
@@ -3778,6 +4124,7 @@ export default function App() {
         const parsed = JSON.parse(event.data) as { questions?: Question[] };
         if (Array.isArray(parsed.questions) && parsed.questions.length > 0) {
           setPendingQuestion({ threadId: event.threadId, requestId: event.requestId, toolUseId: event.toolUseId, data: event.data, questions: parsed.questions });
+          notifyBackground("Input needed", "Maximo is waiting for your answer.", event.threadId);
         }
       } catch { /* ignore malformed payloads */ }
     }
@@ -3795,6 +4142,7 @@ export default function App() {
           : undefined,
       };
       setPendingPermission({ threadId: event.threadId, requestId: event.requestId, toolUseId: event.toolUseId, data: event.data, payload });
+      notifyBackground("Approval needed", `${event.toolName} is waiting for permission.`, event.threadId);
     }
     if (event.type === "turn-complete") {
       setPendingQuestion((current) => current?.threadId === event.threadId ? null : current);
@@ -3808,12 +4156,7 @@ export default function App() {
       const finishedThread = latestState?.threads.find((thread) => thread.id === event.threadId);
       const inBackground = event.threadId !== latestState?.selectedThreadId;
       if (inBackground) {
-        if (latestState?.settings.enableTaskCompletionToasts) {
-          showToast(`${finishedThread?.title ?? "Chat"} ${event.status === "complete" ? "finished" : event.status}.`);
-        }
-        if (latestState?.settings.enableSystemTaskCompletionNotifications && typeof Notification !== "undefined" && Notification.permission === "granted") {
-          new Notification("Maximo Syntax", { body: `${finishedThread?.title ?? "Chat"} ${event.status === "complete" ? "finished" : event.status}.` });
-        }
+        notifyBackground(finishedThread?.title ?? "Chat", event.status === "complete" ? "Finished successfully." : `Ended with status ${event.status}.`, event.threadId);
       }
       setState((current) => current ? { ...current, threads: current.threads.map((thread) => thread.id === event.threadId ? { ...thread, status: event.status } : thread) } : current);
       void refreshState();
@@ -4096,6 +4439,10 @@ export default function App() {
     if (action === "toggle-inspector") setInspectorVisible((value) => !value);
   }), [newThread, openProject, state?.selectedProjectId]);
 
+  useEffect(() => window.maximoDesktop.notifications.onOpenThread((threadId) => {
+    void selectThread(threadId).catch(() => showToast("That notification chat is no longer available."));
+  }), [selectThread, showToast]);
+
   const refreshAccount = async () => {
     setAccountBusy(true);
     try {
@@ -4110,6 +4457,79 @@ export default function App() {
     setUsageBusy(true);
     try { setUsage(await window.maximoDesktop.accountUsage()); } finally { setUsageBusy(false); }
   };
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSearchOpen(false);
+        setCreateProjectOpen(false);
+        setAttachmentPreview(null);
+        if (settingsOpen) setSettingsOpen(false);
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select, [contenteditable=\"true\"]") && !event.metaKey && !event.ctrlKey && !event.altKey) return;
+      const matches = MAXIMO_SHORTCUTS.filter((definition) => matchesShortcut(event, definition.chord));
+      const definition = (inspectorVisible
+        ? matches.find((item) => item.command === "terminal.workspace.terminal" || item.command === "terminal.workspace.chat")
+        : undefined) ?? matches[0];
+      if (!definition || (settingsOpen && definition.command !== "shortcuts.show")) return;
+      event.preventDefault();
+      const command = definition.command;
+      if (command === "shortcuts.show") { setSettingsSectionRequest("shortcuts"); setSettingsOpen(true); return; }
+      if (command === "sidebar.toggle") { if (window.innerWidth <= 900) setSidebarOpen(true); else setSidebarVisible((value) => !value); return; }
+      if (command === "sidebar.addProject" || command === "sidebar.importThread" || command === "project.open") { void openProject(); return; }
+      if (command === "workspace.openFiles") { requestDockPane("explorer"); return; }
+      if (command === "workspace.toggleDock") { setInspectorVisible((value) => !value); return; }
+      if (command === "sidebar.search") { setSearchOpen(true); return; }
+      if (command === "sidebar.activity") { navigateSurface(activeSurface === "activity" ? "chat" : "activity"); return; }
+      if (command === "settings.usage") { openAccount(); void refreshUsage(); return; }
+      if (command === "chat.new" || command === "chat.newChat" || command === "chat.newClaude" || command === "chat.newCodex" || command === "chat.newCursor") { void newThread(state?.selectedProjectId); return; }
+      if (command === "chat.newLatestProject") { const latest = [...(state?.projects ?? [])].sort((left, right) => right.lastOpenedAt - left.lastOpenedAt)[0]; void newThread(latest?.id); return; }
+      if (command === "chat.newTerminal") {
+        const projectId = state?.selectedProjectId;
+        if (!projectId) return;
+        void window.maximoDesktop.createThread(projectId).then((next) => { setState(next); rememberThread(next.selectedThreadId); setActiveSurface("chat"); requestDockPane("terminal"); });
+        return;
+      }
+      if (command === "chat.split") { requestDockPane("sidechat"); return; }
+      if (command === "view.recent.previous") { void goBack(); return; }
+      if (command === "view.recent.next") { void goForward(); return; }
+      if (command === "composer.focus.toggle") { document.querySelector<HTMLElement>(".composer-input")?.focus(); return; }
+      if (command === "modelPicker.toggle") { window.dispatchEvent(new CustomEvent("maximo:model-picker", { detail: "model" })); return; }
+      if (command === "traitsPicker.toggle") { window.dispatchEvent(new CustomEvent("maximo:model-picker", { detail: "effort" })); return; }
+      if (command === "model.next" || command === "model.previous") { window.dispatchEvent(new CustomEvent("maximo:model-cycle", { detail: command === "model.next" ? 1 : -1 })); return; }
+      if (command === "terminal.toggle") { requestDockPane("terminal"); return; }
+      if (command === "diff.toggle") { requestDockPane("diff"); return; }
+      if (command === "browser.toggle") { requestDockPane("browser"); return; }
+      if (command === "editor.openFavorite") { if (currentProject) void window.maximoDesktop.openInEditor(currentProject.path); return; }
+      if (command === "git.commitAndPush") { requestDockPane("git"); return; }
+      if (command === "terminal.workspace.newFullWidth") { requestDockPane("terminal"); return; }
+      if (command === "terminal.workspace.closeActive") { window.dispatchEvent(new Event("maximo:workspace-close-active")); return; }
+      if (command === "terminal.workspace.terminal" || command === "terminal.workspace.chat") { window.dispatchEvent(new CustomEvent("maximo:workspace-select", { detail: command.endsWith("terminal") ? "terminal" : "chat" })); return; }
+      if (command.startsWith("space.jump.")) {
+        const index = Number(command.split(".").at(-1)) - 1;
+        const spaceId = index === 0 ? null : state?.spaces[index - 1]?.id ?? null;
+        void window.maximoDesktop.selectSpace(spaceId).then(setState);
+        return;
+      }
+      if (command === "space.previous" || command === "space.next") {
+        const spaces: Array<string | null> = [null, ...(state?.spaces ?? []).map((space) => space.id)];
+        const current = spaces.indexOf(state?.selectedSpaceId ?? null);
+        const offset = command === "space.next" ? 1 : -1;
+        const next = spaces[(current + offset + spaces.length) % spaces.length] ?? null;
+        void window.maximoDesktop.selectSpace(next).then(setState);
+        return;
+      }
+      if (command.startsWith("thread.jump.")) {
+        const index = Number(command.split(".").at(-1)) - 1;
+        const threads = (state?.threads ?? []).filter((thread) => !thread.archived && thread.messages.length > 0).sort((left, right) => right.updatedAt - left.updatedAt);
+        const targetThread = threads[index];
+        if (targetThread) void selectThread(targetThread.id);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeSurface, currentProject, goBack, goForward, inspectorVisible, navigateSurface, newThread, openAccount, openProject, refreshUsage, rememberThread, requestDockPane, selectThread, settingsOpen, state]);
   const resetProviderState = async () => {
     invalidateProviderState();
     try {
@@ -4332,7 +4752,7 @@ export default function App() {
   }
 
   return (
-    <div className={`app-shell theme-${state.settings.theme} density-${state.settings.uiDensity} ${state.settings.useSystemUiFont ? "system-ui-font" : ""} ${sidebarVisible ? "" : "sidebar-hidden"} ${inspectorVisible ? "" : "inspector-hidden"}`} style={{ "--sidebar-width": `${sidebarWidth}px`, "--inspector-width": `${inspectorWidth}px`, "--chat-font-size": `${state.settings.chatFontSizePx}px`, "--terminal-font-size": `${state.settings.terminalFontSizePx}px`, "--terminal-font-family": terminalFontStack(state.settings.terminalFontFamily) } as CSSProperties}>
+    <div className={`app-shell theme-${state.settings.theme} density-${state.settings.uiDensity} ${state.settings.useSystemUiFont ? "system-ui-font" : ""} ${sidebarVisible ? "" : "sidebar-hidden"} ${inspectorVisible ? "" : "inspector-hidden"}`} style={{ ...appearanceVariables, "--sidebar-width": `${sidebarWidth}px`, "--inspector-width": `${inspectorWidth}px` } as CSSProperties}>
 
        <Sidebar state={state} currentThread={currentThread} account={account} timestampFormat={state.settings.timestampFormat} activeSurface={activeSurface} onNavigateSurface={navigateSurface} onOpenProject={openProject} onCreateProject={() => setCreateProjectOpen(true)} onNewThread={newThread}
          onSelectProject={(id) => void selectProject(id)} onSelectThread={(id, surface) => void selectThread(id, surface)} onOpenSearch={() => setSearchOpen(true)} onToggleSidebar={() => window.innerWidth <= 900 ? setSidebarOpen(false) : setSidebarVisible((value) => !value)} onBack={() => void goBack()} onForward={() => void goForward()} canGoBack={navigation.index > 0} canGoForward={navigation.index >= 0 && navigation.index < navigation.ids.length - 1} onSettings={() => setSettingsOpen(true)} onAccount={openAccount}
@@ -4419,7 +4839,7 @@ export default function App() {
         </main>
       </section>
       {currentProject && <WorkspaceDock
-        open={inspectorVisible}
+         open={inspectorVisible && !settingsOpen}
         project={currentProject}
         thread={currentThread}
         state={state}
@@ -4453,7 +4873,7 @@ export default function App() {
         onOpenBrowser={(url) => requestDockPane("browser", undefined, url)}
       />}
       {createProjectOpen && <CreateProjectModal onClose={() => setCreateProjectOpen(false)} onChooseSources={() => window.maximoDesktop.chooseProjectSources()} onCreate={createProject} spaces={state.spaces} selectedSpaceId={state.selectedSpaceId} onCreateSpace={createSpace} />}
-      {settingsOpen && <EnhancedSettingsModal state={state} engine={engine} models={engineModels} modelOptions={modelOptions} account={account} usage={usage} appVersion={appVersion} appDataPath={appDataPath} skills={[...discoveredSkills, ...skillCommands]} onClose={() => setSettingsOpen(false)} onSave={async (patch) => { const next = await window.maximoDesktop.updateSettings(patch); setState(next); setInspectorVisible(next.settings.showInspector); setEnvironmentOpen(next.settings.environmentPanelDefaultOpen); }} onRepair={async () => { const next = await window.maximoDesktop.updateEngine(); setEngine(next); if (next.available) await refreshEngineModels(); }} onAccount={() => { setSettingsOpen(false); openAccount(); }} onUsage={() => void refreshUsage()} onRefreshSkills={() => refreshDiscoveredSkills(currentProject?.path)} onResetProvider={resetProviderState} onRevealDataPath={() => { if (appDataPath) void window.maximoDesktop.revealPath(appDataPath); }} onRestoreThread={async (threadId) => { setState(await window.maximoDesktop.unarchiveThread(threadId)); }} onDeleteArchivedThread={async (threadId) => { const thread = state.threads.find((item) => item.id === threadId); if (!thread || !window.confirm(`Permanently delete "${thread.title}"? This removes the chat history forever.`)) return; setState(await window.maximoDesktop.deleteThread(threadId)); }} />}
+      {settingsOpen && <EnhancedSettingsModal state={state} engine={engine} models={engineModels} modelOptions={modelOptions} account={account} usage={usage} appVersion={appVersion} appDataPath={appDataPath} skills={[...discoveredSkills, ...skillCommands]} initialSection={settingsSectionRequest} onClose={() => { setSettingsOpen(false); setSettingsSectionRequest("general"); }} onSave={async (patch) => { const next = await window.maximoDesktop.updateSettings(patch); setState(next); setInspectorVisible(next.settings.showInspector); setEnvironmentOpen(next.settings.environmentPanelDefaultOpen); }} onRepair={async () => { const next = await window.maximoDesktop.updateEngine(); setEngine(next); if (next.available) await refreshEngineModels(); }} onAccount={() => { setSettingsOpen(false); openAccount(); }} onUsage={() => void refreshUsage()} onRefreshSkills={() => refreshDiscoveredSkills(currentProject?.path)} onResetProvider={resetProviderState} onRevealDataPath={() => { if (appDataPath) void window.maximoDesktop.revealPath(appDataPath); }} onRestoreThread={async (threadId) => { setState(await window.maximoDesktop.unarchiveThread(threadId)); }} onDeleteArchivedThread={async (threadId) => { const thread = state.threads.find((item) => item.id === threadId); if (!thread || !window.confirm(`Permanently delete "${thread.title}"? This removes the chat history forever.`)) return; setState(await window.maximoDesktop.deleteThread(threadId)); }} />}
       {accountOpen && <AccountModal account={account} usage={usage} usageBusy={usageBusy} busy={accountBusy} onClose={() => setAccountOpen(false)} onRefresh={() => void refreshAccount()} onLogin={(method, apiKey, openCodePlan) => loginAccount(method, apiKey, openCodePlan)} onCancelLogin={() => void cancelLoginAccount()} onLogout={() => void logoutAccount()} onUsage={() => void refreshUsage()} />}
       {attachmentPreview && <AttachmentPreviewModal state={attachmentPreview} theme={state.settings.theme} onClose={() => { attachmentPreviewRequestRef.current += 1; setAttachmentPreview(null); }} />}
       {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}

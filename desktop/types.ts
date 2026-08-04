@@ -1,4 +1,6 @@
 export type ThemeMode = "system" | "light" | "dark";
+export type ThemeVariant = "light" | "dark";
+export type ThemePresetId = "maximo" | "codex" | "ocean" | "forest" | "rose" | "custom";
 export type UiDensity = "compact" | "comfortable" | "spacious";
 export type TimestampFormat = "locale" | "12-hour" | "24-hour";
 export type FollowUpBehavior = "queue" | "steer";
@@ -6,6 +8,40 @@ export type SidebarProjectSortOrder = "updated_at" | "created_at" | "manual";
 export type SidebarThreadSortOrder = "updated_at" | "created_at";
 export type PermissionMode = "default" | "plan" | "acceptEdits" | "auto" | "full";
 export type ThreadStatus = "idle" | "running" | "complete" | "error" | "cancelled";
+
+export interface ThemePack {
+  preset: ThemePresetId;
+  accent: string;
+  background: string;
+  foreground: string;
+  fonts: {
+    ui: string;
+    code: string;
+  };
+  translucentSidebar: boolean;
+  contrast: number;
+}
+
+export const DEFAULT_THEME_PACKS: Record<ThemeVariant, ThemePack> = {
+  light: {
+    preset: "maximo",
+    accent: "#00ad92",
+    background: "#f8fbfa",
+    foreground: "#173334",
+    fonts: { ui: "", code: "" },
+    translucentSidebar: true,
+    contrast: 0,
+  },
+  dark: {
+    preset: "maximo",
+    accent: "#43bea4",
+    background: "#1c1d1e",
+    foreground: "#d6dcdb",
+    fonts: { ui: "", code: "" },
+    translucentSidebar: true,
+    contrast: 0,
+  },
+};
 
 export const MAX_ATTACHMENT_COUNT = 10;
 export const MAX_PROJECT_SOURCE_COUNT = 5;
@@ -33,6 +69,7 @@ export type SpaceIconName =
 
 export interface Settings {
   theme: ThemeMode;
+  themePacks: Record<ThemeVariant, ThemePack>;
   cliPath: string;
   defaultModel: string;
   defaultEffort: string;
@@ -54,6 +91,7 @@ export interface Settings {
   confirmTerminalTabClose: boolean;
   enableTaskCompletionToasts: boolean;
   enableSystemTaskCompletionNotifications: boolean;
+  enableNotificationSound: boolean;
   environmentPanelDefaultOpen: boolean;
   showEnvironmentUsage: boolean;
   showEnvironmentLocalServers: boolean;
@@ -70,6 +108,10 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
+  themePacks: {
+    light: { ...DEFAULT_THEME_PACKS.light, fonts: { ...DEFAULT_THEME_PACKS.light.fonts } },
+    dark: { ...DEFAULT_THEME_PACKS.dark, fonts: { ...DEFAULT_THEME_PACKS.dark.fonts } },
+  },
   cliPath: "",
   defaultModel: "",
   defaultEffort: "",
@@ -93,6 +135,7 @@ export const DEFAULT_SETTINGS: Settings = {
   confirmTerminalTabClose: true,
   enableTaskCompletionToasts: true,
   enableSystemTaskCompletionNotifications: true,
+  enableNotificationSound: true,
   environmentPanelDefaultOpen: false,
   showEnvironmentUsage: true,
   showEnvironmentLocalServers: true,
@@ -264,6 +307,13 @@ export interface ChatMessage {
   kind?: "follow-up";
 }
 
+export interface ProfileUsage {
+  totalTokens: number;
+  dailyTokens: Record<string, number>;
+  modelTokens: Record<string, number>;
+  threadTokenTotals: Record<string, number>;
+}
+
 export type ThreadMarkerColor = "yellow" | "blue" | "green" | "pink";
 
 export interface PinnedMessage {
@@ -310,6 +360,7 @@ export interface Thread {
 export interface AppState {
   version: 1;
   settings: Settings;
+  profile: ProfileUsage;
   spaces: Space[];
   projects: Project[];
   threads: Thread[];
@@ -426,6 +477,13 @@ export interface AccountActionResult {
   ok: boolean;
   message: string;
   status: AccountStatus;
+}
+
+export interface DesktopNotificationInput {
+  title: string;
+  body: string;
+  threadId?: string;
+  silent?: boolean;
 }
 
 export interface GitFile {
@@ -690,6 +748,12 @@ export interface DesktopApi {
   accountCancelLogin(): Promise<{ ok: boolean; message: string }>;
   accountLogout(): Promise<AccountActionResult>;
   accountUsage(): Promise<UsageSnapshot>;
+  notifications: {
+    isSupported(): Promise<boolean>;
+    show(input: DesktopNotificationInput): Promise<boolean>;
+    playSound(): Promise<boolean>;
+    onOpenThread(callback: (threadId: string) => void): () => void;
+  };
   startRun(request: RunRequest): Promise<RunResult>;
   sendToRun(request: RunRequest): Promise<RunResult>;
   contextUsage(threadId: string): Promise<ContextUsage | null>;

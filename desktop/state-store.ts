@@ -1,13 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { DEFAULT_SETTINGS, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
-import type { AppState, AskUserAnswer, Attachment, ChatMessage, ContextUsage, FileChange, PermissionMode, Project, RunActivity, RunTimelineItem, Settings, Space, SpaceIconName, Thread, ThreadStatus } from "./types.js";
+import { DEFAULT_SETTINGS, DEFAULT_THEME_PACKS, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
+import { normalizeThemePack } from "./theme.js";
+import type { AppState, AskUserAnswer, Attachment, ChatMessage, ContextUsage, FileChange, PermissionMode, ProfileUsage, Project, RunActivity, RunTimelineItem, Settings, Space, SpaceIconName, ThemeVariant, Thread, ThreadStatus } from "./types.js";
 
 const validSpaceIcons = new Set<SpaceIconName>([
   "briefcase", "home", "code", "rocket", "lightbulb", "palette", "file", "flask", "heart", "star",
   "globe", "cloud", "hammer", "gamepad", "camera", "target", "tree", "chart", "toolbox",
 ]);
+
+const emptyProfileUsage: ProfileUsage = {
+  totalTokens: 0,
+  dailyTokens: {},
+  modelTokens: {},
+  threadTokenTotals: {},
+};
 
 function finiteInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
@@ -21,6 +29,13 @@ function normalizedString(value: unknown, fallback = "", maximum = 2_000): strin
 export function normalizeSettings(input: unknown): Settings {
   const source = input && typeof input === "object" ? input as Partial<Settings> : {};
   const theme = source.theme === "light" || source.theme === "dark" ? source.theme : "system";
+  const storedThemePacks = source.themePacks && typeof source.themePacks === "object"
+    ? source.themePacks as Partial<Record<ThemeVariant, unknown>>
+    : {};
+  const themePacks = {
+    light: normalizeThemePack(storedThemePacks.light, DEFAULT_THEME_PACKS.light),
+    dark: normalizeThemePack(storedThemePacks.dark, DEFAULT_THEME_PACKS.dark),
+  };
   const permission = source.defaultPermission;
   const defaultPermission: PermissionMode = permission === "default" || permission === "plan" || permission === "acceptEdits" || permission === "full"
     ? permission
@@ -31,6 +46,7 @@ export function normalizeSettings(input: unknown): Settings {
   return {
     ...DEFAULT_SETTINGS,
     theme,
+    themePacks,
     cliPath: normalizedString(source.cliPath),
     defaultModel: normalizedString(source.defaultModel, "", 200),
     defaultEffort: normalizedString(source.defaultEffort, "", 40),
@@ -52,6 +68,7 @@ export function normalizeSettings(input: unknown): Settings {
     confirmTerminalTabClose: typeof source.confirmTerminalTabClose === "boolean" ? source.confirmTerminalTabClose : DEFAULT_SETTINGS.confirmTerminalTabClose,
     enableTaskCompletionToasts: typeof source.enableTaskCompletionToasts === "boolean" ? source.enableTaskCompletionToasts : DEFAULT_SETTINGS.enableTaskCompletionToasts,
     enableSystemTaskCompletionNotifications: typeof source.enableSystemTaskCompletionNotifications === "boolean" ? source.enableSystemTaskCompletionNotifications : DEFAULT_SETTINGS.enableSystemTaskCompletionNotifications,
+    enableNotificationSound: typeof source.enableNotificationSound === "boolean" ? source.enableNotificationSound : DEFAULT_SETTINGS.enableNotificationSound,
     environmentPanelDefaultOpen: typeof source.environmentPanelDefaultOpen === "boolean" ? source.environmentPanelDefaultOpen : DEFAULT_SETTINGS.environmentPanelDefaultOpen,
     showEnvironmentUsage: typeof source.showEnvironmentUsage === "boolean" ? source.showEnvironmentUsage : DEFAULT_SETTINGS.showEnvironmentUsage,
     showEnvironmentLocalServers: typeof source.showEnvironmentLocalServers === "boolean" ? source.showEnvironmentLocalServers : DEFAULT_SETTINGS.showEnvironmentLocalServers,
@@ -80,6 +97,23 @@ function normalizeSpaces(value: unknown): Space[] {
   });
 }
 
+function normalizeProfileUsage(value: unknown): ProfileUsage {
+  const source = value && typeof value === "object" ? value as Partial<ProfileUsage> : {};
+  const normalizeNumberMap = (candidate: unknown): Record<string, number> => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return {};
+    return Object.fromEntries(Object.entries(candidate).flatMap(([key, raw]) => {
+      if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return [];
+      return [[key.slice(0, 256), raw]];
+    }));
+  };
+  return {
+    totalTokens: typeof source.totalTokens === "number" && Number.isFinite(source.totalTokens) && source.totalTokens >= 0 ? source.totalTokens : 0,
+    dailyTokens: normalizeNumberMap(source.dailyTokens),
+    modelTokens: normalizeNumberMap(source.modelTokens),
+    threadTokenTotals: normalizeNumberMap(source.threadTokenTotals),
+  };
+}
+
 export function createInitialState(suggestedProjectPath?: string): AppState {
   const now = Date.now();
   const project = suggestedProjectPath
@@ -93,7 +127,15 @@ export function createInitialState(suggestedProjectPath?: string): AppState {
     : undefined;
   return {
     version: 1,
-    settings: { ...DEFAULT_SETTINGS, customModelSlugs: [...DEFAULT_SETTINGS.customModelSlugs] },
+    settings: {
+      ...DEFAULT_SETTINGS,
+      customModelSlugs: [...DEFAULT_SETTINGS.customModelSlugs],
+      themePacks: {
+        light: { ...DEFAULT_SETTINGS.themePacks.light, fonts: { ...DEFAULT_SETTINGS.themePacks.light.fonts } },
+        dark: { ...DEFAULT_SETTINGS.themePacks.dark, fonts: { ...DEFAULT_SETTINGS.themePacks.dark.fonts } },
+      },
+    },
+    profile: structuredClone(emptyProfileUsage),
     spaces: [],
     projects: project ? [project] : [],
     threads: [],
@@ -126,6 +168,7 @@ function normalizeState(input: unknown, fallback: AppState): AppState {
     ...value,
     version: 1,
     settings: normalizeSettings(value.settings),
+    profile: normalizeProfileUsage(value.profile),
     spaces,
     projects,
     threads: Array.isArray(value.threads) ? value.threads.map((thread) => ({
@@ -184,7 +227,32 @@ export class StateStore {
 
   async updateSettings(patch: Partial<Settings>): Promise<AppState> {
     return this.update((draft) => {
-      draft.settings = normalizeSettings({ ...draft.settings, ...patch });
+      const themePacks = patch.themePacks
+        ? { ...draft.settings.themePacks, ...patch.themePacks }
+        : draft.settings.themePacks;
+      draft.settings = normalizeSettings({ ...draft.settings, ...patch, themePacks });
+    });
+  }
+
+  async recordContextUsage(threadId: string, contextUsage: ContextUsage): Promise<AppState> {
+    return this.update((draft) => {
+      const thread = draft.threads.find((candidate) => candidate.id === threadId);
+      if (!thread) return;
+      thread.contextUsage = contextUsage;
+
+      const currentTokens = contextUsage.totalProcessedTokens
+        ?? (contextUsage.apiUsage
+          ? contextUsage.apiUsage.input_tokens + contextUsage.apiUsage.output_tokens + contextUsage.apiUsage.cache_creation_input_tokens + contextUsage.apiUsage.cache_read_input_tokens
+          : contextUsage.totalTokens);
+      const previousTokens = draft.profile.threadTokenTotals[threadId] ?? 0;
+      const delta = currentTokens >= previousTokens ? currentTokens - previousTokens : currentTokens;
+      draft.profile.threadTokenTotals[threadId] = Math.max(0, currentTokens);
+      if (delta <= 0) return;
+      const day = new Date().toISOString().slice(0, 10);
+      const model = contextUsage.model.trim() || thread.model?.trim() || "CLI default";
+      draft.profile.totalTokens += delta;
+      draft.profile.dailyTokens[day] = (draft.profile.dailyTokens[day] ?? 0) + delta;
+      draft.profile.modelTokens[model] = (draft.profile.modelTokens[model] ?? 0) + delta;
     });
   }
 
@@ -554,14 +622,6 @@ export class StateStore {
       if (!thread) throw new Error("Chat not found.");
       thread.notes = notes.slice(0, 10_000);
       thread.updatedAt = Date.now();
-    });
-  }
-
-  async recordContextUsage(threadId: string, contextUsage: ContextUsage): Promise<AppState> {
-    return this.update((draft) => {
-      const thread = draft.threads.find((candidate) => candidate.id === threadId);
-      if (!thread) return;
-      thread.contextUsage = contextUsage;
     });
   }
 

@@ -5,7 +5,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, release as osRelease } from "node:os";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, shell } from "electron";
 import {
   cancelBrowserLogin,
   clearExtraProviderCredentials,
@@ -26,7 +26,7 @@ import { fetchAccountUsage } from "./usage-service.js";
 import { TerminalManager } from "./terminal-manager.js";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
 import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
-import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RunEvent, RunRequest, Settings, SpaceIconName } from "./types.js";
+import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RunEvent, RunRequest, Settings, SpaceIconName } from "./types.js";
 
 let mainWindow: BrowserWindow | null = null;
 let store: StateStore;
@@ -35,6 +35,7 @@ let terminalManager: TerminalManager;
 let browserManager: BrowserManager;
 let browserHost: BrowserHostServer;
 let isQuitting = false;
+const activeDesktopNotifications = new Set<ElectronNotification>();
 const runner = new CliRunner();
 const pendingRunEvents: RunEvent[] = [];
 let runEventFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -390,6 +391,30 @@ async function createWindow(): Promise<void> {
 function registerIpc(): void {
   ipcMain.handle("app:info", () => ({ version: app.getVersion(), platform: process.platform, dataPath: app.getPath("userData") }));
   ipcMain.handle("state:load", () => store.snapshot());
+  ipcMain.handle("notifications:supported", () => ElectronNotification.isSupported());
+  ipcMain.handle("notifications:sound", () => {
+    if (process.platform !== "darwin") {
+      shell.beep();
+      return true;
+    }
+    return new Promise<boolean>((resolvePromise) => {
+      const audio = spawn("afplay", ["/System/Library/Sounds/Glass.aiff"], { stdio: "ignore" });
+      audio.once("error", () => resolvePromise(false));
+      audio.once("close", (code) => resolvePromise(code === 0));
+    });
+  });
+  ipcMain.handle("notifications:show", (_event, input: DesktopNotificationInput) => {
+    if (!ElectronNotification.isSupported()) return false;
+    const title = typeof input?.title === "string" ? input.title.slice(0, 120) : "Maximo Syntax";
+    const body = typeof input?.body === "string" ? input.body.slice(0, 500) : "Activity needs your attention.";
+    const threadId = typeof input?.threadId === "string" && input.threadId.trim() ? input.threadId.slice(0, 200) : undefined;
+    const notification = new ElectronNotification({ title, body, silent: input?.silent === true });
+    activeDesktopNotifications.add(notification);
+    notification.on("close", () => activeDesktopNotifications.delete(notification));
+    if (threadId) notification.on("click", () => send("notification:open-thread", threadId));
+    notification.show();
+    return true;
+  });
   ipcMain.handle("browser:open", (_event, input: BrowserOpenInput) => {
     const threadId = safeText(input?.threadId, 100);
     const initialUrl = typeof input?.initialUrl === "string" ? safeText(input.initialUrl, 8_192) : undefined;
@@ -477,6 +502,7 @@ function registerIpc(): void {
   ipcMain.handle("settings:update", async (_event, patch: Partial<Settings>) => {
     const allowed: Partial<Settings> = {};
     if (["system", "light", "dark"].includes(String(patch.theme))) allowed.theme = patch.theme;
+    if (patch.themePacks && typeof patch.themePacks === "object") allowed.themePacks = patch.themePacks;
     if (typeof patch.cliPath === "string") allowed.cliPath = patch.cliPath.slice(0, 2_000);
     if (typeof patch.defaultModel === "string") allowed.defaultModel = patch.defaultModel.slice(0, 200);
     if (typeof patch.defaultEffort === "string") allowed.defaultEffort = patch.defaultEffort.slice(0, 40);
@@ -498,6 +524,7 @@ function registerIpc(): void {
     if (typeof patch.confirmTerminalTabClose === "boolean") allowed.confirmTerminalTabClose = patch.confirmTerminalTabClose;
     if (typeof patch.enableTaskCompletionToasts === "boolean") allowed.enableTaskCompletionToasts = patch.enableTaskCompletionToasts;
     if (typeof patch.enableSystemTaskCompletionNotifications === "boolean") allowed.enableSystemTaskCompletionNotifications = patch.enableSystemTaskCompletionNotifications;
+    if (typeof patch.enableNotificationSound === "boolean") allowed.enableNotificationSound = patch.enableNotificationSound;
     if (typeof patch.environmentPanelDefaultOpen === "boolean") allowed.environmentPanelDefaultOpen = patch.environmentPanelDefaultOpen;
     for (const key of ["showEnvironmentUsage", "showEnvironmentLocalServers", "showEnvironmentRepository", "showEnvironmentEditor", "showEnvironmentPinned", "showEnvironmentMarkers", "showEnvironmentNotepad", "showEnvironmentActivity"] as const) {
       if (typeof patch[key] === "boolean") allowed[key] = patch[key];

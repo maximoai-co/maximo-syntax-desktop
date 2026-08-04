@@ -16,11 +16,21 @@ describe("StateStore", () => {
     temporaryDirectories.push(directory);
     const store = new StateStore(directory, createInitialState());
     await store.initialize();
-    await store.updateSettings({ theme: "dark", defaultModel: "maximo-atlas-preview", sendWithEnter: false });
+    const themePacks = store.snapshot().settings.themePacks;
+    await store.updateSettings({
+      theme: "dark",
+      defaultModel: "maximo-atlas-preview",
+      sendWithEnter: false,
+      themePacks: {
+        ...themePacks,
+        dark: { ...themePacks.dark, accent: "#0169cc" },
+      },
+    });
     const saved = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
     expect(saved.settings.theme).toBe("dark");
     expect(saved.settings.defaultModel).toBe("maximo-atlas-preview");
     expect(saved.settings.sendWithEnter).toBe(false);
+    expect(saved.settings.themePacks.dark.accent).toBe("#0169cc");
   });
 
   it("persists the expanded settings and restores archived chats", async () => {
@@ -38,6 +48,24 @@ describe("StateStore", () => {
     const created = await store.createThread(project.id);
     const threadId = created.selectedThreadId!;
     await store.beginRun(threadId, "Archive me", [], "", "", "auto");
+    await store.recordContextUsage(threadId, {
+      categories: [{ name: "Current context", tokens: 100 }],
+      totalTokens: 100,
+      totalProcessedTokens: 100,
+      maxTokens: 1_000,
+      rawMaxTokens: 1_000,
+      percentage: 10,
+      model: "kilo/test-model",
+    });
+    await store.recordContextUsage(threadId, {
+      categories: [{ name: "Current context", tokens: 140 }],
+      totalTokens: 140,
+      totalProcessedTokens: 140,
+      maxTokens: 1_000,
+      rawMaxTokens: 1_000,
+      percentage: 14,
+      model: "kilo/test-model",
+    });
     await store.archiveThread(threadId);
     expect(store.getThread(threadId)?.archived).toBe(true);
     await store.unarchiveThread(threadId);
@@ -48,6 +76,8 @@ describe("StateStore", () => {
       showEnvironmentMarkers: false,
       customModelSlugs: ["openai/gpt-custom"],
     });
+    expect(store.snapshot().profile.totalTokens).toBe(140);
+    expect(store.snapshot().profile.modelTokens["kilo/test-model"]).toBe(140);
   });
 
   it("clears provider-bound selections when the signed-in account changes", async () => {

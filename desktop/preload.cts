@@ -54,6 +54,18 @@ const api: DesktopApi = {
   accountCancelLogin: () => ipcRenderer.invoke("account:cancel-login"),
   accountLogout: () => ipcRenderer.invoke("account:logout"),
   accountUsage: () => ipcRenderer.invoke("account:usage"),
+  notifications: {
+    isSupported: () => ipcRenderer.invoke("notifications:supported"),
+    show: (input) => ipcRenderer.invoke("notifications:show", input),
+    playSound: () => ipcRenderer.invoke("notifications:sound"),
+    onOpenThread: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, threadId: unknown) => {
+        if (typeof threadId === "string" && threadId.trim()) callback(threadId);
+      };
+      ipcRenderer.on("notification:open-thread", listener);
+      return () => ipcRenderer.removeListener("notification:open-thread", listener);
+    },
+  },
   startRun: (request) => ipcRenderer.invoke("run:start", request),
   sendToRun: (request) => ipcRenderer.invoke("run:send", request),
   contextUsage: (threadId) => ipcRenderer.invoke("run:context", threadId),
