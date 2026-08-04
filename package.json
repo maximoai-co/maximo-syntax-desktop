@@ -1,0 +1,127 @@
+{
+  "name": "@maximoai/maximo-syntax-desktop",
+  "version": "0.1.0",
+  "description": "Your AI workspace for work. Write and edit code, build software, draft documents, analyze data, organize projects, and run agents — one native desktop app.",
+  "homepage": "https://maximoai.co",
+  "keywords": [
+    "Maximo AI",
+    "Maximo Syntax",
+    "AI workspace",
+    "AI desktop app",
+    "AI agent for work",
+    "coding agent",
+    "AI coding assistant",
+    "agentic work",
+    "AI productivity",
+    "developer tools",
+    "desktop app"
+  ],
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "author": "Maximo AI Ltd",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build:icon": "node scripts/build-app-icon.mjs",
+    "start": "npm run build && node scripts/start.mjs",
+    "dev": "node scripts/dev.mjs",
+    "postinstall": "node scripts/prepare-node-pty.mjs",
+    "build": "npm run build:icon && npm run build:renderer && npm run build:electron",
+    "build:renderer": "vite build",
+    "build:electron": "node scripts/clean-electron.mjs && tsc -p tsconfig.electron.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test && npm run build",
+    "package": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win"
+  },
+  "dependencies": {
+    "@maximoai/maximo-syntax-cli": "^0.1.23",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "highlight.js": "^11.11.1",
+    "lucide-react": "^0.468.0",
+    "node-pty": "^1.1.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pngjs": "^6.0.5",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "pngjs": "^7.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vitest": "^2.1.8",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.maximoai.syntax.desktop",
+    "productName": "Maximo Syntax",
+    "artifactName": "Maximo-Syntax-${version}-${os}-${arch}.${ext}",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist-renderer/**/*",
+      "dist-electron/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/**/*",
+      "dist-electron/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "assets/app-icon.icns",
+      "bundleVersion": "1",
+      "extendInfo": {
+        "CFBundleDisplayName": "Maximo Syntax",
+        "CFBundleName": "Maximo Syntax",
+        "NSHumanReadableCopyright": "Copyright © 2026 Maximo AI Ltd"
+      },
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/app-icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Productivity",
+      "icon": "assets/app-icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
