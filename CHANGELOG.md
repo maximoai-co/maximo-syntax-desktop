@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+- Added a desktop update checker that polls GitHub Releases and surfaces a Synara-style **Update** button in the sidebar footer when a newer app version is available; click opens the matching installer download (or release page).
+- Added **Check for Updates…** to the app/Help menu and a Desktop updates section under Settings → System tools.
+- Expanded Appearance theme presets with the Synara/Codex catalog (Catppuccin, Dracula, Everforest, GitHub, Gruvbox, Linear, Nord, Rose Pine, Tokyo Night, Vercel, and more), filtering dark-only / light-only seeds per theme pack.
+- Added a Synara-style **What's new** post-update popout and dialog that surfaces release notes from GitHub Releases (with local CHANGELOG fallback), including a full changelog view and Settings entry.
+
+## [0.1.2] - 2026-08-04
+
+- Contained chat markdown so long AI replies (fenced code, inline paths/selectors, wide tables, media) no longer expand the conversation column off-screen.
+- Fixed theme preset “Aa” badge alignment in Appearance settings (badge was stretched by select-trigger flex rules).
+- Made “Worked for …” expand snappy: open state paints immediately, timeline rows stream in, and heavy tool/agent details only mount when each row is opened.
 - Added fully functional Synara-style appearance customization system (independent Light and Dark theme packs with accent/background/foreground colors, presets, sharing strings, typography/font-family overrides, translucent sidebar toggles, and contrast sliders).
 - Repositioned branding from "agentic coding desktop" to "your AI workspace for work" — framing the app for code, documents, data, research, and organization, not just software development.
 - Added SEO metadata (description, keywords, Open Graph, Twitter cards) to the renderer shell.

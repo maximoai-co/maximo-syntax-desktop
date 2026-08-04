@@ -16,6 +16,7 @@ import {
   loginWithApiKey,
   readLocalAccountStatus,
 } from "./auth-service.js";
+import { AppUpdater } from "./app-updater.js";
 import { CliRunner } from "./cli-runner.js";
 import { RuntimeManager } from "./runtime-manager.js";
 import { BrowserHostServer } from "./browser-host.js";
@@ -24,9 +25,15 @@ import { discoverSkills } from "./skill-discovery.js";
 import { createInitialState, StateStore } from "./state-store.js";
 import { fetchAccountUsage } from "./usage-service.js";
 import { TerminalManager } from "./terminal-manager.js";
+import {
+  fetchGithubReleaseEntries,
+  mergeWhatsNewEntries,
+  parseChangelogMarkdown,
+  toWhatsNewSnapshot,
+} from "./whats-new.js";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
 import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
-import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RunEvent, RunRequest, Settings, SpaceIconName } from "./types.js";
+import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 
 let mainWindow: BrowserWindow | null = null;
 let store: StateStore;
@@ -34,6 +41,7 @@ let runtime: RuntimeManager;
 let terminalManager: TerminalManager;
 let browserManager: BrowserManager;
 let browserHost: BrowserHostServer;
+let appUpdater: AppUpdater | null = null;
 let isQuitting = false;
 const activeDesktopNotifications = new Set<ElectronNotification>();
 const runner = new CliRunner();
@@ -167,6 +175,26 @@ function send(channel: string, payload: unknown): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
 }
 
+function resolveChangelogPath(): string {
+  const candidates = [
+    join(app.getAppPath(), "CHANGELOG.md"),
+    join(process.cwd(), "CHANGELOG.md"),
+  ];
+  return candidates.find((path) => existsSync(path)) ?? candidates[0];
+}
+
+async function loadWhatsNewEntries(currentVersion: string) {
+  let changelogEntries = [] as ReturnType<typeof parseChangelogMarkdown>;
+  try {
+    const markdown = await readFile(resolveChangelogPath(), "utf8");
+    changelogEntries = parseChangelogMarkdown(markdown);
+  } catch {
+    changelogEntries = [];
+  }
+  const githubEntries = await fetchGithubReleaseEntries(fetch, currentVersion);
+  return mergeWhatsNewEntries(changelogEntries, githubEntries);
+}
+
 function flushRunEvents(): void {
   if (runEventFlushTimer !== null) {
     clearTimeout(runEventFlushTimer);
@@ -266,8 +294,53 @@ async function readAccountStatus(): Promise<AccountStatus> {
 
 function createApplicationMenu(): void {
   const isMac = process.platform === "darwin";
+  const checkForUpdatesItem: Electron.MenuItemConstructorOptions = {
+    label: "Check for Updates…",
+    click: () => {
+      void (async () => {
+        const state = await appUpdater?.checkForUpdates("menu");
+        if (!state) return;
+        if (state.status === "available") {
+          send("menu:action", "update-available");
+          return;
+        }
+        const boxOptions: Electron.MessageBoxOptions = state.status === "up-to-date"
+          ? {
+              type: "info",
+              message: "You're up to date",
+              detail: `Maximo Syntax ${state.currentVersion} is the latest version.`,
+            }
+          : {
+              type: "warning",
+              message: "Could not check for updates",
+              detail: state.message ?? "An unexpected error occurred.",
+            };
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          void dialog.showMessageBox(mainWindow, boxOptions);
+        } else {
+          void dialog.showMessageBox(boxOptions);
+        }
+      })();
+    },
+  };
   const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac ? [{ role: "appMenu" as const }] : []),
+    ...(isMac
+      ? [{
+          label: app.name,
+          submenu: [
+            { role: "about" as const },
+            checkForUpdatesItem,
+            { type: "separator" as const },
+            { role: "services" as const },
+            { type: "separator" as const },
+            { role: "hide" as const },
+            { role: "hideOthers" as const },
+            { role: "unhide" as const },
+            { type: "separator" as const },
+            { role: "quit" as const },
+          ],
+        }]
+      : []),
     {
       label: "File",
       submenu: [
@@ -299,6 +372,12 @@ function createApplicationMenu(): void {
       label: "Window",
       submenu: [{ role: "minimize" }, { role: "zoom" }, ...(isMac ? [{ type: "separator" as const }, { role: "front" as const }] : [])],
     },
+    ...(!isMac
+      ? [{
+          label: "Help",
+          submenu: [checkForUpdatesItem],
+        }]
+      : []),
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -390,6 +469,65 @@ async function createWindow(): Promise<void> {
 
 function registerIpc(): void {
   ipcMain.handle("app:info", () => ({ version: app.getVersion(), platform: process.platform, dataPath: app.getPath("userData") }));
+  ipcMain.handle("update:state", () => appUpdater?.getState() ?? {
+    status: "idle" as const,
+    currentVersion: app.getVersion(),
+    availableVersion: null,
+    releaseName: null,
+    releaseUrl: null,
+    downloadUrl: null,
+    message: null,
+    checkedAt: null,
+  });
+  ipcMain.handle("update:check", async () => appUpdater?.checkForUpdates("renderer") ?? {
+    status: "error" as const,
+    currentVersion: app.getVersion(),
+    availableVersion: null,
+    releaseName: null,
+    releaseUrl: null,
+    downloadUrl: null,
+    message: "Updater is not available.",
+    checkedAt: new Date().toISOString(),
+  });
+  ipcMain.handle("update:open-download", async () => {
+    if (!appUpdater) {
+      return {
+        opened: false,
+        url: null,
+        state: {
+          status: "error" as const,
+          currentVersion: app.getVersion(),
+          availableVersion: null,
+          releaseName: null,
+          releaseUrl: null,
+          downloadUrl: null,
+          message: "Updater is not available.",
+          checkedAt: new Date().toISOString(),
+        },
+      };
+    }
+    return appUpdater.openDownload();
+  });
+  ipcMain.handle("whats-new:load", async (): Promise<WhatsNewSnapshot> => {
+    const currentVersion = app.getVersion();
+    const lastSeenVersion = store.snapshot().lastSeenWhatsNewVersion ?? null;
+    const entries = await loadWhatsNewEntries(currentVersion);
+    const snapshot = toWhatsNewSnapshot(currentVersion, lastSeenVersion, entries);
+    if (snapshot.decision === "silent-bootstrap" && snapshot.nextLastSeenVersion) {
+      await store.update((draft) => {
+        draft.lastSeenWhatsNewVersion = snapshot.nextLastSeenVersion;
+      });
+    }
+    return snapshot;
+  });
+  ipcMain.handle("whats-new:mark-seen", async (_event, requestedVersion?: unknown) => {
+    const version = typeof requestedVersion === "string" && requestedVersion.trim()
+      ? safeText(requestedVersion, 40)
+      : app.getVersion();
+    return store.update((draft) => {
+      draft.lastSeenWhatsNewVersion = version;
+    });
+  });
   ipcMain.handle("state:load", () => store.snapshot());
   ipcMain.handle("notifications:supported", () => ElectronNotification.isSupported());
   ipcMain.handle("notifications:sound", () => {
@@ -1101,11 +1239,19 @@ app.whenReady().then(async () => {
     resolveBrowserBridgePath(),
     { onRequestOpenPanel: (threadId) => send("browser:open-panel-request", { threadId }) },
   );
+  appUpdater = new AppUpdater({
+    currentVersion: app.getVersion(),
+    openExternal: (url) => shell.openExternal(url),
+    onStateChange: (state) => send("update:state", state),
+    // Background polling is most useful for installed builds; dev can still check manually.
+    enableBackgroundChecks: app.isPackaged || process.env.MAXIMO_DESKTOP_UPDATE_CHECKS === "1",
+  });
   registerIpc();
   createApplicationMenu();
   await createWindow();
   browserManager.setWindow(mainWindow);
   await browserHost.start();
+  appUpdater.start();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });
 });
 
@@ -1118,6 +1264,7 @@ process.on("SIGINT", quitApplication);
 process.on("SIGTERM", quitApplication);
 app.on("before-quit", () => {
   isQuitting = true;
+  appUpdater?.dispose();
   runner.stopAll();
   terminalManager?.stopAll();
   void browserHost?.dispose();

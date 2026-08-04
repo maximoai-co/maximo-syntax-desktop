@@ -1,6 +1,39 @@
 export type ThemeMode = "system" | "light" | "dark";
 export type ThemeVariant = "light" | "dark";
-export type ThemePresetId = "maximo" | "codex" | "ocean" | "forest" | "rose" | "custom";
+export type ThemePresetId =
+  | "maximo"
+  | "codex"
+  | "ocean"
+  | "forest"
+  | "rose"
+  | "synara"
+  | "absolutely"
+  | "ayu"
+  | "catppuccin"
+  | "dracula"
+  | "everforest"
+  | "github"
+  | "gruvbox"
+  | "linear"
+  | "lobster"
+  | "material"
+  | "matrix"
+  | "monokai"
+  | "night-owl"
+  | "nord"
+  | "notion"
+  | "one"
+  | "oscurange"
+  | "proof"
+  | "raycast"
+  | "rose-pine"
+  | "sentry"
+  | "solarized"
+  | "temple"
+  | "tokyo-night"
+  | "vercel"
+  | "vscode-plus"
+  | "custom";
 export type UiDensity = "compact" | "comfortable" | "spacious";
 export type TimestampFormat = "locale" | "12-hour" | "24-hour";
 export type FollowUpBehavior = "queue" | "steer";
@@ -368,6 +401,35 @@ export interface AppState {
   selectedThreadId?: string;
   selectedSpaceId?: string | null;
   onboardingComplete: boolean;
+  /**
+   * Last app version whose What's New notes the user dismissed or silently
+   * bootstrapped. `null` means first launch / never recorded.
+   */
+  lastSeenWhatsNewVersion: string | null;
+}
+
+export interface WhatsNewFeature {
+  id: string;
+  title: string;
+  description: string;
+}
+
+export interface WhatsNewEntry {
+  version: string;
+  date: string;
+  title: string | null;
+  summary: string | null;
+  releaseUrl: string | null;
+  features: readonly WhatsNewFeature[];
+}
+
+export interface WhatsNewSnapshot {
+  currentVersion: string;
+  lastSeenVersion: string | null;
+  decision: "show" | "silent-bootstrap" | "noop";
+  currentEntry: WhatsNewEntry | null;
+  allEntries: readonly WhatsNewEntry[];
+  nextLastSeenVersion: string | null;
 }
 
 export type EngineSource = "configured" | "development" | "system" | "bundled" | "managed";
@@ -695,8 +757,33 @@ export interface RunResult {
   state?: AppState;
 }
 
+export type AppUpdateStatus = "idle" | "checking" | "available" | "up-to-date" | "error";
+
+export interface AppUpdateState {
+  status: AppUpdateStatus;
+  currentVersion: string;
+  availableVersion: string | null;
+  releaseName: string | null;
+  releaseUrl: string | null;
+  downloadUrl: string | null;
+  message: string | null;
+  checkedAt: string | null;
+}
+
+export interface AppUpdateOpenResult {
+  opened: boolean;
+  url: string | null;
+  state: AppUpdateState;
+}
+
 export interface DesktopApi {
   appInfo(): Promise<{ version: string; platform: string; dataPath: string }>;
+  getUpdateState(): Promise<AppUpdateState>;
+  checkForUpdates(): Promise<AppUpdateState>;
+  openUpdateDownload(): Promise<AppUpdateOpenResult>;
+  onUpdateState(callback: (state: AppUpdateState) => void): () => void;
+  loadWhatsNew(): Promise<WhatsNewSnapshot>;
+  markWhatsNewSeen(version?: string): Promise<AppState>;
   loadState(): Promise<AppState>;
   listSkills(projectPath?: string): Promise<SlashCommand[]>;
   completeOnboarding(): Promise<AppState>;

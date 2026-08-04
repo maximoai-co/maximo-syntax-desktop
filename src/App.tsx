@@ -4,13 +4,18 @@ import {
   Activity as ActivityIcon, AlertCircle, Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
   File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, LogOut, Menu, SquarePen,
   GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
-  RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, X, Zap,
+  Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, X, Zap,
 } from "lucide-react";
 import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT } from "../desktop/types";
 import type {
-  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, TimestampFormat, TodoItem, UsageSnapshot,
+  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AppUpdateState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, TimestampFormat, TodoItem, UsageSnapshot, WhatsNewSnapshot,
 } from "../desktop/types";
-import { createThemeShareString, buildThemeCssVariables, getThemePreset, normalizeFontFamily, normalizeHexColor, parseThemeShareString, resolveThemeVariant, THEME_PRESETS } from "../desktop/theme";
+import {
+  getAppUpdateButtonLabel,
+  getAppUpdateButtonTooltip,
+  shouldShowAppUpdateButton,
+} from "../desktop/app-updater";
+import { createThemeShareString, buildThemeCssVariables, getAvailableThemePresets, getThemePreset, normalizeFontFamily, normalizeHexColor, parseThemeShareString, resolveThemeVariant } from "../desktop/theme";
 import logoUrl from "./assets/maximoai-logo.svg";
 import modelOpenAiUrl from "./assets/model-openai.svg";
 import modelOpenAiCodexUrl from "./assets/model-openai-codex.svg";
@@ -38,6 +43,8 @@ import SidebarHoverCard from "./components/SidebarHoverCard";
 import MessageTrail from "./components/MessageTrail";
 import WorkspaceDock, { type WorkspaceDockRequest, type WorkspacePaneKind } from "./components/WorkspaceDock";
 import WorkspaceEnvironment from "./components/WorkspaceEnvironment";
+import WhatsNewDialog from "./components/WhatsNewDialog";
+import WhatsNewPopoutCard from "./components/WhatsNewPopoutCard";
 import { composerKeyAction, composerSendShortcutLabel } from "./composerKeyboard";
 import { MAXIMO_SHORTCUTS, matchesShortcut, shortcutLabel } from "./shortcuts";
 
@@ -476,7 +483,9 @@ function CustomSelect<T extends string>({ value, options, onChange, icon, disabl
           if (event.key === "Escape") setOpen(false);
           if (open && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); choose(options[activeIndex]); }
         }}>
-        {selected?.icon ?? icon}<span>{selected?.label ?? value}</span><ChevronDown size={12} />
+        {(selected?.icon ?? icon) ? <span className="select-option-icon">{selected?.icon ?? icon}</span> : null}
+        <span className="select-option-label">{selected?.label ?? value}</span>
+        <ChevronDown size={12} />
       </button>
       {open && <div className="custom-select-menu glass-panel" role="listbox" aria-label={ariaLabel}>
         {options.map((option, index) => <button type="button" role="option" aria-selected={option === selected} className={`${index === activeIndex ? "active " : ""}${option.icon ? "has-icon" : ""}`}
@@ -1099,23 +1108,25 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
 }
 
 function AgentTimelineEvent({ agent }: { agent: AgentRun }) {
+  // Keep closed rows cheap: sub-agent work can include large nested tool I/O + markdown.
+  const [expanded, setExpanded] = useState(false);
   const name = agent.agentType || "Sub-agent";
   const progress = agent.status === "running" ? (agent.lastToolName ? `Running ${agent.lastToolName}` : "Running") : agentStatusLabel(agent.status);
-  return <details className={`work-event agent-event ${agent.status}`}>
+  return <details className={`work-event agent-event ${agent.status}`} onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary>
       <span className="work-event-icon"><AgentStatusIcon status={agent.status} /></span>
       <span title={agent.description}>{name}</span>
       <small>{progress}</small>
       <ChevronRight size={12} />
     </summary>
-    <div className="work-event-detail agent-event-detail">
+    {expanded && <div className="work-event-detail agent-event-detail">
       <span>{agent.description}</span>
       <AgentWorkTimeline work={agent.work} />
       {agent.summary && agent.summary !== agent.description && <small>{agent.summary}</small>}
       {agent.error && <pre className="error">{agent.error}</pre>}
       {agent.outputFile && <code title={agent.outputFile}>Output: {agent.outputFile}</code>}
       {agent.usage && <small>{[agent.usage.toolUses !== undefined ? `${agent.usage.toolUses} tool uses` : "", agent.usage.durationMs ? formatDuration(agent.usage.durationMs) : ""].filter(Boolean).join(" · ")}</small>}
-    </div>
+    </div>}
   </details>;
 }
 
@@ -1271,14 +1282,15 @@ function todoStatusIcon(status: TodoItem["status"]): ReactNode {
 }
 
 function TodoTimelineEvent({ todos, data }: { todos: TodoItem[]; data?: string }) {
+  const [expanded, setExpanded] = useState(false);
   const completed = todos.filter((todo) => todo.status === "completed").length;
   const active = todos.find((todo) => todo.status === "in_progress");
-  return <details className="work-event todo-event">
+  return <details className="work-event todo-event" onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary><span className="work-event-icon"><ListTodo size={12} /></span><span>Task checklist</span><small>{completed}/{todos.length} complete{active ? ` · ${active.content}` : ""}</small><ChevronRight size={12} /></summary>
-    <div className="work-event-detail todo-list-detail">
+    {expanded && <div className="work-event-detail todo-list-detail">
       {todos.map((todo, index) => <div className={`todo-item ${todo.status}`} key={todo.id ?? `${todo.content}-${index}`}><span className="todo-item-status">{todoStatusIcon(todo.status)}</span><span>{todo.content}</span></div>)}
       {data && <details className="tool-payload"><summary>Show input<ChevronRight size={11} /></summary><pre>{data}</pre></details>}
-    </div>
+    </div>}
   </details>;
 }
 
@@ -1325,18 +1337,19 @@ function ClassifierBadge({ decision }: { decision: NonNullable<RunActivity["clas
 }
 
 function InteractionTimelineEvent({ interaction }: { interaction: ChatInteraction }) {
+  const [expanded, setExpanded] = useState(false);
   if (interaction.type === "permission") {
     const approved = interaction.decision === "approved";
-    return <details className={`work-event interaction-event ${approved ? "approved" : "denied"}`}>
+    return <details className={`work-event interaction-event ${approved ? "approved" : "denied"}`} onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary><span className="work-event-icon">{approved ? <Check size={12} /> : <X size={12} />}</span><span>{approved ? "Approved" : "Denied"} {interaction.toolName}</span>{interaction.detail && <small>{interaction.detail}</small>}<ChevronRight size={12} /></summary>
-      <div className="work-event-detail"><span>{approved ? "Permission granted" : "Permission denied"}{interaction.remember ? " for matching actions" : " for this action"}.</span>{interaction.detail && <code>{interaction.detail}</code>}</div>
+      {expanded && <div className="work-event-detail"><span>{approved ? "Permission granted" : "Permission denied"}{interaction.remember ? " for matching actions" : " for this action"}.</span>{interaction.detail && <code>{interaction.detail}</code>}</div>}
     </details>;
   }
   const first = interaction.questions[0];
   const answer = first?.answer ?? "Answered";
-  return <details className="work-event interaction-event answered">
+  return <details className="work-event interaction-event answered" onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary><span className="work-event-icon"><Check size={12} /></span><span>{interaction.questions.length > 1 ? `${interaction.questions.length} questions answered` : "Answered user question"}</span><small>{answer}</small><ChevronRight size={12} /></summary>
-    <div className="work-event-detail interaction-answers">{interaction.questions.map((item, index) => <div key={`${item.question}-${index}`}>{item.header && <b>{item.header}</b>}<span>{item.question}</span><strong>{item.answer}</strong></div>)}</div>
+    {expanded && <div className="work-event-detail interaction-answers">{interaction.questions.map((item, index) => <div key={`${item.question}-${index}`}>{item.header && <b>{item.header}</b>}<span>{item.question}</span><strong>{item.answer}</strong></div>)}</div>}
   </details>;
 }
 
@@ -1379,7 +1392,14 @@ function ActivityTimelineEvent({ entry, path, created, reviewable, change, proje
   const reviewDiff = diff ? { path: diff.path, patch: diff.patch } : undefined;
   const diffPath = path && project ? relativeProjectPath(project.path, path) : path;
 
-  return <details className={`work-event ${created ? "created" : ""} ${entry.isError ? "error" : ""} ${entry.classifierDecision ? `classifier-${entry.classifierDecision.decision}` : ""}`} onToggle={(event) => { if (event.currentTarget.open) loadDiff(); }}>
+  // Only mount result/diff/input DOM when this row is opened — closed rows are just a summary line.
+  const [expanded, setExpanded] = useState(false);
+
+  return <details className={`work-event ${created ? "created" : ""} ${entry.isError ? "error" : ""} ${entry.classifierDecision ? `classifier-${entry.classifierDecision.decision}` : ""}`} onToggle={(event) => {
+    const next = event.currentTarget.open;
+    setExpanded(next);
+    if (next) loadDiff();
+  }}>
     <summary>
       <span className="work-event-icon"><ToolIcon toolName={entry.toolName} label={entry.label} /></span>
       <span>{activityTitle(entry)}</span>
@@ -1388,7 +1408,7 @@ function ActivityTimelineEvent({ entry, path, created, reviewable, change, proje
       {diff && <span className="work-event-diff-count"><b>+{additions}</b><i>-{deletions}</i></span>}
       <ChevronRight size={12} />
     </summary>
-    <div className="work-event-detail">
+    {expanded && <div className="work-event-detail">
       {entry.classifierDecision && (
         <span className={`classifier-note ${entry.classifierDecision.decision}`}>
           {entry.classifierDecision.decision === "allowed" ? "Allowed by auto mode classifier" : "Denied by auto mode classifier"}
@@ -1411,16 +1431,19 @@ function ActivityTimelineEvent({ entry, path, created, reviewable, change, proje
       </>}
       {entry.data && <details className="tool-payload"><summary>Show input<ChevronRight size={11} /></summary><pre>{entry.data}</pre></details>}
       {!entry.result && !entry.data && entry.detail && <code>{entry.detail}</code>}
-    </div>
+    </div>}
   </details>;
 }
 
 const MemoizedActivityTimelineEvent = memo(ActivityTimelineEvent);
 
 function WorkTimeline({ entries, onOpenFile, fileChanges, project, onPreviewAttachment }: { entries: WorkTimelineEntry[]; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; onPreviewAttachment?: (attachment: Attachment) => void }) {
-  const agentRows = agentTimelineRows(entries);
-  const rowsBySource = new Map<number, AgentTimelineRow[]>();
-  for (const row of agentRows) rowsBySource.set(row.sourceIndex, [...(rowsBySource.get(row.sourceIndex) ?? []), row]);
+  const agentRows = useMemo(() => agentTimelineRows(entries), [entries]);
+  const rowsBySource = useMemo(() => {
+    const map = new Map<number, AgentTimelineRow[]>();
+    for (const row of agentRows) map.set(row.sourceIndex, [...(map.get(row.sourceIndex) ?? []), row]);
+    return map;
+  }, [agentRows]);
   const renderEntry = (entry: WorkTimelineEntry, index: number): ReactNode => {
     const assignedAgents = rowsBySource.get(index);
     if (assignedAgents?.length) return <>{assignedAgents.map((row) => <MemoizedAgentTimelineEvent agent={row.agent} key={`agent-${row.agent.taskId}`} />)}</>;
@@ -1438,21 +1461,33 @@ function WorkTimeline({ entries, onOpenFile, fileChanges, project, onPreviewAtta
   return <div className="work-timeline">{entries.map(renderEntry)}</div>;
 }
 
-const INITIAL_WORK_ENTRIES = 48;
-const WORK_ENTRIES_PER_FRAME = 80;
+// Small first paint so expanding "Worked for" feels instant; more rows stream in after.
+const INITIAL_WORK_ENTRIES = 12;
+const WORK_ENTRIES_PER_FRAME = 24;
 const MAX_VISIBLE_LIVE_WORK_ENTRIES = 64;
 
 function WorkDisclosure({ timeline, interactions = [], durationMs, live = false, finalContent, onOpenFile, fileChanges, project, onPreviewAttachment }: { timeline?: RunTimelineItem[]; interactions?: TimedInteraction[]; durationMs?: number; live?: boolean; finalContent?: string; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; onPreviewAttachment?: (attachment: Attachment) => void }) {
   const [open, setOpen] = useState(false);
+  // Defer mounting the body one frame so the chevron/open state paints immediately.
+  const [bodyReady, setBodyReady] = useState(false);
   const [renderedEntryCount, setRenderedEntryCount] = useState(INITIAL_WORK_ENTRIES);
   const entries = useMemo(() => mergeWorkTimeline(timeline ?? [], interactions), [timeline, interactions]);
   const normalizedFinal = finalContent?.trim();
   const workEntries = useMemo(() => entries.filter((entry) => entry.type !== "text" || !normalizedFinal || entry.text.trim() !== normalizedFinal), [entries, normalizedFinal]);
+
   useEffect(() => {
     if (!open) {
-      if (renderedEntryCount !== INITIAL_WORK_ENTRIES) setRenderedEntryCount(INITIAL_WORK_ENTRIES);
+      setBodyReady(false);
+      setRenderedEntryCount(INITIAL_WORK_ENTRIES);
       return;
     }
+    // Yield so the summary toggle paints before we mount timeline nodes.
+    const frame = window.requestAnimationFrame(() => setBodyReady(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !bodyReady) return;
     if (renderedEntryCount >= workEntries.length) return;
     const frame = window.requestAnimationFrame(() => {
       startTransition(() => {
@@ -1460,7 +1495,8 @@ function WorkDisclosure({ timeline, interactions = [], durationMs, live = false,
       });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [open, renderedEntryCount, workEntries.length]);
+  }, [open, bodyReady, renderedEntryCount, workEntries.length]);
+
   if (live) {
     const visibleLiveEntries = entries.length > MAX_VISIBLE_LIVE_WORK_ENTRIES ? entries.slice(-MAX_VISIBLE_LIVE_WORK_ENTRIES) : entries;
     return visibleLiveEntries.length > 0 ? <div className="agent-flow live-agent-flow"><WorkTimeline entries={visibleLiveEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} /></div> : null;
@@ -1469,10 +1505,12 @@ function WorkDisclosure({ timeline, interactions = [], durationMs, live = false,
   const visibleWorkEntries = workEntries.slice(0, renderedEntryCount);
   return <div className="agent-flow"><details className="worked-disclosure" onToggle={(event) => setOpen(event.currentTarget.open)}>
     <summary><span>Worked for {formatDuration(durationMs ?? 0)}</span><ChevronRight size={13} /></summary>
-    {open && (workEntries.length > 0 ? <>
-      <WorkTimeline entries={visibleWorkEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} />
-      {visibleWorkEntries.length < workEntries.length && <div className="work-timeline-loading" role="status">Loading more work details…</div>}
-    </> : <div className="work-timeline-empty">No intermediate actions were reported.</div>)}
+    {open && (workEntries.length > 0 ? (
+      bodyReady ? <>
+        <WorkTimeline entries={visibleWorkEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} />
+        {visibleWorkEntries.length < workEntries.length && <div className="work-timeline-loading" role="status">Loading more work details…</div>}
+      </> : <div className="work-timeline-loading" role="status">Loading work details…</div>
+    ) : <div className="work-timeline-empty">No intermediate actions were reported.</div>)}
   </details></div>;
 }
 
@@ -1906,7 +1944,7 @@ function AccountLoadingGate({ theme }: { theme: ThemeMode }) {
 
 
 
-function Sidebar({ state, currentThread, account, timestampFormat, activeSurface, onNavigateSurface, onOpenProject, onCreateProject, onNewThread, onSelectProject, onSelectThread, onOpenSearch, onToggleSidebar, onBack, onForward, canGoBack, canGoForward, onSettings, onAccount, onUsage, onLogout, onMarkThreadRead, onMarkAllNotificationsRead, onDeleteThread, onRenameThread, onToggleThreadPinned, onArchiveThread, onRenameProject, onToggleProjectPinned, onArchiveProjectThreads, onRemoveProject, onReorderProject, onSelectSpace, onCreateSpace, onResize, open, onClose }: {
+function Sidebar({ state, currentThread, account, timestampFormat, activeSurface, onNavigateSurface, onOpenProject, onCreateProject, onNewThread, onSelectProject, onSelectThread, onOpenSearch, onToggleSidebar, onBack, onForward, canGoBack, canGoForward, onSettings, onAccount, onUsage, onLogout, onMarkThreadRead, onMarkAllNotificationsRead, onDeleteThread, onRenameThread, onToggleThreadPinned, onArchiveThread, onRenameProject, onToggleProjectPinned, onArchiveProjectThreads, onRemoveProject, onReorderProject, onSelectSpace, onCreateSpace, onResize, open, onClose, updateState, onUpdateAction }: {
   state: AppState; currentThread?: Thread; onOpenProject: () => void; onCreateProject: () => void;
   account: AccountStatus | null;
   timestampFormat: TimestampFormat;
@@ -1920,6 +1958,8 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
   onCreateSpace: (name: string, icon: SpaceIconName) => Promise<Space>;
   onResize: (event: ReactPointerEvent<HTMLDivElement>) => void;
   open: boolean; onClose: () => void;
+  updateState: AppUpdateState | null;
+  onUpdateAction: () => void;
 }) {
   const selectedProjectId = currentThread?.projectId ?? state.selectedProjectId;
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set(selectedProjectId ? [selectedProjectId] : []));
@@ -2241,6 +2281,19 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
             <button type="button" onClick={() => { setAccountMenuOpen(false); onSettings(); }}><Settings size={14} /><span>Settings</span></button>
             {account?.loggedIn && <button type="button" className="account-menu-logout" onClick={() => { setAccountMenuOpen(false); onLogout(); }}><LogOut size={14} /><span>Log out</span></button>}
           </div>}
+          {shouldShowAppUpdateButton(updateState) && (
+            <button
+              type="button"
+              className="sidebar-update-button"
+              title={getAppUpdateButtonTooltip(updateState)}
+              aria-label={getAppUpdateButtonTooltip(updateState)}
+              onClick={() => { setAccountMenuOpen(false); setProjectMenu(null); setThreadMenu(null); setNotificationsOpen(false); onUpdateAction(); }}
+            >
+              <Download size={13} />
+              <span>{getAppUpdateButtonLabel(updateState)}</span>
+              {updateState?.availableVersion && <small>v{updateState.availableVersion}</small>}
+            </button>
+          )}
           <button className="account-button" onClick={() => { setProjectMenu(null); setThreadMenu(null); setNotificationsOpen(false); setAccountMenuOpen((value) => !value); }} aria-expanded={accountMenuOpen}><UserRound size={15} /><span><strong>{account?.displayName || account?.email || (account?.loggedIn ? "Connected account" : "Account")}</strong>{account?.loggedIn && <small>{providerLabel(account)}</small>}</span><ChevronDown size={12} /></button>
           <button className="footer-icon-button" onClick={onSettings} title="Settings"><Settings size={15} /></button>
         </div>
@@ -3334,9 +3387,26 @@ function ThemePackEditor({ variant, active, theme, onChange, onReset }: { varian
   const defaultTheme = DEFAULT_SETTINGS.themePacks[variant];
   const title = variant === "dark" ? "Dark theme" : "Light theme";
   const update = (patch: Partial<ThemePack>) => onChange({ ...theme, ...patch, preset: "custom" });
+  const availablePresets = getAvailableThemePresets(variant);
+  // If a dark-only preset is stored on the light pack (or vice versa), keep Custom selected
+  // so the dropdown still has a valid value without inventing a missing seed.
+  const presetValue: ThemePresetId = theme.preset !== "custom" && availablePresets.some((preset) => preset.id === theme.preset)
+    ? theme.preset
+    : "custom";
   const presetOptions: SelectOption<ThemePresetId>[] = [
-    { value: "custom", label: "Custom" },
-    ...THEME_PRESETS.map((preset) => ({ value: preset.id, label: preset.label })),
+    {
+      value: "custom",
+      label: "Custom",
+      icon: <span className="theme-badge-icon" style={{ backgroundColor: theme.background, color: theme.accent, borderColor: 'rgba(255, 255, 255, 0.18)' }}>Aa</span>,
+    },
+    ...availablePresets.map((preset) => {
+      const presetTheme = getThemePreset(preset.id, variant);
+      return {
+        value: preset.id,
+        label: preset.label,
+        icon: <span className="theme-badge-icon" style={{ backgroundColor: presetTheme.background, color: presetTheme.accent, borderColor: 'rgba(255, 255, 255, 0.18)' }}>Aa</span>,
+      };
+    }),
   ];
   const applyPreset = (preset: ThemePresetId) => {
     if (preset === "custom") {
@@ -3371,7 +3441,7 @@ function ThemePackEditor({ variant, active, theme, onChange, onReset }: { varian
       <div><h3>{title}</h3><small>{active ? "Currently active" : variant === "dark" ? "Used when the app is dark" : "Used when the app is light"}</small></div>
       <div className="theme-pack-actions"><button type="button" className="settings-action" onClick={importTheme} title={`Import ${variant} theme`}><Upload size={12} />Import</button><button type="button" className="settings-action" onClick={() => void copyTheme()} title={`Copy ${variant} theme`}><Copy size={12} />Copy</button><button type="button" className="settings-action" onClick={onReset} disabled={JSON.stringify(theme) === JSON.stringify(defaultTheme)} title={`Reset ${variant} theme`}><RotateCcw size={12} />Reset</button></div>
     </div>
-    <div className="theme-pack-row theme-pack-preset"><span><strong>Theme preset</strong><small>Start with a coordinated color set, then customize it.</small></span><CustomSelect value={theme.preset} options={presetOptions} onChange={applyPreset} ariaLabel={`${title} preset`} className="theme-preset-select" /></div>
+    <div className="theme-pack-row theme-pack-preset"><span><strong>Theme preset</strong><small>Start with a coordinated color set from Maximo or the Synara catalog, then customize it.</small></span><CustomSelect value={presetValue} options={presetOptions} onChange={applyPreset} ariaLabel={`${title} preset`} className="theme-preset-select" /></div>
     <ThemeColorControl label="Accent" color={theme.accent} onChange={(accent) => update({ accent })} />
     <ThemeColorControl label="Background" color={theme.background} onChange={(background) => update({ background })} />
     <ThemeColorControl label="Foreground" color={theme.foreground} onChange={(foreground) => update({ foreground })} />
@@ -3385,7 +3455,7 @@ function ThemePackEditor({ variant, active, theme, onChange, onReset }: { varian
 
 type EnhancedSettingsSectionId = "general" | "profile" | "appearance" | "behavior" | "shortcuts" | "defaults" | "models" | "skills" | "notifications" | "account" | "integrations" | "engine" | "advanced" | "archived";
 
-function EnhancedSettingsModal({ state, engine, models, modelOptions, account, usage, appVersion, appDataPath, skills, initialSection = "general", onClose, onSave, onRepair, onAccount, onUsage, onRefreshSkills, onResetProvider, onRevealDataPath, onRestoreThread, onDeleteArchivedThread }: {
+function EnhancedSettingsModal({ state, engine, models, modelOptions, account, usage, appVersion, appDataPath, skills, initialSection = "general", onClose, onSave, onRepair, onAccount, onUsage, onRefreshSkills, onResetProvider, onRevealDataPath, onRestoreThread, onDeleteArchivedThread, updateState, onCheckForUpdates, onOpenUpdateDownload, onOpenWhatsNew }: {
   state: AppState;
   engine: EngineStatus | null;
   models: EngineModel[];
@@ -3406,12 +3476,17 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
   onRevealDataPath: () => void;
   onRestoreThread: (threadId: string) => Promise<void>;
   onDeleteArchivedThread: (threadId: string) => Promise<void>;
+  updateState: AppUpdateState | null;
+  onCheckForUpdates: () => Promise<void>;
+  onOpenUpdateDownload: () => Promise<void>;
+  onOpenWhatsNew: () => void;
 }) {
   const [values, setValues] = useState(state.settings);
   const [section, setSection] = useState<EnhancedSettingsSectionId>(initialSection);
   const [search, setSearch] = useState("");
   const [shortcutQuery, setShortcutQuery] = useState("");
   const [notificationStatus, setNotificationStatus] = useState<string | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
   const [customModelDraft, setCustomModelDraft] = useState("");
   const [systemDark, setSystemDark] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   const sendShortcutLabel = composerSendShortcutLabel();
@@ -3432,10 +3507,12 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     { id: "account" as const, group: "Integrations", label: "Account & usage", description: "Signed-in provider and current usage limits.", icon: <Gauge size={14} /> },
     { id: "integrations" as const, group: "Integrations", label: "Workspace integrations", description: "See which local tools are available to your chats.", icon: <Plug size={14} /> },
     { id: "engine" as const, group: "System", label: "Syntax CLI", description: "Engine health and local CLI configuration.", icon: <TerminalSquare size={14} /> },
-    { id: "advanced" as const, group: "System", label: "System tools", description: "Recovery, provider reset, data location, and version details.", icon: <Wrench size={14} /> },
+    { id: "advanced" as const, group: "System", label: "System tools", description: "App updates, recovery, provider reset, data location, and version details.", icon: <Wrench size={14} /> },
     { id: "archived" as const, group: "Archived", label: "Archived chats", description: "Restore or permanently delete chats you archived.", icon: <Archive size={14} /> },
   ];
   const searchEntries: Array<{ section: EnhancedSettingsSectionId; title: string; keywords: string }> = [
+    { section: "advanced", title: "Desktop updates", keywords: "update app download release version github check for updates installer" },
+    { section: "advanced", title: "What's new", keywords: "changelog release notes whats new dialog history" },
     { section: "general", title: "Workspace dock", keywords: "inspector environment panel right workspace" },
     { section: "profile", title: "Profile and stats", keywords: "account chats projects prompts activity local" },
     { section: "general", title: "Project order", keywords: "sidebar recently active recently added manual" },
@@ -3587,7 +3664,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
 
     if (activeSection === "engine") return <div className="settings-panel-stack"><section className="settings-card"><h2>Maximo Syntax CLI</h2><div className="engine-settings"><div><span className={`engine-dot ${engine?.phase ?? "checking"}`} /><p><strong>{engine?.available ? `Ready · ${engine.version}` : "Needs attention"}</strong><small>{engine?.message}{engine?.available && engine?.latestVersion ? (engine.version === engine.latestVersion ? " Up to date with the latest CLI." : ` Latest available: ${engine.latestVersion}.`) : ""}</small></p></div><button type="button" onClick={() => void onRepair()}><RefreshCw size={13} />Repair / update</button></div><label className="settings-engine-path"><span><strong>Custom CLI path</strong><small>Optional. The bundled CLI is used automatically when this is blank.</small></span><input value={values.cliPath} onChange={(event) => update("cliPath", event.target.value)} placeholder="/path/to/maximo-syntax-cli" /></label></section><section className="settings-card"><h2>Runtime details</h2><div className="settings-row"><span><strong>Desktop version</strong><small>Installed Maximo Syntax application.</small></span><span className="setting-value">{appVersion || "Unknown"}</span></div><div className="settings-row"><span><strong>CLI version</strong><small>Currently selected runtime engine.</small></span><span className="setting-value">{engine?.version || "Unknown"}</span></div></section></div>;
 
-    if (activeSection === "advanced") return <div className="settings-panel-stack"><section className="settings-card"><h2>System tools</h2><div className="settings-row"><span><strong>Provider selection reset</strong><small>Clear the current model, effort, and CLI session selections from chats before switching accounts.</small></span><button type="button" className="settings-action" onClick={() => void onResetProvider()}><RotateCcw size={12} />Reset</button></div><div className="settings-row"><span><strong>Application data</strong><small>{appDataPath || "Local Maximo Syntax state directory."}</small></span><button type="button" className="settings-action" onClick={onRevealDataPath} disabled={!appDataPath}><Monitor size={12} />Reveal</button></div></section><section className="settings-card"><h2>Safety and privacy</h2><div className="settings-row"><span><strong>Local-first storage</strong><small>Chats, projects, preferences, and cached activity stay in the desktop data directory on this computer.</small></span><span className="setting-value">Enabled</span></div><div className="settings-row"><span><strong>Native bridge</strong><small>Filesystem, process, Git, and shell actions run through the isolated Electron main process.</small></span><span className="setting-value">Sandboxed</span></div></section></div>;
+    if (activeSection === "advanced") return <div className="settings-panel-stack"><section className="settings-card"><h2>Desktop updates</h2><div className="settings-row"><span><strong>Installed version</strong><small>Current Maximo Syntax desktop application.</small></span><span className="setting-value">{appVersion || updateState?.currentVersion || "Unknown"}</span></div><div className="settings-row"><span><strong>Update status</strong><small>{updateState?.message || (updateState?.status === "available" ? `Version ${updateState.availableVersion} is available from GitHub Releases.` : updateState?.status === "up-to-date" ? "You are on the latest published release." : updateState?.status === "checking" ? "Checking GitHub Releases…" : updateState?.status === "error" ? "The last update check failed." : "Checks GitHub Releases for a newer desktop build.")}</small></span><div className="settings-row-actions">{shouldShowAppUpdateButton(updateState) ? <button type="button" className="settings-action" disabled={updateBusy} onClick={() => { setUpdateBusy(true); void onOpenUpdateDownload().finally(() => setUpdateBusy(false)); }}><Download size={12} />Download update</button> : null}<button type="button" className="settings-action" disabled={updateBusy || updateState?.status === "checking"} onClick={() => { setUpdateBusy(true); void onCheckForUpdates().finally(() => setUpdateBusy(false)); }}><RefreshCw size={12} className={updateState?.status === "checking" || updateBusy ? "spin" : undefined} />{updateState?.status === "checking" || updateBusy ? "Checking…" : "Check for updates"}</button></div></div>{updateState?.availableVersion && <div className="settings-row"><span><strong>Latest release</strong><small>{updateState.releaseName || `v${updateState.availableVersion}`}</small></span><span className="setting-value">v{updateState.availableVersion}</span></div>}<div className="settings-row"><span><strong>What&rsquo;s new</strong><small>Review the installed version&rsquo;s release notes from GitHub and the local changelog.</small></span><button type="button" className="settings-action" onClick={onOpenWhatsNew}><Sparkles size={12} />Open release notes</button></div></section><section className="settings-card"><h2>System tools</h2><div className="settings-row"><span><strong>Provider selection reset</strong><small>Clear the current model, effort, and CLI session selections from chats before switching accounts.</small></span><button type="button" className="settings-action" onClick={() => void onResetProvider()}><RotateCcw size={12} />Reset</button></div><div className="settings-row"><span><strong>Application data</strong><small>{appDataPath || "Local Maximo Syntax state directory."}</small></span><button type="button" className="settings-action" onClick={onRevealDataPath} disabled={!appDataPath}><Monitor size={12} />Reveal</button></div></section><section className="settings-card"><h2>Safety and privacy</h2><div className="settings-row"><span><strong>Local-first storage</strong><small>Chats, projects, preferences, and cached activity stay in the desktop data directory on this computer.</small></span><span className="setting-value">Enabled</span></div><div className="settings-row"><span><strong>Native bridge</strong><small>Filesystem, process, Git, and shell actions run through the isolated Electron main process.</small></span><span className="setting-value">Sandboxed</span></div></section></div>;
 
     return <div className="settings-panel-stack"><section className="settings-card"><h2>Archived chats</h2>{archivedThreads.length > 0 ? <div className="settings-archive-list">{archivedThreads.map((thread) => <div className="settings-archive-row" key={thread.id}><span><strong>{thread.title}</strong><small>{projectName(thread.projectId)} · {new Date(thread.updatedAt).toLocaleDateString()}</small></span><div className="settings-row-actions"><button type="button" className="settings-action" onClick={() => void onRestoreThread(thread.id)}>Restore</button><button type="button" className="settings-action danger" onClick={() => void onDeleteArchivedThread(thread.id)}>Delete</button></div></div>)}</div> : <div className="settings-empty-state"><Archive size={18} />No archived chats. Archived conversations will appear here and can be restored.</div>}</section></div>;
   };
@@ -3870,6 +3947,10 @@ export default function App() {
   type NavigationState = { ids: string[]; index: number };
   const [state, setState] = useState<AppState | null>(null);
   const [appVersion, setAppVersion] = useState("");
+  const [updateState, setUpdateState] = useState<AppUpdateState | null>(null);
+  const [whatsNew, setWhatsNew] = useState<WhatsNewSnapshot | null>(null);
+  const [whatsNewPopoutVisible, setWhatsNewPopoutVisible] = useState(false);
+  const [whatsNewDialogOpen, setWhatsNewDialogOpen] = useState(false);
   const [engine, setEngine] = useState<EngineStatus | null>(null);
   const [engineModels, setEngineModels] = useState<EngineModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -4049,6 +4130,7 @@ export default function App() {
       if (!active) return;
        setState(loaded); setInspectorVisible(loaded.settings.showInspector); setEnvironmentOpen(loaded.settings.environmentPanelDefaultOpen);
        void window.maximoDesktop.appInfo().then((info) => { if (active) { setAppVersion(info.version); setAppDataPath(info.dataPath); } }).catch(() => { if (active) { setAppVersion(""); setAppDataPath(""); } });
+      void window.maximoDesktop.getUpdateState().then((next) => { if (active) setUpdateState(next); }).catch(() => { if (active) setUpdateState(null); });
       void window.maximoDesktop.accountStatus().then((status) => {
         if (!active) return;
         setAccount(status);
@@ -4437,11 +4519,111 @@ export default function App() {
     if (action === "open-folder") void openProject();
     if (action === "toggle-sidebar") setSidebarVisible((value) => !value);
     if (action === "toggle-inspector") setInspectorVisible((value) => !value);
-  }), [newThread, openProject, state?.selectedProjectId]);
+    if (action === "update-available") {
+      void window.maximoDesktop.getUpdateState().then((next) => {
+        setUpdateState(next);
+        if (next.status === "available") {
+          showToast(`Version ${next.availableVersion ?? "update"} is available. Use the Update button to download it.`);
+        }
+      }).catch(() => undefined);
+    }
+  }), [newThread, openProject, showToast, state?.selectedProjectId]);
+
+  useEffect(() => window.maximoDesktop.onUpdateState((next) => {
+    setUpdateState(next);
+  }), []);
 
   useEffect(() => window.maximoDesktop.notifications.onOpenThread((threadId) => {
     void selectThread(threadId).catch(() => showToast("That notification chat is no longer available."));
   }), [selectThread, showToast]);
+
+  const checkForAppUpdates = useCallback(async () => {
+    try {
+      const next = await window.maximoDesktop.checkForUpdates();
+      setUpdateState(next);
+      if (next.status === "available") {
+        showToast(`Version ${next.availableVersion ?? "a newer build"} is available.`);
+      } else if (next.status === "up-to-date") {
+        showToast(`You're up to date on ${next.currentVersion}.`);
+      } else if (next.status === "error") {
+        showToast(next.message || "Could not check for updates.");
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Could not check for updates.");
+    }
+  }, [showToast]);
+
+  const openAppUpdateDownload = useCallback(async () => {
+    try {
+      const result = await window.maximoDesktop.openUpdateDownload();
+      setUpdateState(result.state);
+      if (result.opened) {
+        showToast(result.state.downloadUrl
+          ? `Downloading Maximo Syntax ${result.state.availableVersion ?? ""}. Open the installer when it finishes.`.trim()
+          : "Opened the GitHub release page so you can download the update.");
+        return;
+      }
+      if (result.state.status === "up-to-date") {
+        showToast(`You're up to date on ${result.state.currentVersion}.`);
+        return;
+      }
+      showToast(result.state.message || "No update download is available right now.");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Could not open the update download.");
+    }
+  }, [showToast]);
+
+  const refreshWhatsNew = useCallback(async (options?: { forceDialog?: boolean }) => {
+    try {
+      const snapshot = await window.maximoDesktop.loadWhatsNew();
+      setWhatsNew(snapshot);
+      if (options?.forceDialog) {
+        if (snapshot.currentEntry || snapshot.allEntries[0]) {
+          // Manual open from Settings: prefer current entry, else newest notes.
+          setWhatsNew((current) => {
+            if (current?.currentEntry) return current;
+            const entry = snapshot.currentEntry ?? snapshot.allEntries[0] ?? null;
+            if (!entry) return snapshot;
+            return {
+              ...snapshot,
+              decision: "show",
+              currentEntry: entry,
+            };
+          });
+          setWhatsNewDialogOpen(true);
+          setWhatsNewPopoutVisible(false);
+        } else {
+          showToast("No release notes are available yet for this build.");
+        }
+        return;
+      }
+      setWhatsNewPopoutVisible(snapshot.decision === "show" && Boolean(snapshot.currentEntry));
+    } catch {
+      // Release notes are optional; never block the workspace.
+    }
+  }, [showToast]);
+
+  const dismissWhatsNewPopout = useCallback(() => {
+    setWhatsNewPopoutVisible(false);
+    const version = whatsNew?.nextLastSeenVersion ?? whatsNew?.currentVersion ?? appVersion;
+    void window.maximoDesktop.markWhatsNewSeen(version || undefined).then(setState).catch(() => undefined);
+  }, [appVersion, whatsNew]);
+
+  const closeWhatsNewDialog = useCallback(() => {
+    setWhatsNewDialogOpen(false);
+    setWhatsNewPopoutVisible(false);
+    const version = whatsNew?.nextLastSeenVersion ?? whatsNew?.currentVersion ?? appVersion;
+    void window.maximoDesktop.markWhatsNewSeen(version || undefined).then(setState).catch(() => undefined);
+  }, [appVersion, whatsNew]);
+
+  const openWhatsNewDialog = useCallback(() => {
+    setWhatsNewDialogOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!state?.onboardingComplete || !account?.loggedIn) return;
+    void refreshWhatsNew();
+  }, [account?.loggedIn, refreshWhatsNew, state?.onboardingComplete]);
 
   const refreshAccount = async () => {
     setAccountBusy(true);
@@ -4769,7 +4951,9 @@ export default function App() {
            onArchiveProjectThreads={(id) => { if (state.settings.confirmThreadArchive && !window.confirm("Archive all sent chats in this project? You can still start a new chat.")) return; void window.maximoDesktop.archiveProjectThreads(id).then(setState); }}
         onRemoveProject={(id) => { if (window.confirm("Remove this project from Maximo Syntax Desktop? Its files will stay on disk.")) void window.maximoDesktop.removeProject(id).then(setState); }}
         onResize={resizeSidebar}
-        open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+        open={sidebarOpen} onClose={() => setSidebarOpen(false)}
+        updateState={updateState}
+        onUpdateAction={() => { void openAppUpdateDownload(); }} />
       <section className="workspace">
         <header className="topbar drag-region">
           <div className="topbar-left"><button className="topbar-button no-drag" onClick={() => window.innerWidth <= 900 ? setSidebarOpen(true) : setSidebarVisible((value) => !value)} title="Toggle sidebar">{sidebarVisible ? <PanelLeft size={16} /> : <Menu size={16} />}</button>{currentProject && <><FolderOpen size={14} /><span>{currentProject.name}</span></>}{currentThread && <><span className="crumb">/</span><strong>{currentThread.title}</strong></>}</div>
@@ -4873,9 +5057,25 @@ export default function App() {
         onOpenBrowser={(url) => requestDockPane("browser", undefined, url)}
       />}
       {createProjectOpen && <CreateProjectModal onClose={() => setCreateProjectOpen(false)} onChooseSources={() => window.maximoDesktop.chooseProjectSources()} onCreate={createProject} spaces={state.spaces} selectedSpaceId={state.selectedSpaceId} onCreateSpace={createSpace} />}
-      {settingsOpen && <EnhancedSettingsModal state={state} engine={engine} models={engineModels} modelOptions={modelOptions} account={account} usage={usage} appVersion={appVersion} appDataPath={appDataPath} skills={[...discoveredSkills, ...skillCommands]} initialSection={settingsSectionRequest} onClose={() => { setSettingsOpen(false); setSettingsSectionRequest("general"); }} onSave={async (patch) => { const next = await window.maximoDesktop.updateSettings(patch); setState(next); setInspectorVisible(next.settings.showInspector); setEnvironmentOpen(next.settings.environmentPanelDefaultOpen); }} onRepair={async () => { const next = await window.maximoDesktop.updateEngine(); setEngine(next); if (next.available) await refreshEngineModels(); }} onAccount={() => { setSettingsOpen(false); openAccount(); }} onUsage={() => void refreshUsage()} onRefreshSkills={() => refreshDiscoveredSkills(currentProject?.path)} onResetProvider={resetProviderState} onRevealDataPath={() => { if (appDataPath) void window.maximoDesktop.revealPath(appDataPath); }} onRestoreThread={async (threadId) => { setState(await window.maximoDesktop.unarchiveThread(threadId)); }} onDeleteArchivedThread={async (threadId) => { const thread = state.threads.find((item) => item.id === threadId); if (!thread || !window.confirm(`Permanently delete "${thread.title}"? This removes the chat history forever.`)) return; setState(await window.maximoDesktop.deleteThread(threadId)); }} />}
+      {settingsOpen && <EnhancedSettingsModal state={state} engine={engine} models={engineModels} modelOptions={modelOptions} account={account} usage={usage} appVersion={appVersion} appDataPath={appDataPath} skills={[...discoveredSkills, ...skillCommands]} initialSection={settingsSectionRequest} onClose={() => { setSettingsOpen(false); setSettingsSectionRequest("general"); }} onSave={async (patch) => { const next = await window.maximoDesktop.updateSettings(patch); setState(next); setInspectorVisible(next.settings.showInspector); setEnvironmentOpen(next.settings.environmentPanelDefaultOpen); }} onRepair={async () => { const next = await window.maximoDesktop.updateEngine(); setEngine(next); if (next.available) await refreshEngineModels(); }} onAccount={() => { setSettingsOpen(false); openAccount(); }} onUsage={() => void refreshUsage()} onRefreshSkills={() => refreshDiscoveredSkills(currentProject?.path)} onResetProvider={resetProviderState} onRevealDataPath={() => { if (appDataPath) void window.maximoDesktop.revealPath(appDataPath); }} onRestoreThread={async (threadId) => { setState(await window.maximoDesktop.unarchiveThread(threadId)); }} onDeleteArchivedThread={async (threadId) => { const thread = state.threads.find((item) => item.id === threadId); if (!thread || !window.confirm(`Permanently delete "${thread.title}"? This removes the chat history forever.`)) return; setState(await window.maximoDesktop.deleteThread(threadId)); }} updateState={updateState} onCheckForUpdates={checkForAppUpdates} onOpenUpdateDownload={openAppUpdateDownload} onOpenWhatsNew={() => { void refreshWhatsNew({ forceDialog: true }); }} />}
       {accountOpen && <AccountModal account={account} usage={usage} usageBusy={usageBusy} busy={accountBusy} onClose={() => setAccountOpen(false)} onRefresh={() => void refreshAccount()} onLogin={(method, apiKey, openCodePlan) => loginAccount(method, apiKey, openCodePlan)} onCancelLogin={() => void cancelLoginAccount()} onLogout={() => void logoutAccount()} onUsage={() => void refreshUsage()} />}
       {attachmentPreview && <AttachmentPreviewModal state={attachmentPreview} theme={state.settings.theme} onClose={() => { attachmentPreviewRequestRef.current += 1; setAttachmentPreview(null); }} />}
+      {whatsNewPopoutVisible && whatsNew?.currentEntry && (
+        <WhatsNewPopoutCard
+          entry={whatsNew.currentEntry}
+          currentVersion={whatsNew.currentVersion || appVersion}
+          onOpen={openWhatsNewDialog}
+          onDismiss={dismissWhatsNewPopout}
+        />
+      )}
+      <WhatsNewDialog
+        open={whatsNewDialogOpen}
+        currentVersion={whatsNew?.currentVersion || appVersion}
+        currentEntry={whatsNew?.currentEntry ?? null}
+        allEntries={whatsNew?.allEntries ?? []}
+        onClose={closeWhatsNewDialog}
+        onOpenReleaseUrl={(url) => { void window.maximoDesktop.openPath(url); }}
+      />
       {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
     </div>
   );

@@ -1,8 +1,15 @@
 {
   "name": "@maximoai/maximo-syntax-desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Your AI workspace for work. Write and edit code, build software, draft documents, analyze data, organize projects, and run agents — one native desktop app.",
   "homepage": "https://maximoai.co",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maximoai-co/maximo-syntax-desktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/maximoai-co/maximo-syntax-desktop/issues"
+  },
   "keywords": [
     "Maximo AI",
     "Maximo Syntax",
@@ -81,6 +88,7 @@
       "dist-renderer/**/*",
       "dist-electron/**/*",
       "assets/**/*",
+      "CHANGELOG.md",
       "package.json"
     ],
     "asarUnpack": [
@@ -123,6 +131,13 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "maximoai-co",
+        "repo": "maximo-syntax-desktop"
+      }
+    ]
   }
 }

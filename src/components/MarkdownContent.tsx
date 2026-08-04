@@ -12,6 +12,10 @@ type PreProps = ComponentPropsWithoutRef<"pre"> & {
   node?: unknown;
 };
 
+type TableProps = ComponentPropsWithoutRef<"table"> & {
+  node?: unknown;
+};
+
 function extractLanguage(className?: string): string | undefined {
   if (!className) return undefined;
   const match = /(?:^|\s)language-([A-Za-z0-9_+#.-]+)/.exec(className);
@@ -36,8 +40,18 @@ function MarkdownPre({ children }: PreProps) {
   return <pre className="md-code-fallback">{children}</pre>;
 }
 
+/** Scroll wide GFM tables inside the message instead of expanding the chat column. */
+function MarkdownTable({ children, node: _node, ...props }: TableProps) {
+  return (
+    <div className="table-wrap">
+      <table {...props}>{children}</table>
+    </div>
+  );
+}
+
 const markdownComponents = {
   pre: MarkdownPre,
+  table: MarkdownTable,
 };
 
 /**

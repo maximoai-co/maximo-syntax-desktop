@@ -1,8 +1,18 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { BrowserState, DesktopApi, RunEvent, TerminalEvent } from "./types.js";
+import type { AppUpdateState, BrowserState, DesktopApi, RunEvent, TerminalEvent } from "./types.js";
 
 const api: DesktopApi = {
   appInfo: () => ipcRenderer.invoke("app:info"),
+  getUpdateState: () => ipcRenderer.invoke("update:state"),
+  checkForUpdates: () => ipcRenderer.invoke("update:check"),
+  openUpdateDownload: () => ipcRenderer.invoke("update:open-download"),
+  onUpdateState: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: AppUpdateState) => callback(value);
+    ipcRenderer.on("update:state", listener);
+    return () => ipcRenderer.removeListener("update:state", listener);
+  },
+  loadWhatsNew: () => ipcRenderer.invoke("whats-new:load"),
+  markWhatsNewSeen: (version) => ipcRenderer.invoke("whats-new:mark-seen", version),
   loadState: () => ipcRenderer.invoke("state:load"),
   listSkills: (projectPath) => ipcRenderer.invoke("skills:list", projectPath),
   completeOnboarding: () => ipcRenderer.invoke("onboarding:complete"),

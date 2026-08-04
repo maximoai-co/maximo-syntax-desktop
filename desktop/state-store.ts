@@ -142,6 +142,7 @@ export function createInitialState(suggestedProjectPath?: string): AppState {
     selectedProjectId: project?.id,
     onboardingComplete: false,
     selectedSpaceId: null,
+    lastSeenWhatsNewVersion: null,
   };
 }
 
@@ -163,6 +164,11 @@ function normalizeState(input: unknown, fallback: AppState): AppState {
     })
     : fallback.projects;
   const selectedSpaceId = typeof value.selectedSpaceId === "string" && spaceIds.has(value.selectedSpaceId) ? value.selectedSpaceId : null;
+  const lastSeenWhatsNewVersion = typeof value.lastSeenWhatsNewVersion === "string" && value.lastSeenWhatsNewVersion.trim()
+    ? value.lastSeenWhatsNewVersion.trim().slice(0, 40)
+    : value.lastSeenWhatsNewVersion === null
+      ? null
+      : fallback.lastSeenWhatsNewVersion ?? null;
   return {
     ...fallback,
     ...value,
@@ -177,6 +183,7 @@ function normalizeState(input: unknown, fallback: AppState): AppState {
       ...(thread.status === "running" ? { status: "cancelled" as const } : {}),
     })) : [],
     selectedSpaceId,
+    lastSeenWhatsNewVersion,
   };
 }
 
