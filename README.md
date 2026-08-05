@@ -8,6 +8,12 @@ Maximo Syntax is a native desktop app that turns any goal into finished work —
 
 Built with [Electron](https://www.electronjs.org/) · [React](https://react.dev/) · [Vite](https://vite.dev/) · [TypeScript](https://www.typescriptlang.org/)
 
+<br>
+
+<p align="center">
+  <img src="assets/preview.png" alt="Maximo Syntax Desktop Workspace" width="100%" />
+</p>
+
 </div>
 
 ---
