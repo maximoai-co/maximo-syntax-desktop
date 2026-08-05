@@ -4,12 +4,15 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.3] - Unreleased
+## [0.1.3] - 2026-08-05
 
 - Added **edit-and-resend** on user messages: rewrite the turn in place, fork the CLI transcript at the message before it, and replay the edited prompt with a fresh turn uuid (the CLI dedups by uuid, so the resent turn replaces the original instead of appending).
 - Added **revert-to-message** on user messages: discard every later turn (and its pins/markers) and resume the CLI transcript anchored at the target message; optionally restore files changed by the discarded turns by reverse-applying the recorded file changes (or the CLI `rewind_files` checkpoint when a warm session has one).
 - Added Synara-style frosted tooltips app-wide via `[data-tooltip]` (rounded translucent popover with backdrop blur, all four sides, pure CSS).
 - Modal overlays (Account, What's new, attachment preview) two-phase freeze the native browser: capture a live page screenshot first, then detach WebContentsView and show that frame under the blur (no white/black fill, no page reload during capture).
+- Added **/goal** autonomous mode: set or manage an autonomous goal (`<objective> [--budget <tokens>] | status | pause | resume | clear`) with a live status banner over the conversation (active/paused/complete phases from CLI activity).
+- Clamped long user messages to a visual max-height with a fade mask and **Show more/less**, so oversized prompts no longer balloon the chat column.
+- Added Synara-style **pasted-text cards**: large pasted text is collapsed into a card above the composer (and in the transcript), sent as a trailing `<pasted_text>` block, and expandable in place.
 
 ## [0.1.2] - 2026-08-04
 

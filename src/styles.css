@@ -481,7 +481,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .message.system > .agent-flow, .message.system > .markdown, .message.system > .inline-progress { margin-left: 0; }
 .message.user { padding: 2px 0 25px; display: flex; justify-content: flex-end; }
 .user-turn { display: flex; min-width: 0; max-width: min(72%, 640px); flex-direction: column; align-items: flex-end; }
-.message.user .markdown { padding: 10px 14px; border-radius: 16px; background: color-mix(in srgb, var(--surface-active) 76%, var(--bg-soft)); color: var(--text-strong); }
+/* User message bubble: a single chrome shell around the clamped text + the
+   Show more/less control (mirrors Synara's USER_MESSAGE_BUBBLE_SHELL). The
+   button lives INSIDE the bubble, under the text, left-aligned. */
+.user-message-bubble { min-width: 0; max-width: 100%; display: flex; flex-direction: column; align-items: flex-start; padding: 10px 14px; border-radius: 16px; background: color-mix(in srgb, var(--surface-active) 76%, var(--bg-soft)); color: var(--text-strong); }
+.user-message-bubble > .user-message-content { width: 100%; min-width: 0; }
+/* Long user messages: max-height clamp + fade mask + Show more/less (from Synara). */
+.user-message-content { overflow: hidden; min-width: 0; transition: max-height .22s cubic-bezier(.4, 0, .2, 1), mask-image .22s ease; }
+.user-message-show-more { display: block; margin: 8px 0 0; padding: 0; align-self: flex-start; background: none; border: 0; color: color-mix(in srgb, var(--muted) 55%, transparent); cursor: pointer; line-height: 1.68; transition: color .15s ease; }
+.user-message-show-more:hover, .user-message-show-more:focus-visible { color: var(--text-strong); }
 .message.assistant .markdown { padding-top: 5px; }
 /* Only the final assistant body goes red on error — not timeline partials / earlier answers. */
 .message.error > .message-error-body { color: var(--text); border-left: 2px solid color-mix(in srgb, var(--danger) 44%, var(--border-strong)); padding-left: 10px; }
@@ -1159,7 +1167,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .composer-input .command-token.skill-token::before { content: "◈"; display: inline-block; margin-right: 4px; color: currentColor; font-size: 11px; line-height: 1; vertical-align: baseline; }
 .composer-input .command-token.skill-token::after { content: attr(data-label); font-size: 11px; line-height: inherit; }
 .composer-input-warning { position: absolute; z-index: 4; right: 10px; bottom: 52px; max-width: min(330px, calc(100% - 20px)); padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-solid); box-shadow: var(--shadow-soft); color: var(--muted); font-size: 9px; pointer-events: none; }
-.attachment-strip { flex-wrap: nowrap; gap: 6px; overflow-x: auto; padding: 9px 10px 0; scrollbar-width: thin; }
+/* Pasted text cards (composer strip + transcript echo, mirroring Synara) */
+.pasted-text-strip { padding: 9px 10px 0; display: flex; flex-direction: column; gap: 6px; }
+.pasted-text-strip-transcript { margin-bottom: 8px; align-self: flex-start; max-width: 100%; }
+.pasted-text-card { position: relative; display: flex; align-items: center; gap: 8px; max-width: 280px; padding: 6px 28px 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--surface-solid) 85%, var(--accent-soft)); color: var(--text); }
+.pasted-text-card-transcript { max-width: 100%; width: 100%; background: color-mix(in srgb, var(--surface-solid) 92%, var(--accent-soft)); }
+.pasted-text-card-icon { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 6px; background: var(--bg-soft); color: var(--muted); }
+.pasted-text-card-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.pasted-text-card-copy strong { overflow: hidden; color: var(--text-strong); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.pasted-text-card-copy small { overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.pasted-text-card-action { background: none; border: 0; padding: 0; color: var(--muted); font-size: 10px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; display: inline-flex; align-items: center; gap: 2px; }
+.pasted-text-card-action:hover { color: var(--text-strong); }
+.pasted-text-card-remove { position: absolute; top: 6px; right: 6px; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 5px; background: transparent; color: var(--muted); }
+.pasted-text-card-remove:hover { background: var(--surface-hover); color: var(--text-strong); }
+.pasted-text-card-expanded { margin-top: 6px; max-height: 240px; overflow: auto; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-soft); color: var(--text-strong); font-family: var(--theme-code-font-family, monospace); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .attachment-strip > .attachment-card-shell { flex: 0 0 auto; }
 .attachment-strip .attachment-card { width: 220px; }
 .composer-controls { min-height: 43px; padding: 4px 8px 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -1293,6 +1314,25 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .permission-full { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
 .permission-auto { color: var(--accent-strong); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 24%, var(--border)); }
 .permission-plan { color: var(--blue); }
+.goal-banner {
+  width: min(820px, 100%);
+  margin: 0 auto 7px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  color: var(--text);
+}
+.goal-banner > svg { flex: 0 0 auto; margin-top: 2px; color: var(--accent); }
+.goal-banner-body { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.goal-banner-body strong { font-size: 11px; color: var(--text-strong); }
+.goal-banner-body span { font-size: 10px; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; }
+.goal-banner-hint { flex: 0 0 auto; font-size: 9px; color: var(--faint); align-self: center; }
+.goal-banner-paused { border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
+.goal-banner-paused > svg { color: var(--warning); }
+.goal-banner-complete { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .full-access-notice { position: relative; width: min(820px, 100%); min-height: 48px; margin: 0 auto 7px; padding: 8px 94px 8px 10px; display: flex; align-items: center; gap: 9px; border-color: color-mix(in srgb, var(--warning) 24%, var(--border)); border-radius: 12px; color: var(--warning); }
 .full-access-notice > div { min-width: 0; display: grid; }
 .full-access-notice strong { color: var(--text-strong); font-size: 10px; }

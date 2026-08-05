@@ -377,6 +377,15 @@ export interface ThreadMarker {
   createdAt: number;
 }
 
+/** Snapshot of an active /goal run driven by maximo-syntax-cli. */
+export interface ThreadGoalState {
+  /** Full latest status text from the CLI (e.g. "Goal continuing — …"). */
+  statusText: string;
+  /** Coarse phase for UI chrome. */
+  phase: "active" | "paused" | "complete" | "unknown";
+  updatedAt: number;
+}
+
 export interface Thread {
   id: string;
   projectId: string;
@@ -392,6 +401,8 @@ export interface Thread {
   archived?: boolean;
   unread?: boolean;
   contextUsage?: ContextUsage;
+  /** Autonomous /goal mode status when a goal is active on this thread. */
+  goal?: ThreadGoalState | null;
   messages: ChatMessage[];
   pinnedMessages?: PinnedMessage[];
   markers?: ThreadMarker[];

@@ -1,4 +1,4 @@
-import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Activity as ActivityIcon, AlertCircle, Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT } from "../desktop/types";
 import type {
-  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AppUpdateState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, TimestampFormat, TodoItem, UsageSnapshot, WhatsNewSnapshot,
+  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AppUpdateState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, ThreadGoalState, TimestampFormat, TodoItem, UsageSnapshot, WhatsNewSnapshot,
 } from "../desktop/types";
 import {
   getAppUpdateButtonLabel,
@@ -273,11 +273,28 @@ function ModelLogo({ model, className }: { model?: string | null; className?: st
 // User-invocable commands used while the engine catalog is loading. The live
 // CLI catalog and local SKILL.md files replace these as soon as they arrive.
 const fallbackSlashCommands: SlashCommand[] = [
+  { name: "goal", description: "Set or manage an autonomous goal (status | pause | resume | clear)", argumentHint: "<objective> [--budget <tokens>] | status | pause | resume | clear" },
   { name: "update-config", description: "Configure Maximo Syntax via settings.json (permissions, hooks, env vars)" },
   { name: "simplify", description: "Review changed code for reuse, quality, and efficiency, then fix any issues found" },
   { name: "debug", description: "Enable debug logging for this session and help diagnose issues" },
   { name: "batch", description: "Research and plan a large-scale change, then execute it in parallel across isolated worktree agents" },
 ];
+
+function parseThreadGoalPhase(statusText: string): "active" | "paused" | "complete" | "unknown" {
+  const lower = statusText.toLowerCase();
+  if (lower.includes("goal complete") || lower.startsWith("goal complete")) return "complete";
+  if (lower.includes("goal paused") || lower.includes("paused —") || lower.includes("paused -")) return "paused";
+  if (lower.includes("goal continuing") || lower.includes("goal set") || lower.includes("resuming goal") || lower.includes("goal:")) return "active";
+  return "unknown";
+}
+
+function goalStateFromText(statusText: string, timestamp: number): ThreadGoalState {
+  return {
+    statusText: statusText.slice(0, 500),
+    phase: parseThreadGoalPhase(statusText),
+    updatedAt: timestamp,
+  };
+}
 // Built-in CLI commands that only operate in the CLI's terminal UI and are
 // useless (or harmful) inside the desktop app. They are excluded from the
 // desktop "/" menu while supported commands and skills remain available.
@@ -2463,11 +2480,271 @@ function UserMessageEditForm({ initialValue, onCancel, onSubmit, disabled = fals
   );
 }
 
+// Show more/less for long user messages — copied from Synara's chat UI. A long
+// user message is clamped to a visual max-height (with a fade mask) instead of a
+// character slice; the real overflow is measured so the clamp only applies when
+// the message actually exceeds the limit. The character threshold is only a
+// first-paint hint; rendered height is governed by the line limit.
+const COLLAPSED_USER_MESSAGE_MAX_CHARS = 600;
+const USER_MESSAGE_COLLAPSED_MAX_LINES = 12;
+const USER_MESSAGE_COLLAPSED_FADE_LINES = 2;
+
+function userMessageLikelyOverflows(text: string): boolean {
+  if (text.length > COLLAPSED_USER_MESSAGE_MAX_CHARS) {
+    return true;
+  }
+
+  let newlineCount = 0;
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
+    newlineCount += 1;
+    if (newlineCount >= USER_MESSAGE_COLLAPSED_MAX_LINES) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Measures the clamped message against its content so the fade mask never
+// flickers. Mirrors Synara's userMessageOverflowObserver: batch resize events
+// into a single rAF pass instead of re-measuring on every observer callback.
+function observeUserMessageOverflow(element: HTMLElement, measure: () => void): () => void {
+  if (typeof ResizeObserver === "undefined") {
+    return () => undefined;
+  }
+  const observer = new ResizeObserver(() => {
+    measure();
+  });
+  observer.observe(element);
+  return () => {
+    observer.disconnect();
+  };
+}
+
+// --- Collapsed "big paste" feature, copied from Synara's composerPastedText. A
+// large paste is held as an attachment-style card above the composer (not inline
+// text); its full content rides to the provider in a trailing <pasted_text> block
+// and is parsed back out to render the same card in the transcript.
+
+interface PastedTextDraft {
+  id: string;
+  createdAt: number;
+  text: string;
+  lineCount: number;
+  charCount: number;
+}
+
+// A paste only collapses once it is large enough that inlining it would flood the
+// composer. Either dimension trips the threshold.
+const PASTED_TEXT_MIN_LINES = 25;
+const PASTED_TEXT_MIN_CHARS = 4000;
+
+const TRAILING_PASTED_TEXT_BLOCK_PATTERN = /\n*<pasted_text>\n([\s\S]*?)\n<\/pasted_text>\s*$/;
+
+function normalizePastedTextContent(text: string): string {
+  // Normalize line endings only; leading/trailing whitespace can be meaningful in
+  // pasted content, so we never trim it.
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function countPastedTextLines(text: string): number {
+  return text.length === 0 ? 0 : text.split("\n").length;
+}
+
+function shouldCollapsePastedText(text: string): boolean {
+  const normalized = normalizePastedTextContent(text);
+  if (normalized.length === 0) {
+    return false;
+  }
+  return (
+    normalized.length >= PASTED_TEXT_MIN_CHARS ||
+    countPastedTextLines(normalized) >= PASTED_TEXT_MIN_LINES
+  );
+}
+
+function createPastedTextDraft(text: string): PastedTextDraft {
+  const normalized = normalizePastedTextContent(text);
+  return {
+    id: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `pasted-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    createdAt: Date.now(),
+    text: normalized,
+    lineCount: countPastedTextLines(normalized),
+    charCount: normalized.length,
+  };
+}
+
+function formatPastedTextCountLabel(metrics: { lineCount: number; charCount: number }): string {
+  if (metrics.lineCount > 1) {
+    return `${metrics.lineCount.toLocaleString()} lines`;
+  }
+  return `${metrics.charCount.toLocaleString()} chars`;
+}
+
+// First non-empty line, trimmed; used as the card's title preview.
+function pastedTextTitle(text: string): string {
+  const normalized = normalizePastedTextContent(text);
+  for (const line of normalized.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) {
+      return trimmed.length > 140 ? `${trimmed.slice(0, 137)}...` : trimmed;
+    }
+  }
+  return "Pasted text";
+}
+
+function buildPastedTextBlock(pastedTexts: ReadonlyArray<{ text: string }>): string {
+  const usable = pastedTexts.filter((pasted) => pasted.text.length > 0);
+  if (usable.length === 0) {
+    return "";
+  }
+  const payload = usable.map((pasted) => ({ text: normalizePastedTextContent(pasted.text) }));
+  return ["<pasted_text>", JSON.stringify(payload), "</pasted_text>"].join("\n");
+}
+
+function appendPastedTextsToPrompt(
+  prompt: string,
+  pastedTexts: ReadonlyArray<{ text: string }>,
+): string {
+  const block = buildPastedTextBlock(pastedTexts);
+  const trimmed = prompt.trim();
+  if (block.length === 0) {
+    return trimmed;
+  }
+  return trimmed.length > 0 ? `${trimmed}\n\n${block}` : block;
+}
+
+function extractTrailingPastedTexts(prompt: string): { promptText: string; pastedTexts: Array<{ index: number; text: string; lineCount: number; charCount: number }> } {
+  const match = TRAILING_PASTED_TEXT_BLOCK_PATTERN.exec(prompt);
+  if (!match) {
+    return { promptText: prompt, pastedTexts: [] };
+  }
+  const promptText = prompt.slice(0, match.index).replace(/\n+$/, "");
+  let pastedTexts: Array<{ index: number; text: string; lineCount: number; charCount: number }> = [];
+  try {
+    const parsed: unknown = JSON.parse(match[1] ?? "[]");
+    if (Array.isArray(parsed)) {
+      pastedTexts = parsed.flatMap((entry, index) => {
+        if (!entry || typeof entry !== "object") {
+          return [];
+        }
+        const text = (entry as { readonly text?: unknown }).text;
+        return typeof text === "string"
+          ? [{ index: index + 1, text, lineCount: countPastedTextLines(text), charCount: text.length }]
+          : [];
+      });
+    }
+  } catch {
+    pastedTexts = [];
+  }
+  return { promptText, pastedTexts };
+}
+
+// Transcript echo of a collapsed big paste: the same card the composer showed,
+// but its action expands the full pasted content in place (read-only) instead of
+// editing — mirrors Synara's UserMessagePastedTextCard.
+function UserMessagePastedTextCard({ text, metrics }: { text: string; metrics: { lineCount: number; charCount: number } }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="pasted-text-card pasted-text-card-transcript">
+      <span className="pasted-text-card-icon"><File size={13} /></span>
+      <span className="pasted-text-card-copy">
+        <strong title={pastedTextTitle(text)}>{pastedTextTitle(text)}</strong>
+        <small>{formatPastedTextCountLabel(metrics)}</small>
+      </span>
+      <button
+        type="button"
+        className="pasted-text-card-action"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        {expanded ? "Hide text" : "Show text"}<span className="pasted-text-card-count">· {formatPastedTextCountLabel(metrics)}</span>
+      </button>
+      {expanded && (
+        <pre className="pasted-text-card-expanded">{text}</pre>
+      )}
+    </div>
+  );
+}
+
+function UserMessageCollapsibleText({ text, expanded, chatFontSizePx, onToggle, children }: { text: string; expanded: boolean; chatFontSizePx: number; onToggle: () => void; children: ReactNode }) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  const contentId = useRef<string>(`user-message-${Math.random().toString(36).slice(2, 9)}`).current;
+  const [overflowing, setOverflowing] = useState(() => userMessageLikelyOverflows(text));
+  const collapsed = !expanded;
+
+  useLayoutEffect(() => {
+    if (!collapsed) return undefined;
+    const element = contentRef.current;
+    if (!element) return undefined;
+    const measure = () => {
+      setOverflowing(element.scrollHeight - element.clientHeight > 1);
+    };
+    measure();
+    return observeUserMessageOverflow(element, measure);
+  }, [collapsed, text]);
+
+  const lineHeightPx = Math.round(chatFontSizePx * 1.68);
+  const clampHeightPx = USER_MESSAGE_COLLAPSED_MAX_LINES * lineHeightPx;
+  const fadeStartPx = clampHeightPx - USER_MESSAGE_COLLAPSED_FADE_LINES * lineHeightPx;
+  const clamped = collapsed && overflowing;
+
+  // Smooth expand/collapse: when expanding, animate max-height from the clamp up
+  // to the measured full height so the reveal is buttery instead of a snap; when
+  // collapsing, animate back to the clamp. The full height is measured in a
+  // layout effect right after `expanded` flips — the first paint is still clamped
+  // (so no flash), then the transition glides to the measured value. Measuring
+  // with scrollHeight is read-only and cheap, so the click never hangs.
+  const [measuredHeightPx, setMeasuredHeightPx] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!expanded) return;
+    const element = contentRef.current;
+    if (!element) return;
+    setMeasuredHeightPx(element.scrollHeight);
+  }, [expanded, text]);
+
+  const maxHeightPx = expanded
+    ? (measuredHeightPx ?? clampHeightPx)
+    : clampHeightPx;
+
+  return (
+    <div className="user-message-bubble">
+      <div
+        id={contentId}
+        ref={contentRef}
+        data-user-message-clamp={clamped ? "true" : "false"}
+        className="user-message-content"
+        style={{
+          maxHeight: `${maxHeightPx}px`,
+          ...(collapsed && clamped
+            ? {
+                maskImage: `linear-gradient(to bottom, black ${fadeStartPx}px, transparent 100%)`,
+              }
+            : {}),
+        }}
+      >
+        {children}
+      </div>
+      {(clamped || expanded) && (
+        <button
+          type="button"
+          className="user-message-show-more"
+          style={{ fontSize: `${chatFontSizePx}px` }}
+          aria-expanded={expanded}
+          aria-controls={contentId}
+          onClick={onToggle}
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function MessageView({ thread, project, git, models, live, waiting, skillNames, timestampFormat, streamingEnabled, onPreviewAttachment, onOpenFile, onTogglePin, onEditResend, onRevert }: { thread: Thread; project?: Project; git?: GitStatus | null; models: EngineModel[]; live?: LiveRun; waiting?: boolean; skillNames?: Set<string>; timestampFormat: TimestampFormat; streamingEnabled: boolean; onPreviewAttachment: (attachment: Attachment) => void; onOpenFile: (path: string, diff?: GitDiff) => void; onTogglePin: (messageId: string) => void; onEditResend?: (messageId: string, text: string) => void; onRevert?: (messageId: string, revertFiles: boolean) => void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const previousThreadIdRef = useRef(thread.id);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [expandedUserMessagesById, setExpandedUserMessagesById] = useState<Record<string, boolean>>({});
   useEffect(() => {
     if (previousThreadIdRef.current !== thread.id) {
       previousThreadIdRef.current = thread.id;
@@ -2582,7 +2859,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
               <div className="user-turn follow-up-turn">
                 <span className="follow-up-label">Added context</span>
                 {message.attachments?.length ? <AttachmentList attachments={message.attachments} onPreview={onPreviewAttachment} className="message-attachments" /> : null}
-                <MarkdownContent>{message.content}</MarkdownContent>
+                <MarkdownContent>{extractTrailingPastedTexts(message.content).promptText}</MarkdownContent>
                 <div className="message-actions user-actions"><time>{formatTimestamp(message.createdAt, timestampFormat)}</time><MessageEnvironmentActions message={message} pinned={Boolean(thread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
               </div>
             </article>,
@@ -2594,18 +2871,46 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
         const isLatestEditable = latestEditableUserMessageId === message.id;
         const isRevertable = revertableUserMessageIds.has(message.id);
         const threadBusy = thread.status === "running" || Boolean(waiting);
+        const { promptText: extractedPromptText, pastedTexts: extractedPastedTexts } = extractTrailingPastedTexts(message.content);
         renderedMessages.push(
           <article className={`message user${isEditingThisMessage ? " editing" : ""}`} id={`message-${message.id}`} data-message-id={message.id} key={message.id}>
             <div className={`user-turn${isEditingThisMessage ? " user-turn-editing" : ""}`}>
               {message.attachments?.length ? <AttachmentList attachments={message.attachments} onPreview={onPreviewAttachment} className="message-attachments" /> : null}
               {isEditingThisMessage ? (
                 <UserMessageEditForm
-                  initialValue={message.content}
+                  initialValue={extractTrailingPastedTexts(message.content).promptText}
                   onCancel={() => setEditingMessageId(null)}
                   onSubmit={(text) => { setEditingMessageId(null); onEditResend?.(message.id, text); }}
                 />
               ) : (
-                skillNames && skillNames.size > 0 ? <div className="markdown"><SkillTokenize text={message.content} skillNames={skillNames} /></div> : <MarkdownContent>{message.content}</MarkdownContent>
+                <>
+                  {extractedPastedTexts.length > 0 && (
+                    <div className="pasted-text-strip pasted-text-strip-transcript">
+                      {extractedPastedTexts.map((pasted) => (
+                        <UserMessagePastedTextCard
+                          key={pasted.index}
+                          text={pasted.text}
+                          metrics={{ lineCount: pasted.lineCount, charCount: pasted.charCount }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {extractedPromptText.trim().length > 0 && (
+                    <UserMessageCollapsibleText
+                      text={extractedPromptText}
+                      expanded={Boolean(expandedUserMessagesById[message.id])}
+                      chatFontSizePx={13}
+                      onToggle={() => {
+                        setExpandedUserMessagesById((previous) => ({
+                          ...previous,
+                          [message.id]: !(previous[message.id] ?? false),
+                        }));
+                      }}
+                    >
+                      {skillNames && skillNames.size > 0 ? <div className="markdown"><SkillTokenize text={extractedPromptText} skillNames={skillNames} /></div> : <MarkdownContent>{extractedPromptText}</MarkdownContent>}
+                    </UserMessageCollapsibleText>
+                  )}
+                </>
               )}
               {!isEditingThisMessage && (
                 <div className="message-actions user-actions">
@@ -2651,7 +2956,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
       streamingInteractions: pendingInteractions,
       streamingFollowUps,
     };
-  }, [editingMessageId, git, latestEditableUserMessageId, models, onEditResend, onOpenFile, onPreviewAttachment, onRevert, onTogglePin, project, revertableUserMessageIds, skillNames, thread, timestampFormat, waiting]);
+  }, [editingMessageId, expandedUserMessagesById, git, latestEditableUserMessageId, models, onEditResend, onOpenFile, onPreviewAttachment, onRevert, onTogglePin, project, revertableUserMessageIds, skillNames, thread, timestampFormat, waiting]);
   const liveTimeline = streamingEnabled ? [
     ...(live?.timeline ?? (live?.text ? [{ type: "text" as const, text: live.text, timestamp: Date.now() }] : [])),
     ...streamingFollowUps.map(followUpContextItem),
@@ -2715,6 +3020,7 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
 }) {
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [pastedTexts, setPastedTexts] = useState<PastedTextDraft[]>([]);
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
   const [model, setModel] = useState(thread.model ?? settings.defaultModel);
   const [effort, setEffort] = useState(thread.effort ?? settings.defaultEffort);
@@ -2823,10 +3129,14 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
       }
     };
 
+    // Live CLI catalog first, then skills. Always layer fallback desktop-known
+    // commands (e.g. /goal) afterward so they still appear when an older or
+    // partial engine catalog omits them — `add` only fills missing keys, so
+    // richer live entries are never overwritten.
     add(slashCommands, "command");
     add(skillCommands, "skill");
     add(discoveredSkills, "skill");
-    if (merged.size === 0) add(fallbackSlashCommands, "command");
+    add(fallbackSlashCommands, "command");
     return [...merged.values()];
   }, [discoveredSkills, slashCommands, skillCommands]);
   const commandQuery = slashTriggerAt === null ? null : (activeCursorOffset > prompt.length ? prompt : prompt.slice(slashTriggerAt + 1, activeCursorOffset)).toLowerCase();
@@ -2934,14 +3244,17 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
     });
   };
   const submit = async () => {
-    if ((!prompt.trim() && attachments.length === 0) || waitingForResponse || submitInFlightRef.current) return;
+    if ((!prompt.trim() && attachments.length === 0 && pastedTexts.length === 0) || waitingForResponse || submitInFlightRef.current) return;
     submitInFlightRef.current = true;
-    const sentPrompt = prompt.trim() || "Please inspect the attached files.";
+    const basePrompt = prompt.trim() || (pastedTexts.length > 0 ? "Please inspect the attached text." : "Please inspect the attached files.");
+    // Large pastes ride to the provider as a trailing <pasted_text> block (Synara's
+    // appendPastedTextsToPrompt) so the composer card survives the round-trip.
+    const sentPrompt = appendPastedTextsToPrompt(basePrompt, pastedTexts);
     const sentAttachments = attachments;
     const selectedModel = models.find((item) => (item.value === "default" ? "" : item.value) === model);
     const supportedEfforts = selectedModel?.supportedEffortLevels ?? [];
     const sentEffort = effort && selectedModel?.supportsEffort && supportedEfforts.includes(effort) ? effort : "";
-    setPrompt(""); setAttachments([]);
+    setPrompt(""); setAttachments([]); setPastedTexts([]);
     try {
       await onSend(sentPrompt, sentAttachments, model, sentEffort, permission, selectedModel?.contextWindow);
     } finally {
@@ -2989,9 +3302,38 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
         if (file) files.push(file);
       }
     }
+    // Large text pastes collapse into attachment-style cards above the composer
+    // (Synara's composerPastedText): 25+ lines or 4000+ chars. Small pastes drop
+    // straight into the input as before.
+    const plainText = event.clipboardData.getData("text/plain");
+    if (files.length === 0 && plainText && shouldCollapsePastedText(plainText)) {
+      event.preventDefault();
+      const draft = createPastedTextDraft(plainText);
+      setComposerNotice(null);
+      setPastedTexts((current) => [...current, draft]);
+      return;
+    }
     if (!files.length) return;
     event.preventDefault();
     await addFiles(files);
+  };
+  const removePastedText = (id: string) => {
+    setPastedTexts((current) => current.filter((pasted) => pasted.id !== id));
+  };
+  const showPastedTextInField = (id: string) => {
+    const pasted = pastedTexts.find((entry) => entry.id === id);
+    if (!pasted) return;
+    const separator = prompt.length > 0 && !prompt.endsWith("\n") ? "\n" : "";
+    const nextPrompt = `${prompt}${separator}${pasted.text}`;
+    setPrompt(nextPrompt);
+    removePastedText(id);
+    requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (editor) {
+        renderHighlighted(nextPrompt);
+        setCaretOffset(editor, nextPrompt.length);
+      }
+    });
   };
   const chooseCommand = (command: SlashCommand) => {
     const offset = slashTriggerAt ?? (cursorOffsetState ?? prompt.length);
@@ -3011,7 +3353,7 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
     });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Enter" && !prompt.trim() && attachments.length === 0) {
+    if (event.key === "Enter" && !prompt.trim() && attachments.length === 0 && pastedTexts.length === 0) {
       event.preventDefault();
       showComposerNotice("Type a message or attach a file to get started.");
       return;
@@ -3091,9 +3433,34 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
     : thread.messages.some((message) => message.role === "assistant")
       ? "Ask a follow-up…"
       : "Ask Maximo to build, fix, write, or explore…";
+  const goalBanner = thread.goal && thread.goal.phase !== "complete"
+    ? thread.goal
+    : thread.goal?.phase === "complete"
+      ? thread.goal
+      : null;
   return (
     <div className="composer-wrap">
       {confirmFullAccess && <FullAccessConfirm onCancel={() => setConfirmFullAccess(false)} onConfirm={() => { setPermission("full"); setConfirmFullAccess(false); }} />}
+      {goalBanner && (
+        <div
+          className={`goal-banner glass-panel goal-banner-${goalBanner.phase}`}
+          role="status"
+          title={goalBanner.statusText}
+        >
+          <Target size={13} aria-hidden="true" />
+          <div className="goal-banner-body">
+            <strong>
+              {goalBanner.phase === "complete"
+                ? "Goal complete"
+                : goalBanner.phase === "paused"
+                  ? "Goal paused"
+                  : "Goal active"}
+            </strong>
+            <span>{goalBanner.statusText}</span>
+          </div>
+          <small className="goal-banner-hint">/goal status · pause · resume · clear</small>
+        </div>
+      )}
       <LiveWorkStatus running={running} waiting={waitingForResponse} live={live} shimmer={false} />
       {queuedFollowUps.length > 0 && (
         <div className="followup-queue" aria-label="Queued follow-ups">
@@ -3131,6 +3498,17 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
           {contextOpen === "branch" && <div className="context-menu branch-context-menu glass-panel"><span className="menu-label">Branches</span>{branchLoading ? <div className="branch-state"><RefreshCw size={12} className="spin" />Reading local branches</div> : branchError ? <div className="branch-state error">{branchError}<button type="button" onClick={() => void refreshBranches()}>Retry</button></div> : branchInfo?.dirty ? <small className="branch-dirty">Uncommitted changes are preserved when Git allows the switch.</small> : null}{!branchLoading && !branchError && branchInfo?.branches.length === 0 && <div className="branch-state">No local branches found</div>}{!branchLoading && !branchError && branchInfo?.branches.map((branch) => <button type="button" className={branch === branchInfo.current ? "selected" : ""} onClick={() => void checkoutBranch(branch)} key={branch}><GitBranch size={13} /><span>{branch}</span>{branch === branchInfo.current && <Check size={13} />}</button>)}<div className="branch-create"><input value={newBranch} onChange={(event) => setNewBranch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void createBranch(); }} placeholder="New branch name" /><button type="button" onClick={() => void createBranch()} disabled={!newBranch.trim() || branchLoading}><Plus size={13} /></button></div></div>}
         </div>}
         {attachments.length > 0 && <AttachmentList attachments={attachments} onPreview={onPreviewAttachment} onRemove={(file) => setAttachments((items) => items.filter((item) => item.path !== file.path))} className="attachment-strip" />}
+        {pastedTexts.length > 0 && <div className="pasted-text-strip">{pastedTexts.map((pasted) => (
+          <div className="pasted-text-card" key={pasted.id}>
+            <span className="pasted-text-card-icon"><File size={13} /></span>
+            <span className="pasted-text-card-copy">
+              <strong title={pastedTextTitle(pasted.text)}>{pastedTextTitle(pasted.text)}</strong>
+              <small>{formatPastedTextCountLabel(pasted)}</small>
+            </span>
+            <button type="button" className="pasted-text-card-action" onMouseDown={(event) => event.preventDefault()} onClick={() => showPastedTextInField(pasted.id)}>Show in text field<ChevronRight size={11} /></button>
+            <button type="button" className="pasted-text-card-remove" onClick={() => removePastedText(pasted.id)} aria-label={`Remove pasted text (${formatPastedTextCountLabel(pasted)})`} title={`Remove pasted text (${formatPastedTextCountLabel(pasted)})`}><X size={12} /></button>
+          </div>
+        ))}</div>}
         {commandPaletteOpen && <div className="slash-command-menu glass-panel" role="listbox" aria-label="Slash commands">
           {visibleSkills.length > 0 && <section className="slash-command-section"><div className="slash-command-heading">Skills</div>{visibleSkills.map(renderSlashMenuItem)}</section>}
           {visibleSlashCommands.length > 0 && <section className="slash-command-section"><div className={`slash-command-heading ${visibleSkills.length > 0 ? "visible" : "hidden"}`}>Commands</div>{visibleSlashCommands.map(renderSlashMenuItem)}</section>}
@@ -3149,7 +3527,7 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
                setCommandIndex(0);
              }}
             onKeyDown={onKeyDown}
-            onPaste={(event) => { event.preventDefault(); const text = event.clipboardData.getData("text/plain"); document.execCommand("insertText", false, text); }}
+            onPaste={(event) => { if (event.clipboardData.files.length > 0) return; const text = event.clipboardData.getData("text/plain"); if (shouldCollapsePastedText(text)) { event.preventDefault(); event.stopPropagation(); void handlePaste(event); } }}
             onSelect={() => { if (!commandPaletteDismissed) setCommandPaletteDismissed(false); }}
              onBlur={() => { setCursorOffsetState(null); }} />
          </div>
@@ -3162,7 +3540,7 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
           <div className="composer-right">
             <ContextUsageControl usage={contextUsage} loading={contextLoading} onRefresh={onRefreshContext} />
             <ModelControl model={model} effort={effort} models={models} modelOptions={modelOptions} disabled={waitingForResponse} onModel={chooseModel} onEffort={setEffort} />
-            {running && !prompt.trim() ? <button className="send-button stop" onClick={onStop} title="Stop run"><CircleStop size={16} /></button> : <button className="send-button" onClick={() => void submit()} disabled={!prompt.trim() && attachments.length === 0} title={running ? "Add context to current task" : "Send"}><ArrowUp size={17} /></button>}
+            {running && !prompt.trim() && pastedTexts.length === 0 ? <button className="send-button stop" onClick={onStop} title="Stop run"><CircleStop size={16} /></button> : <button className="send-button" onClick={() => void submit()} disabled={!prompt.trim() && attachments.length === 0 && pastedTexts.length === 0} title={running ? "Add context to current task" : "Send"}><ArrowUp size={17} /></button>}
            </div>
          </div>
        </div>
@@ -4304,6 +4682,20 @@ export default function App() {
     }
     if (event.type === "context") {
       setContextUsageByThread((current) => ({ ...current, [event.threadId]: event.context }));
+    }
+    // Goal mode status lines surface as activity labels from the CLI
+    // (e.g. "Goal continuing — …", "Goal complete.", "Goal paused — …").
+    if (event.type === "activity" && /^goal\b/i.test(event.label.trim())) {
+      const goal = goalStateFromText(event.label.trim(), event.timestamp);
+      setState((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          threads: current.threads.map((thread) =>
+            thread.id === event.threadId ? { ...thread, goal } : thread,
+          ),
+        };
+      });
     }
     if (event.type === "question") {
       try {
