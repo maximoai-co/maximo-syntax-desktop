@@ -4,10 +4,10 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.5] - 2026-08-05
+## [0.1.6] - 2026-08-05
 
-- Fixed the macOS "Maximo Syntax is damaged and can't be opened" error on Apple Silicon. The build now disables code signing (`identity: null`, no hardened runtime) and an `afterPack` hook strips the linker's ad-hoc signature from the main binary, so Gatekeeper shows the standard "Apple cannot check it for malicious software" warning with **Open Anyway** (right-click → Open, or System Settings → Privacy & Security → Open Anyway) instead of hard-blocking the app.
-- Note: until the app is signed with an Apple Developer ID and notarized, macOS will still warn on first launch — use the Open Anyway flow to proceed.
+- Fixed the macOS launch failure introduced in v0.1.5 ("The application cannot be opened for an unexpected reason, error=Code=163"). The v0.1.5 build stripped the code signature entirely, and Apple Silicon's arm64 kernel refuses to execute a fully unsigned Mach-O binary. v0.1.6 restores the working ad-hoc signed build (same as v0.1.4): the app launches normally, and if Gatekeeper blocks a downloaded copy, clear the quarantine flag with `xattr -dr com.apple.quarantine "/Applications/Maximo Syntax.app"` (or right-click → Open).
+- Note: until the app is signed with an Apple Developer ID and notarized, macOS may warn on first launch for downloaded copies — the `xattr` command (or right-click → Open) is the current fix.
 
 ## [0.1.4] - 2026-08-05
 

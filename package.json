@@ -1,6 +1,6 @@
 {
   "name": "@maximoai/maximo-syntax-desktop",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Your AI workspace for work. Write and edit code, build software, draft documents, analyze data, organize projects, and run agents — one native desktop app.",
   "homepage": "https://maximoai.co",
   "repository": {
@@ -95,7 +95,6 @@
       "node_modules/**/*",
       "dist-electron/**/*"
     ],
-    "afterPack": "scripts/strip-macos-signature.mjs",
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
@@ -110,7 +109,7 @@
         "NSUserNotificationAlertStyle": "alert",
         "NSHumanReadableCopyright": "Copyright © 2026 Maximo AI Ltd"
       },
-      "identity": null,
+      "hardenedRuntime": true,
       "gatekeeperAssess": false
     },
     "win": {
