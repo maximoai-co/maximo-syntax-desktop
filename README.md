@@ -37,6 +37,26 @@ Built with [Electron](https://www.electronjs.org/) · [React](https://react.dev/
 
 ---
 
+## macOS: first-launch Gatekeeper notice
+
+macOS may block the app on first launch because it is not yet signed with an Apple Developer ID. This is expected until the app is properly signed and notarized. To open it:
+
+1. If you see **"Maximo Syntax is damaged and can't be opened"**, clear the Gatekeeper quarantine flag for the app:
+
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Maximo Syntax.app"
+   ```
+
+   (If you haven't moved it to Applications yet, use the path where you downloaded it, e.g. `~/Downloads/Maximo Syntax.app`.)
+
+2. Then open it normally (double-click, or right-click → **Open**).
+
+Alternatively, **right-click the app icon → Open → Open** may show the Gatekeeper prompt directly — macOS allows opening it that way without the Terminal command.
+
+This only applies to downloaded copies; the warning disappears once the app is signed with an Apple Developer ID and notarized in a future update.
+
+---
+
 ## Getting started
 
 ```bash
