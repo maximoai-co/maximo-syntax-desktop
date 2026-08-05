@@ -4,6 +4,10 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-08-05
+
+- Bundled the Maximo Syntax CLI engine **v0.1.26** (from v0.1.23) — new desktop downloads now ship the latest CLI, including the `/goal` autonomous-mode fixes for desktop/SDK hosts and the improvements in v0.1.24–v0.1.26. Existing installs can get it via Settings → System tools → engine update, or by reinstalling.
+
 ## [0.1.3] - 2026-08-05
 
 - Added **edit-and-resend** on user messages: rewrite the turn in place, fork the CLI transcript at the message before it, and replay the edited prompt with a fresh turn uuid (the CLI dedups by uuid, so the resent turn replaces the original instead of appending).
