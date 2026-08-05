@@ -4,6 +4,11 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-08-05
+
+- Fixed the macOS "Maximo Syntax is damaged and can't be opened" error on Apple Silicon. The build now disables code signing (`identity: null`, no hardened runtime) and an `afterPack` hook strips the linker's ad-hoc signature from the main binary, so Gatekeeper shows the standard "Apple cannot check it for malicious software" warning with **Open Anyway** (right-click → Open, or System Settings → Privacy & Security → Open Anyway) instead of hard-blocking the app.
+- Note: until the app is signed with an Apple Developer ID and notarized, macOS will still warn on first launch — use the Open Anyway flow to proceed.
+
 ## [0.1.4] - 2026-08-05
 
 - Bundled the Maximo Syntax CLI engine **v0.1.26** (from v0.1.23) — new desktop downloads now ship the latest CLI, including the `/goal` autonomous-mode fixes for desktop/SDK hosts and the improvements in v0.1.24–v0.1.26. Existing installs can get it via Settings → System tools → engine update, or by reinstalling.
