@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added **Check for Updates…** to the app/Help menu and a Desktop updates section under Settings → System tools.
 - Expanded Appearance theme presets with the Synara/Codex catalog (Catppuccin, Dracula, Everforest, GitHub, Gruvbox, Linear, Nord, Rose Pine, Tokyo Night, Vercel, and more), filtering dark-only / light-only seeds per theme pack.
 - Added a Synara-style **What's new** post-update popout and dialog that surfaces release notes from GitHub Releases (with local CHANGELOG fallback), including a full changelog view and Settings entry.
+- Modal overlays (Account, What's new, attachment preview) two-phase freeze the native browser: capture a live page screenshot first, then detach WebContentsView and show that frame under the blur (no white/black fill, no page reload during capture).
 
 ## [0.1.2] - 2026-08-04
 

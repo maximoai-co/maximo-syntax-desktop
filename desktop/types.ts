@@ -670,6 +670,8 @@ export interface BrowserScreenshotResult {
   mimeType: "image/png";
   sizeBytes: number;
   bytes: Uint8Array;
+  /** Ready-to-render data URL for freeze-frames under HTML overlays. */
+  dataUrl: string;
 }
 
 export interface BrowserCopyLinkEvent {

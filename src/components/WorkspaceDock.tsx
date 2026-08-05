@@ -99,6 +99,12 @@ interface DockState {
 
 interface WorkspaceDockProps {
   open: boolean;
+  /**
+   * Keep the dock layout visible but detach native surfaces (WebContentsView
+   * browser) so HTML overlays like Account can dim the full window cleanly.
+   * Unlike `open={false}`, this does not collapse the inspector column.
+   */
+  suspendNativeSurfaces?: boolean;
   project?: Project;
   thread?: Thread;
   state?: AppState;
@@ -689,13 +695,36 @@ function normalizeBrowserUrl(value: string): string {
   }
 }
 
-function WorkspaceBrowserPane({ initialUrl, threadId, paneActive = true }: { initialUrl?: string; threadId?: string; paneActive?: boolean }) {
+function WorkspaceBrowserPane({
+  initialUrl,
+  threadId,
+  paneActive = true,
+  suspendNative = false,
+}: {
+  initialUrl?: string;
+  threadId?: string;
+  paneActive?: boolean;
+  /**
+   * Modal overlays cannot cover WebContentsView. Two-phase freeze:
+   * keep the live page attached until a screenshot is ready, then swap to the
+   * image and detach so the modal backdrop can blur real page content.
+   */
+  suspendNative?: boolean;
+}) {
   const [browser, setBrowser] = useState<BrowserState | null>(null);
   const [address, setAddress] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  const [freezeFrameUrl, setFreezeFrameUrl] = useState<string | null>(null);
+  // false while capture is in flight — keeps the native view up until we have pixels.
+  const [freezeReady, setFreezeReady] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
   const lastRequestedUrlRef = useRef<string | undefined>(undefined);
   const active = browser?.tabs.find((tab) => tab.id === browser.activeTabId) ?? browser?.tabs[0] ?? null;
+  const activeTabId = active?.id;
+  const activeUrl = active?.url;
+  // Stay live until freeze-frame is ready (or when not suspending at all).
+  const nativeLive = Boolean(paneActive && threadId && (!suspendNative || !freezeReady));
+  const showFreezeFrame = Boolean(suspendNative && freezeReady && freezeFrameUrl);
   const mergeBrowser = (next: BrowserState) => setBrowser((current) => current && current.version > next.version ? current : next);
 
   useEffect(() => {
@@ -722,28 +751,67 @@ function WorkspaceBrowserPane({ initialUrl, threadId, paneActive = true }: { ini
   }, [initialUrl, threadId]);
 
   useEffect(() => {
-    if (!threadId || paneActive) return;
-    void window.maximoDesktop.browser.hide({ threadId });
-  }, [paneActive, threadId]);
-
-  useEffect(() => {
-    if (!threadId || !paneActive) return;
+    if (!threadId || !nativeLive) return;
     return window.maximoDesktop.browser.onCopyLink((event) => {
       if (event.threadId === threadId) {
-        // The native browser owns focus, so the renderer cannot reliably write
-        // to the clipboard. Main has already completed the copy operation.
         setNotice("Link copied");
         window.setTimeout(() => setNotice(null), 1_400);
       }
     });
-  }, [paneActive, threadId]);
+  }, [nativeLive, threadId]);
 
   useEffect(() => {
-    setAddress(active?.url === "about:blank" ? "" : active?.url ?? "");
-  }, [active?.id, active?.url]);
+    setAddress(activeUrl === "about:blank" ? "" : activeUrl ?? "");
+  }, [activeTabId, activeUrl]);
 
+  // Phase 1: when a modal asks to suspend, capture first while native is still live.
+  useEffect(() => {
+    if (!suspendNative) {
+      setFreezeReady(false);
+      setFreezeFrameUrl(null);
+      return;
+    }
+    if (!paneActive || !threadId) {
+      setFreezeReady(true);
+      return;
+    }
+    if (!activeTabId || !activeUrl || activeUrl === "about:blank") {
+      setFreezeFrameUrl(null);
+      setFreezeReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const shot = await window.maximoDesktop.browser.captureScreenshot({ threadId, tabId: activeTabId });
+        if (cancelled) return;
+        if (typeof shot.dataUrl === "string" && shot.dataUrl.startsWith("data:image/")) {
+          setFreezeFrameUrl(shot.dataUrl);
+        } else {
+          setFreezeFrameUrl(null);
+        }
+      } catch {
+        if (!cancelled) setFreezeFrameUrl(null);
+      } finally {
+        if (!cancelled) setFreezeReady(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [suspendNative, paneActive, threadId, activeTabId, activeUrl]);
+
+  // Phase 2: pin native bounds while live; hide only after freeze is ready.
   useLayoutEffect(() => {
-    if (!threadId || !paneActive) return;
+    if (!threadId) return;
+
+    if (!nativeLive) {
+      void window.maximoDesktop.browser.hide({ threadId });
+      return;
+    }
+
     const viewport = viewportRef.current;
     if (!viewport) return;
     const sync = () => {
@@ -762,12 +830,15 @@ function WorkspaceBrowserPane({ initialUrl, threadId, paneActive = true }: { ini
     return () => {
       observer?.disconnect();
       window.removeEventListener("resize", sync);
-      void window.maximoDesktop.browser.setPanelBounds({ threadId, bounds: null });
+      // If we are only mid-freeze (still suspending, not ready), keep attached for capture.
+      if (!(suspendNative && !freezeReady && paneActive)) {
+        void window.maximoDesktop.browser.setPanelBounds({ threadId, bounds: null });
+      }
     };
-  }, [paneActive, threadId]);
+  }, [freezeReady, nativeLive, paneActive, suspendNative, threadId]);
 
   const navigate = async () => {
-    if (!threadId || !active) return;
+    if (!threadId || !active || suspendNative) return;
     const next = normalizeBrowserUrl(address);
     setAddress(next === "about:blank" ? "" : next);
     const state = await window.maximoDesktop.browser.navigate({ threadId, tabId: active.id, url: next });
@@ -775,12 +846,12 @@ function WorkspaceBrowserPane({ initialUrl, threadId, paneActive = true }: { ini
   };
 
   const newTab = () => {
-    if (!threadId) return;
+    if (!threadId || suspendNative) return;
     void window.maximoDesktop.browser.newTab({ threadId, activate: true }).then(mergeBrowser);
   };
 
   const closeTab = (id: string) => {
-    if (!threadId) return;
+    if (!threadId || suspendNative) return;
     void window.maximoDesktop.browser.closeTab({ threadId, tabId: id }).then(mergeBrowser);
   };
 
@@ -788,10 +859,14 @@ function WorkspaceBrowserPane({ initialUrl, threadId, paneActive = true }: { ini
   if (!threadId) return <div className="workspace-empty-state"><Globe2 size={20} /><span>Select a chat to use the browser.</span></div>;
 
   return (
-    <div className="workspace-browser-pane">
-      <header className="workspace-browser-toolbar"><button type="button" onClick={() => active && void window.maximoDesktop.browser.goBack({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={!active?.canGoBack} title="Back"><ChevronRight size={14} className="rotate-180" /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.goForward({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={!active?.canGoForward} title="Forward"><ChevronRight size={14} /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.reload({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={!active} title="Reload">{active?.isLoading ? <RefreshCw size={13} className="spin" /> : <RefreshCw size={13} />}</button><form onSubmit={(event) => { event.preventDefault(); void navigate(); }}><Globe2 size={13} /><input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Search or enter web address" spellCheck={false} /></form>{notice && <span className="workspace-browser-notice">{notice}</span>}<button type="button" onClick={() => { if (active?.url && active.url !== "about:blank") void window.maximoDesktop.openPath(active.url); }} title="Open in system browser"><ExternalLink size={13} /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.copyScreenshotToClipboard({ threadId, tabId: active.id }).then(() => { setNotice("Screenshot copied"); window.setTimeout(() => setNotice(null), 1_400); })} disabled={!active || active.url === "about:blank"} title="Copy screenshot"><Camera size={13} /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.copyLink({ threadId, tabId: active.id })} disabled={!active || active.url === "about:blank"} title="Copy link"><Copy size={13} /></button></header>
-      <div className="workspace-browser-tabs">{browser?.tabs.map((tab) => <div className={`workspace-browser-tab ${tab.id === active?.id ? "active" : ""}`} key={tab.id}><button type="button" onClick={() => void window.maximoDesktop.browser.selectTab({ threadId, tabId: tab.id }).then(mergeBrowser)}><Globe2 size={11} /><span>{tab.title}</span></button><button type="button" onClick={() => closeTab(tab.id)} title="Close tab"><X size={11} /></button></div>)}<button type="button" className="workspace-browser-new-tab" onClick={newTab} title="New tab"><Plus size={13} /></button></div>
-      <div ref={viewportRef} className="workspace-browser-surface"><div className="workspace-browser-native-placeholder" aria-hidden="true" /></div>
+    <div className={`workspace-browser-pane ${suspendNative ? "suspended" : ""} ${showFreezeFrame ? "has-freeze-frame" : ""}`}>
+      <header className="workspace-browser-toolbar"><button type="button" onClick={() => active && void window.maximoDesktop.browser.goBack({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={suspendNative || !active?.canGoBack} title="Back"><ChevronRight size={14} className="rotate-180" /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.goForward({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={suspendNative || !active?.canGoForward} title="Forward"><ChevronRight size={14} /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.reload({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={suspendNative || !active} title="Reload">{active?.isLoading ? <RefreshCw size={13} className="spin" /> : <RefreshCw size={13} />}</button><form onSubmit={(event) => { event.preventDefault(); void navigate(); }}><Globe2 size={13} /><input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Search or enter web address" spellCheck={false} disabled={suspendNative} /></form>{notice && <span className="workspace-browser-notice">{notice}</span>}<button type="button" onClick={() => { if (active?.url && active.url !== "about:blank") void window.maximoDesktop.openPath(active.url); }} title="Open in system browser" disabled={suspendNative}><ExternalLink size={13} /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.copyScreenshotToClipboard({ threadId, tabId: active.id }).then(() => { setNotice("Screenshot copied"); window.setTimeout(() => setNotice(null), 1_400); })} disabled={suspendNative || !active || active.url === "about:blank"} title="Copy screenshot"><Camera size={13} /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.copyLink({ threadId, tabId: active.id })} disabled={suspendNative || !active || active.url === "about:blank"} title="Copy link"><Copy size={13} /></button></header>
+      <div className="workspace-browser-tabs">{browser?.tabs.map((tab) => <div className={`workspace-browser-tab ${tab.id === active?.id ? "active" : ""}`} key={tab.id}><button type="button" onClick={() => void window.maximoDesktop.browser.selectTab({ threadId, tabId: tab.id }).then(mergeBrowser)} disabled={suspendNative}><Globe2 size={11} /><span>{tab.title}</span></button><button type="button" onClick={() => closeTab(tab.id)} title="Close tab" disabled={suspendNative}><X size={11} /></button></div>)}<button type="button" className="workspace-browser-new-tab" onClick={newTab} title="New tab" disabled={suspendNative}><Plus size={13} /></button></div>
+      <div ref={viewportRef} className={`workspace-browser-surface ${showFreezeFrame ? "freeze" : nativeLive ? "live" : "idle"}`}>
+        {showFreezeFrame
+          ? <img className="workspace-browser-freeze-frame" src={freezeFrameUrl!} alt="" draggable={false} />
+          : <div className="workspace-browser-native-placeholder" aria-hidden="true" />}
+      </div>
     </div>
   );
 }
@@ -954,6 +1029,7 @@ export default function WorkspaceDock(props: WorkspaceDockProps) {
   }, [dock.activePaneId, dock.panes, props.onCloseReview, props.onOpenChange]);
 
   const activePane = dock.panes.find((pane) => pane.id === dock.activePaneId) ?? null;
+  const paneIsActive = (paneId: string) => props.open && paneId === activePane?.id;
   const hasChanges = Boolean(props.git?.files.length);
   const launcher = useMemo(() => [
     ...(hasChanges ? [{ kind: "diff" as const, label: "Review" }] : []),
@@ -974,13 +1050,13 @@ export default function WorkspaceDock(props: WorkspaceDockProps) {
       <div className="workspace-dock-body">
         {!activePane && <nav className="workspace-launcher" aria-label="Open a panel">{launcher.map((item) => renderLauncherButton(item.kind, item.label, () => openPane(item.kind), item.kind === "explorer" && !props.project))}</nav>}
         {dock.panes.map((pane) => <div className={`workspace-pane-layer ${pane.id === activePane?.id ? "active" : "inactive"}`} aria-hidden={pane.id === activePane?.id ? undefined : true} key={pane.id}>
-           {pane.kind === "explorer" && props.project ? <WorkspaceExplorerPane project={props.project} active={props.open && pane.id === activePane?.id} onOpenFile={(path) => openPane("file", path)} onOpenEditor={props.onOpenEditor} />
-             : pane.kind === "file" && props.project ? <WorkspaceFileViewer project={props.project} filePath={pane.filePath ?? null} active={props.open && pane.id === activePane?.id} onOpenEditor={props.onOpenEditor} />
-               : pane.kind === "git" && props.project ? <WorkspaceGitPane project={props.project} git={props.git} active={props.open && pane.id === activePane?.id} onOpenDiff={props.onOpenDiff} onRefresh={props.onRefreshGit} onGitChanged={props.onGitChanged} />
-                    : pane.kind === "diff" && props.project ? <WorkspaceDiffPane project={props.project} git={props.git} active={props.open && pane.id === activePane?.id} reviewFile={props.reviewFile} reviewDiff={props.reviewDiff} defaultWrapped={props.state?.settings.diffWordWrap} onOpenDiff={props.onOpenDiff} onCloseReview={props.onCloseReview} onOpenEditor={props.onOpenEditor} onOpenGit={() => openPane("git")} />
-                    : pane.kind === "terminal" && props.project ? <WorkspaceTerminalPane project={props.project} settings={props.state?.settings} paneActive={props.open && pane.id === activePane?.id} />
-                        : pane.kind === "browser" ? <WorkspaceBrowserPane initialUrl={pane.url} threadId={props.thread?.id} paneActive={props.open && pane.id === activePane?.id} />
-                       : pane.kind === "sidechat" && props.sideChat ? <WorkspaceSideChatPane sideChat={props.sideChat} active={props.open && pane.id === activePane?.id} />
+           {pane.kind === "explorer" && props.project ? <WorkspaceExplorerPane project={props.project} active={paneIsActive(pane.id)} onOpenFile={(path) => openPane("file", path)} onOpenEditor={props.onOpenEditor} />
+             : pane.kind === "file" && props.project ? <WorkspaceFileViewer project={props.project} filePath={pane.filePath ?? null} active={paneIsActive(pane.id)} onOpenEditor={props.onOpenEditor} />
+               : pane.kind === "git" && props.project ? <WorkspaceGitPane project={props.project} git={props.git} active={paneIsActive(pane.id)} onOpenDiff={props.onOpenDiff} onRefresh={props.onRefreshGit} onGitChanged={props.onGitChanged} />
+                    : pane.kind === "diff" && props.project ? <WorkspaceDiffPane project={props.project} git={props.git} active={paneIsActive(pane.id)} reviewFile={props.reviewFile} reviewDiff={props.reviewDiff} defaultWrapped={props.state?.settings.diffWordWrap} onOpenDiff={props.onOpenDiff} onCloseReview={props.onCloseReview} onOpenEditor={props.onOpenEditor} onOpenGit={() => openPane("git")} />
+                    : pane.kind === "terminal" && props.project ? <WorkspaceTerminalPane project={props.project} settings={props.state?.settings} paneActive={paneIsActive(pane.id)} />
+                        : pane.kind === "browser" ? <WorkspaceBrowserPane initialUrl={pane.url} threadId={props.thread?.id} paneActive={paneIsActive(pane.id)} suspendNative={Boolean(props.suspendNativeSurfaces)} />
+                       : pane.kind === "sidechat" && props.sideChat ? <WorkspaceSideChatPane sideChat={props.sideChat} active={paneIsActive(pane.id)} />
                         : <div className="workspace-empty-state"><CircleHelp size={18} /><span>This panel is unavailable.</span></div>}
         </div>)}
       </div>

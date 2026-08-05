@@ -2818,7 +2818,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .workspace-browser-tab > button:last-child:hover { background: var(--surface-active); color: var(--text); }
 .workspace-browser-new-tab { width: 25px; height: 25px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 6px; background: transparent; color: var(--muted); }
 .workspace-browser-new-tab:hover { background: var(--surface-hover); color: var(--text); }
-.workspace-browser-surface { min-height: 0; flex: 1; position: relative; background: #fff; }
+.workspace-browser-surface { min-height: 0; flex: 1; position: relative; overflow: hidden; background: var(--surface-solid); }
+.workspace-browser-surface.live { background: #fff; }
+.workspace-browser-surface.freeze { background: transparent; }
+.workspace-browser-freeze-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: fill;
+  object-position: top left;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.workspace-browser-pane.suspended .workspace-browser-toolbar,
+.workspace-browser-pane.suspended .workspace-browser-tabs { opacity: 0.95; }
 .workspace-browser-webview { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .rotate-180 { transform: rotate(180deg); }
 .workspace-sidechat-messages { min-height: 0; flex: 1; overflow: auto; padding: 13px 12px 25px; scrollbar-width: thin; }

@@ -374,14 +374,22 @@ export class BrowserManager {
   }
 
   async captureScreenshot(input: BrowserTabInput): Promise<BrowserScreenshotResult> {
-    const runtime = await this.getAutomationRuntime(input.threadId, input.tabId);
-    const bytes = (await runtime.webContents.capturePage()).toPNG();
-    if (!bytes.length) throw new Error("Could not capture the browser page.");
+    // Use the live runtime only — do not reload via getAutomationRuntime, which can
+    // blank the page and produce a white freeze-frame under modal overlays.
+    const runtime = this.runtimeFor(input.threadId, input.tabId);
+    if (this.activeThreadId === input.threadId && this.activeBounds) {
+      this.attachActiveRuntime();
+    }
+    const png = await runtime.webContents.capturePage();
+    const buffer = png.toPNG();
+    if (!buffer.length) throw new Error("Could not capture the browser page.");
+    const bytes = Uint8Array.from(buffer);
     return {
       name: screenshotName(runtime.webContents.getURL()),
       mimeType: "image/png",
       sizeBytes: bytes.byteLength,
-      bytes: Uint8Array.from(bytes),
+      bytes,
+      dataUrl: `data:image/png;base64,${Buffer.from(buffer).toString("base64")}`,
     };
   }
 

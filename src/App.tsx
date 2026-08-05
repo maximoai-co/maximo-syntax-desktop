@@ -411,11 +411,10 @@ function effortTone(value: string | undefined): EffortTone {
 function effortOptionsFor(model: EngineModel | undefined): SelectOption<string>[] {
   const configuredDefault = model?.activeEffort ? effortLabel(model.activeEffort) : model?.defaultEffort ? effortLabel(model.defaultEffort) : "model default";
   const defaultValue = model?.activeEffort ?? model?.defaultEffort ?? "";
-  const defaultDescription = model?.activeEffort ? "Use the effort currently active in Syntax" : `Use ${configuredDefault}`;
-  const options: SelectOption<string>[] = [{ value: defaultValue, label: defaultValue ? configuredDefault : "Default", description: defaultDescription }];
+  const options: SelectOption<string>[] = [{ value: defaultValue, label: defaultValue ? configuredDefault : "Default" }];
   for (const value of model?.supportedEffortLevels ?? []) {
     if (value === defaultValue || options.some((option) => option.value === value)) continue;
-    options.push({ value, label: effortLabel(value), description: value === "max" ? "Highest supported reasoning effort" : undefined });
+    options.push({ value, label: effortLabel(value) });
   }
   return options;
 }
@@ -5024,6 +5023,7 @@ export default function App() {
       </section>
       {currentProject && <WorkspaceDock
          open={inspectorVisible && !settingsOpen}
+         suspendNativeSurfaces={accountOpen || whatsNewDialogOpen || Boolean(attachmentPreview)}
         project={currentProject}
         thread={currentThread}
         state={state}
