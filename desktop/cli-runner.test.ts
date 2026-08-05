@@ -1,5 +1,8 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildCliArguments, buildPrompt, buildUnifiedPatch, clearStatusActivity, CliRunner, parseClassifierDenial, parseCliMessage, parseTodoItems } from "./cli-runner.js";
+import { buildCliArguments, buildPrompt, buildUnifiedPatch, clearStatusActivity, CliRunner, parseClassifierDenial, parseCliMessage, parseTodoItems, restoreFilesFromChanges, reverseApplyUnifiedPatch } from "./cli-runner.js";
 import type { RunTimelineItem } from "./types.js";
 
 describe("buildPrompt", () => {
@@ -103,6 +106,56 @@ describe("parseCliMessage", () => {
     const promptToolIndex = args.indexOf("--permission-prompt-tool");
     expect(args.slice(promptToolIndex, promptToolIndex + 2)).toEqual(["--permission-prompt-tool", "stdio"]);
     expect(args.slice(-2)).toEqual(["--resume", "session-1"]);
+  });
+
+  it("forks a truncated session for edit-and-resend / revert anchors", () => {
+    const args = buildCliArguments({
+      threadId: "thread-edit",
+      prompt: "edited request",
+      attachments: [],
+      model: "",
+      effort: "",
+      permission: "default",
+      resumeSessionAt: "anchor-uuid",
+    }, "session-edit");
+    expect(args).toContain("--resume-session-at");
+    expect(args[args.indexOf("--resume-session-at") + 1]).toBe("anchor-uuid");
+    expect(args).toContain("--fork-session");
+  });
+
+  it("does not fork when no truncation anchor is set", () => {
+    const args = buildCliArguments({
+      threadId: "thread-plain",
+      prompt: "plain",
+      attachments: [],
+      model: "",
+      effort: "",
+      permission: "default",
+    }, "session-plain");
+    expect(args).not.toContain("--fork-session");
+    expect(args).not.toContain("--resume-session-at");
+  });
+
+  it("parses a successful rewind_files control_response", () => {
+    const parsed = parseCliMessage({
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: "rewind-1",
+        response: { canRewind: true, filesChanged: ["/tmp/a.ts", "/tmp/b.ts"], insertions: 12, deletions: 4 },
+      },
+    });
+    expect(parsed.rewindRequestId).toBe("rewind-1");
+    expect(parsed.rewindResult).toMatchObject({ canRewind: true, filesChanged: ["/tmp/a.ts", "/tmp/b.ts"], insertions: 12, deletions: 4 });
+  });
+
+  it("parses a failed rewind_files control_response", () => {
+    const parsed = parseCliMessage({
+      type: "control_response",
+      response: { subtype: "error", request_id: "rewind-2", error: "No file checkpoint found for this message." },
+    });
+    expect(parsed.rewindRequestId).toBe("rewind-2");
+    expect(parsed.rewindResult).toMatchObject({ canRewind: false, error: "No file checkpoint found for this message." });
   });
 
   it("reads streamed text deltas", () => {
@@ -453,6 +506,61 @@ describe("unified patches", () => {
     expect(change).toMatchObject({ path: "test.txt", additions: 2, deletions: 0 });
     expect(change.patch).toContain("@@ -0,0 +1,2 @@");
     expect(change.patch).toContain("+first line");
+  });
+
+  it("reverse-applies an edit back to the original content", () => {
+    const before = "const answer = 41;\nkeep();\n";
+    const after = "const answer = 42;\nkeep();\n";
+    const change = buildUnifiedPatch("src/example.ts", before, after);
+    expect(reverseApplyUnifiedPatch(after, change.patch)).toBe(before);
+  });
+
+  it("reverse-applies a create patch by deleting the file content", () => {
+    const after = "first line\nsecond line\n";
+    const change = buildUnifiedPatch("test.txt", "", after);
+    expect(reverseApplyUnifiedPatch(after, change.patch)).toBeNull();
+  });
+
+  it("reverse-applies a delete patch by recreating the file", () => {
+    const before = "only line\n";
+    const change = buildUnifiedPatch("gone.txt", before, "");
+    expect(reverseApplyUnifiedPatch("", change.patch)).toBe(before);
+  });
+
+  it("restores files on disk from tracked changes newest-first", () => {
+    const directory = mkdtempSync(join(tmpdir(), "maximo-restore-"));
+    try {
+      const path = "note.txt";
+      const absolute = join(directory, path);
+      writeFileSync(absolute, "v1\n", "utf8");
+      const first = buildUnifiedPatch(path, "v1\n", "v2\n");
+      writeFileSync(absolute, "v2\n", "utf8");
+      const second = buildUnifiedPatch(path, "v2\n", "v3\n");
+      writeFileSync(absolute, "v3\n", "utf8");
+
+      // Newest-first unwind: v3→v2 then v2→v1.
+      const restored = restoreFilesFromChanges(directory, [second, first]);
+      expect(restored).toEqual([path]);
+      expect(readFileSync(absolute, "utf8")).toBe("v1\n");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("deletes a file that was created in a discarded turn", () => {
+    const directory = mkdtempSync(join(tmpdir(), "maximo-restore-create-"));
+    try {
+      const path = "created.txt";
+      const absolute = join(directory, path);
+      const content = "brand new\n";
+      writeFileSync(absolute, content, "utf8");
+      const change = buildUnifiedPatch(path, "", content);
+      const restored = restoreFilesFromChanges(directory, [change]);
+      expect(restored).toEqual([path]);
+      expect(() => readFileSync(absolute, "utf8")).toThrow();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

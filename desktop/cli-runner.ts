@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { EngineLaunch } from "./runtime-manager.js";
 import { MAX_ATTACHMENT_COUNT } from "./types.js";
@@ -37,6 +37,9 @@ interface ParsedUpdate {
   agentFinished?: { taskId: string; toolUseId?: string; status: Exclude<AgentStatus, "running">; summary?: string; outputFile?: string; usage?: AgentUsage };
   contextRequestId?: string;
   contextUsage?: ContextUsage;
+  /** Set when the CLI answers a rewind_files control_request. */
+  rewindRequestId?: string;
+  rewindResult?: { canRewind: boolean; filesChanged?: string[]; insertions?: number; deletions?: number; error?: string };
   apiUsage?: ContextApiUsage;
   apiUsageDelta?: Partial<ContextApiUsage>;
   apiUsageReset?: boolean;
@@ -257,9 +260,26 @@ export function parseCliMessage(value: unknown): ParsedUpdate {
     const response = message.response as Record<string, unknown> | undefined;
     const requestId = typeof response?.request_id === "string" ? response.request_id : undefined;
     if (!requestId) return {};
-    if (response?.subtype !== "success") return { contextRequestId: requestId };
-    const contextUsage = parseContextUsage(response.response);
-    return { contextRequestId: requestId, ...(contextUsage ? { contextUsage } : {}) };
+    if (response?.subtype !== "success") {
+      const error = typeof response?.error === "string" ? response.error : "The CLI rejected the request.";
+      return { rewindRequestId: requestId, rewindResult: { canRewind: false, error } };
+    }
+    const result = response.response as Record<string, unknown> | undefined;
+    const contextUsage = parseContextUsage(result);
+    if (contextUsage) return { contextRequestId: requestId, ...(contextUsage ? { contextUsage } : {}) };
+    if (result && typeof result === "object" && "canRewind" in result) {
+      return {
+        rewindRequestId: requestId,
+        rewindResult: {
+          canRewind: result.canRewind === true,
+          ...(Array.isArray(result.filesChanged) ? { filesChanged: result.filesChanged.map(String) } : {}),
+          ...(typeof result.insertions === "number" ? { insertions: result.insertions } : {}),
+          ...(typeof result.deletions === "number" ? { deletions: result.deletions } : {}),
+          ...(typeof result.error === "string" ? { error: result.error } : {}),
+        },
+      };
+    }
+    return { contextRequestId: requestId };
   }
 
   if (message.type === "stream_event") {
@@ -596,6 +616,199 @@ export function buildUnifiedPatch(path: string, beforeContent: string, afterCont
   };
 }
 
+type ParsedHunk = {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  beforeLines: string[];
+  afterLines: string[];
+};
+
+function parseRangeToken(token: string): { start: number; count: number } {
+  const [startText, countText] = token.split(",");
+  const start = Number(startText);
+  const count = countText === undefined ? 1 : Number(countText);
+  return {
+    start: Number.isFinite(start) ? start : 0,
+    count: Number.isFinite(count) ? count : 0,
+  };
+}
+
+/**
+ * Parses the unified patches produced by `buildUnifiedPatch` into per-hunk
+ * before/after line lists so they can be reverse-applied on revert.
+ */
+export function parseUnifiedPatchHunks(patch: string): ParsedHunk[] {
+  const lines = patch.replace(/\r\n/g, "\n").split("\n");
+  const hunks: ParsedHunk[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const header = lines[index];
+    const match = header?.match(/^@@ -(\d+(?:,\d+)?) \+(\d+(?:,\d+)?) @@/);
+    if (!match) {
+      index += 1;
+      continue;
+    }
+    const oldRange = parseRangeToken(match[1]!);
+    const newRange = parseRangeToken(match[2]!);
+    index += 1;
+    const beforeLines: string[] = [];
+    const afterLines: string[] = [];
+    while (index < lines.length) {
+      const line = lines[index]!;
+      if (line.startsWith("@@ ")) break;
+      if (line.startsWith("diff --git ") || line.startsWith("--- ") || line.startsWith("+++ ")) break;
+      if (line.startsWith("\\")) {
+        index += 1;
+        continue;
+      }
+      const marker = line[0];
+      const text = line.slice(1);
+      if (marker === " ") {
+        beforeLines.push(text);
+        afterLines.push(text);
+      } else if (marker === "-") {
+        beforeLines.push(text);
+      } else if (marker === "+") {
+        afterLines.push(text);
+      } else if (line === "") {
+        // Trailing blank from split; ignore.
+      } else {
+        // Unknown line — stop this hunk rather than corrupt the reverse apply.
+        break;
+      }
+      index += 1;
+    }
+    hunks.push({
+      oldStart: oldRange.start,
+      oldCount: oldRange.count,
+      newStart: newRange.start,
+      newCount: newRange.count,
+      beforeLines,
+      afterLines,
+    });
+  }
+  return hunks;
+}
+
+function linesMatchAt(lines: string[], startIndex: number, expected: string[]): boolean {
+  if (startIndex < 0 || startIndex + expected.length > lines.length) return false;
+  for (let offset = 0; offset < expected.length; offset += 1) {
+    if (lines[startIndex + offset] !== expected[offset]) return false;
+  }
+  return true;
+}
+
+/**
+ * Reverse-applies a single unified patch (produced by this desktop) to the
+ * current file content. Returns the restored content, or `null` when the file
+ * should be deleted, or `undefined` when the patch could not be applied cleanly.
+ */
+export function reverseApplyUnifiedPatch(currentContent: string, patch: string): string | null | undefined {
+  const hunks = parseUnifiedPatchHunks(patch);
+  if (hunks.length === 0) return undefined;
+
+  // Pure create: no old lines → deleting the file restores the pre-edit state.
+  if (hunks.every((hunk) => hunk.oldCount === 0 && hunk.beforeLines.length === 0)) {
+    const expected = hunks.flatMap((hunk) => hunk.afterLines);
+    const currentLines = splitDiffLines(currentContent);
+    if (expected.length === 0) return currentContent;
+    if (currentLines.length === expected.length && linesMatchAt(currentLines, 0, expected)) return null;
+    // Content drifted; still try a full replace if the expected "after" is a
+    // prefix/suffix match of the current file is unlikely — refuse rather than
+    // delete the wrong content.
+    return undefined;
+  }
+
+  // Pure delete: no new lines → recreate the file from the removed lines.
+  if (hunks.every((hunk) => hunk.newCount === 0 && hunk.afterLines.length === 0)) {
+    if (currentContent.replace(/\s+/g, "") !== "") return undefined;
+    const restored = hunks.flatMap((hunk) => hunk.beforeLines);
+    return restored.length === 0 ? "" : `${restored.join("\n")}\n`;
+  }
+
+  let lines = splitDiffLines(currentContent);
+  // Apply hunks from bottom to top so earlier line numbers stay valid.
+  for (const hunk of [...hunks].reverse()) {
+    const expectedAfter = hunk.afterLines;
+    const restoreBefore = hunk.beforeLines;
+    // Prefer the reported new-file line number (1-based; 0 means empty file).
+    let startIndex = hunk.newStart > 0 ? hunk.newStart - 1 : 0;
+    if (expectedAfter.length === 0) {
+      // Insertion of nothing / deletion of content: place at reported index.
+      if (startIndex > lines.length) startIndex = lines.length;
+    } else if (!linesMatchAt(lines, startIndex, expectedAfter)) {
+      // Content shifted — search for the after-block nearby, then whole-file.
+      let found = -1;
+      for (let candidate = 0; candidate + expectedAfter.length <= lines.length; candidate += 1) {
+        if (linesMatchAt(lines, candidate, expectedAfter)) {
+          found = candidate;
+          break;
+        }
+      }
+      if (found < 0) return undefined;
+      startIndex = found;
+    }
+    lines = [
+      ...lines.slice(0, startIndex),
+      ...restoreBefore,
+      ...lines.slice(startIndex + expectedAfter.length),
+    ];
+  }
+  if (lines.length === 0) return "";
+  // Preserve trailing newline convention used by buildUnifiedPatch inputs.
+  return currentContent.endsWith("\n") || currentContent === "" ? `${lines.join("\n")}\n` : lines.join("\n");
+}
+
+/**
+ * Restores files on disk by reverse-applying desktop-tracked `FileChange`
+ * patches. Callers must pass changes newest-first so multi-turn edits of the
+ * same path unwind correctly. Used by "revert to this message" so file
+ * restore does not depend solely on the CLI's live file-history checkpoint
+ * (which reports success without a file list and may miss checkpoints).
+ *
+ * Returns the unique list of restored relative/absolute paths.
+ */
+export function restoreFilesFromChanges(projectPath: string, changes: readonly FileChange[]): string[] {
+  const restored = new Set<string>();
+  for (const change of changes) {
+    if (!change.patch.trim()) continue;
+    const absolutePath = isAbsolute(change.path) ? change.path : resolve(projectPath, change.path);
+    // Never write outside the project (absolute paths outside cwd are only
+    // allowed when they match the original absolute path form we stored).
+    if (!isAbsolute(change.path) && !isWithinPath(projectPath, absolutePath) && !isWithinPath(MAXIMO_PROJECTS_ROOT, absolutePath)) {
+      continue;
+    }
+    let current = "";
+    let existed = true;
+    try {
+      current = readFileSync(absolutePath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") continue;
+      existed = false;
+      current = "";
+    }
+    const next = reverseApplyUnifiedPatch(current, change.patch);
+    if (next === undefined) continue;
+    try {
+      if (next === null) {
+        if (existed) {
+          unlinkSync(absolutePath);
+          restored.add(change.path);
+        }
+        continue;
+      }
+      mkdirSync(dirname(absolutePath), { recursive: true });
+      writeFileSync(absolutePath, next, "utf8");
+      restored.add(change.path);
+    } catch {
+      // Skip individual file failures so one bad path cannot block the rest.
+    }
+  }
+  return [...restored];
+}
+
 function readTextFileSnapshot(absolutePath: string, path: string): TextFileSnapshot {
   try {
     const info = statSync(absolutePath);
@@ -872,6 +1085,12 @@ export function buildCliArguments(
     );
   }
   if (previousSessionId) args.push("--resume", previousSessionId);
+  // Edit-and-resend / revert-to-message: reload the transcript truncated at a
+  // message uuid (--resume-session-at) and fork the session so the truncated
+  // history becomes a durable new session instead of appending stale turns.
+  if (request.resumeSessionAt) {
+    args.push("--resume-session-at", request.resumeSessionAt, "--fork-session");
+  }
   return args;
 }
 
@@ -925,9 +1144,14 @@ type ActiveTurn = {
   completed: boolean;
 };
 
-function writeUserMessage(child: Child, prompt: string): boolean {
+function writeUserMessage(child: Child, prompt: string, uuid?: string): boolean {
   if (!child.stdin || child.stdin.destroyed) return false;
-  child.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: prompt } })}\n`);
+  // Passing the desktop message id as the stream-json uuid lets the CLI
+  // transcript reuse it (createUserMessage honors a supplied uuid), so the
+  // desktop can later target the same message with --resume-session-at or
+  // rewind_files. When absent the CLI falls back to its own random uuid.
+  const payload = uuid ? { type: "user", message: { role: "user", content: prompt }, uuid } : { type: "user", message: { role: "user", content: prompt } };
+  child.stdin.write(`${JSON.stringify(payload)}\n`);
   return true;
 }
 
@@ -942,19 +1166,22 @@ function rememberFileSnapshot(turn: ActiveTurn, snapshot: TextFileSnapshot): boo
 
 type Child = ChildProcessByStdio<Writable, Readable, Readable> & {
   __markStopped?: () => void;
-  __send?: (prompt: string, attachments: Attachment[]) => boolean;
+  __send?: (prompt: string, attachments: Attachment[], uuid?: string) => boolean;
   __requestContext?: () => Promise<ContextUsage | null>;
   __pendingPrompt?: boolean;
+  __rewind?: (userMessageId: string, dryRun: boolean) => Promise<{ canRewind: boolean; filesChanged?: string[]; insertions?: number; deletions?: number; error?: string } | null>;
 };
 
 export class CliRunner {
   private readonly processes = new Map<string, Child>();
+  /** Outstanding rewind_files control_requests keyed by request id. */
+  private readonly pendingRewinds = new Map<string, (result: { canRewind: boolean; filesChanged?: string[]; insertions?: number; deletions?: number; error?: string }) => void>();
 
   isRunning(threadId: string): boolean {
     return this.processes.has(threadId);
   }
 
-  send(threadId: string, prompt: string, attachments: Attachment[]): boolean {
+  send(threadId: string, prompt: string, attachments: Attachment[], uuid?: string): boolean {
     const child = this.processes.get(threadId);
     if (!child?.__send) return false;
     if (child.__pendingPrompt) {
@@ -962,10 +1189,21 @@ export class CliRunner {
       // It is then written to stream-json while the CLI is still in the same
       // query, allowing the fork's `next` queue to inject it before the next
       // model request.
-      child.__send(prompt, attachments);
+      child.__send(prompt, attachments, uuid);
       return true;
     }
-    return child.__send(prompt, attachments);
+    return child.__send(prompt, attachments, uuid);
+  }
+
+  /**
+   * Asks the live CLI to restore tracked files to the state at a user message
+   * (control_request subtype "rewind_files"). Resolves with the CLI's result,
+   * or null when no live session is available. dry_run only reports whether a
+   * rewind is possible and how many files it would touch.
+   */
+  rewindFiles(threadId: string, userMessageId: string, dryRun: boolean): Promise<{ canRewind: boolean; filesChanged?: string[]; insertions?: number; deletions?: number; error?: string } | null> {
+    const child = this.processes.get(threadId);
+    return child?.__rewind?.(userMessageId, dryRun) ?? Promise.resolve(null);
   }
 
   requestContext(threadId: string): Promise<ContextUsage | null> {
@@ -1019,6 +1257,10 @@ export class CliRunner {
       MAXIMO_SYNTAX_DESKTOP: "1",
       MAXIMO_SYNTAX_ENVIRONMENT_KIND: "bridge",
       FORCE_COLOR: "0",
+      // Enables the CLI's file-history snapshots so "revert to this message"
+      // can restore tracked files. Snapshot creation is cheap and only runs
+      // when a file edit is observed; it is required for rewind_files to work.
+      MAXIMO_SYNTAX_ENABLE_SDK_FILE_CHECKPOINTING: "1",
     };
     // Maximo's /models endpoint advertises reasoning as a provider capability,
     // so a desktop-selected effort must reach the OpenAI-compatible shim even
@@ -1038,16 +1280,37 @@ export class CliRunner {
     callbacks.onEvent({ type: "context", threadId: request.threadId, context: latestContextUsage, timestamp: timestamp() });
 
     Object.defineProperty(child, "__send", {
-      value: (prompt: string, attachments: Attachment[]) => {
+      value: (prompt: string, attachments: Attachment[], uuid?: string) => {
         if (child.__pendingPrompt) {
-          queuedFollowUps.push({ prompt, attachments });
+          queuedFollowUps.push({ prompt, attachments, uuid });
           return true;
         }
-        return beginTurn(prompt, attachments);
+        return beginTurn(prompt, attachments, uuid);
       },
     });
 
     Object.defineProperty(child, "__requestContext", { value: () => Promise.resolve(latestContextUsage) });
+
+    Object.defineProperty(child, "__rewind", {
+      value: (userMessageId: string, dryRun: boolean) => {
+        if (!child.stdin || child.stdin.destroyed) return Promise.resolve(null);
+        const requestId = `rewind-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const payload = {
+          type: "control_request",
+          request_id: requestId,
+          request: { subtype: "rewind_files", user_message_id: userMessageId, dry_run: dryRun },
+        };
+        child.stdin.write(`${JSON.stringify(payload)}\n`);
+        return new Promise((resolve) => {
+          this.pendingRewinds.set(requestId, (result) => resolve(result));
+          // Bound the wait: if the CLI never answers (e.g. it is mid-turn and
+          // consumes stdin later), fail the request instead of hanging the UI.
+          setTimeout(() => {
+            if (this.pendingRewinds.delete(requestId)) resolve({ canRewind: false, error: "The CLI did not answer the file rewind request." });
+          }, 15_000).unref();
+        });
+      },
+    });
 
     let buffer = "";
     let stderrBuffer = "";
@@ -1110,7 +1373,7 @@ export class CliRunner {
         }
       })();
     };
-    const queuedFollowUps: Array<{ prompt: string; attachments: Attachment[] }> = [];
+    const queuedFollowUps: Array<{ prompt: string; attachments: Attachment[]; uuid?: string }> = [];
     const flushQueued = (betweenToolRounds: boolean) => {
       if (betweenToolRounds) {
         while (queuedFollowUps.length > 0 && !child.stdin?.destroyed) {
@@ -1119,7 +1382,7 @@ export class CliRunner {
           // The Maximo Syntax CLI consumes this as a `next` queued command.
           // Do not start a second desktop turn here: the current query is
           // still alive and must see this context before its next API call.
-          if (!writeUserMessage(child, buildPrompt({ ...request, prompt: next.prompt, attachments: next.attachments }))) {
+          if (!writeUserMessage(child, buildPrompt({ ...request, prompt: next.prompt, attachments: next.attachments }), next.uuid)) {
             queuedFollowUps.unshift(next);
             return;
           }
@@ -1130,27 +1393,37 @@ export class CliRunner {
       if (!next || child.stdin?.destroyed) return;
       // A turn with no tool result has no in-query injection point. In that
       // case, fall back to the normal next desktop turn after the result.
-      beginTurn(next.prompt, next.attachments);
+      beginTurn(next.prompt, next.attachments, next.uuid);
     };
-    const beginTurn = (prompt: string, attachments: Attachment[]) => {
+    const beginTurn = (prompt: string, attachments: Attachment[], uuid?: string) => {
       turn = { startedAt: Date.now(), streamedText: "", finalResult: "", resultWasError: false, activity: [], timeline: [], agents: new Map(), fileSnapshots: new Map(), fileSnapshotBytes: 0, toolSnapshots: new Map(), completed: false };
       stderrBuffer = "";
       child.__pendingPrompt = true;
       callbacks.onEvent({ type: "turn-started", threadId: request.threadId, timestamp: timestamp() });
-      const wrote = writeUserMessage(child, buildPrompt({ ...request, prompt, attachments }));
+      const wrote = writeUserMessage(child, buildPrompt({ ...request, prompt, attachments }), uuid);
       if (!wrote) {
         child.__pendingPrompt = false;
         void finishTurn("error", null, false).then(() => flushQueued(false));
       }
       return wrote;
     };
-    beginTurn(request.prompt, request.attachments);
+    // When this run is an edit-and-resend, the edited message's fresh CLI uuid
+    // is used so the CLI does not dedup it away. New user turns after the edit
+    // get a fresh uuid from the store.
+    beginTurn(request.prompt, request.attachments, request.userMessageUuid);
 
     const handleLine = (line: string) => {
       const clean = line.trim();
       if (!clean) return;
       try {
         const update = parseCliMessage(JSON.parse(clean));
+        if (update.rewindRequestId && update.rewindResult) {
+          const resolve = this.pendingRewinds.get(update.rewindRequestId);
+          if (resolve) {
+            this.pendingRewinds.delete(update.rewindRequestId);
+            resolve(update.rewindResult);
+          }
+        }
         if (update.sessionId && update.sessionId !== sessionId) {
           sessionId = update.sessionId;
           callbacks.onEvent({ type: "session", threadId: request.threadId, sessionId, timestamp: timestamp() });
@@ -1435,7 +1708,9 @@ export class CliRunner {
       const status: ThreadStatus = stopped ? "cancelled" : code === 0 && !turn.resultWasError ? "complete" : "error";
       void finishTurn(status, code, true).finally(() => {
         callbacks.onEvent({ type: "finished", threadId: request.threadId, status, exitCode: code, timestamp: timestamp() });
-        this.processes.delete(request.threadId);
+        // Only remove this child — a replacement process for the same thread
+        // (edit-and-resend / fresh start after stopAndWait) must stay registered.
+        if (this.processes.get(request.threadId) === child) this.processes.delete(request.threadId);
       });
     });
 
@@ -1452,6 +1727,44 @@ export class CliRunner {
       if (this.processes.get(threadId) === child && child.exitCode === null) child.kill("SIGKILL");
     }, 3_000).unref();
     return true;
+  }
+
+  /**
+   * Stops a live CLI process and waits for it to leave the process map so a
+   * replacement session (edit-and-resend / truncated resume) can start safely.
+   * Resolves true when the process was stopped (or already gone), false only
+   * when the map entry could not be cleared before the timeout.
+   */
+  stopAndWait(threadId: string, timeoutMs = 5_000): Promise<boolean> {
+    const child = this.processes.get(threadId);
+    if (!child) return Promise.resolve(true);
+    if (child.exitCode !== null) {
+      if (this.processes.get(threadId) === child) this.processes.delete(threadId);
+      return Promise.resolve(true);
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
+      const onClose = () => finish(true);
+      child.once("close", onClose);
+      if (!this.stop(threadId)) {
+        child.off("close", onClose);
+        finish(true);
+        return;
+      }
+      setTimeout(() => {
+        child.off("close", onClose);
+        if (this.processes.get(threadId) === child) {
+          try { child.kill("SIGKILL"); } catch { /* already dead */ }
+          this.processes.delete(threadId);
+        }
+        finish(true);
+      }, timeoutMs).unref();
+    });
   }
 
   stopAll(): void {

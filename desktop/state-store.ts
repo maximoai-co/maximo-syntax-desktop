@@ -497,6 +497,61 @@ export class StateStore {
     });
   }
 
+  /**
+   * Edit-and-resend: replaces the content of an existing user message, drops
+   * every message after it (the assistant reply and later turns), and gives
+   * the edited message a fresh CLI uuid (the CLI dedups by uuid, so the resent
+   * turn cannot reuse the original). The desktop id is preserved for
+   * display/revert targeting. Refuses to rewrite non-user messages.
+   */
+  async rewriteUserMessage(threadId: string, messageId: string, content: string): Promise<AppState> {
+    return this.update((draft) => {
+      const thread = draft.threads.find((candidate) => candidate.id === threadId);
+      if (!thread) throw new Error("Chat not found.");
+      const index = thread.messages.findIndex((candidate) => candidate.id === messageId);
+      const message = thread.messages[index];
+      if (!message || message.role !== "user") throw new Error("Message not found.");
+      // Discard the assistant reply (and any later turns) so the UI matches the
+      // forked CLI transcript that will be rebuilt from this edited prompt.
+      if (index < thread.messages.length - 1) {
+        const removed = thread.messages.slice(index + 1);
+        thread.messages = thread.messages.slice(0, index + 1);
+        const removedIds = new Set(removed.map((item) => item.id));
+        if (thread.pinnedMessages) thread.pinnedMessages = thread.pinnedMessages.filter((pin) => !removedIds.has(pin.messageId));
+        if (thread.markers) thread.markers = thread.markers.filter((marker) => !removedIds.has(marker.messageId));
+      }
+      message.content = content;
+      message.uuid = randomUUID();
+      // Anchor future runs at the message before the edited one so the edited
+      // message replaces it in the CLI transcript rather than being appended.
+      thread.truncateAtUuid = index > 0 ? (thread.messages[index - 1]?.uuid ?? undefined) : undefined;
+      thread.updatedAt = Date.now();
+    });
+  }
+
+  /**
+   * Revert-to-message: discards every message after the target user message
+   * (and their pins/markers) and returns the thread to idle. The CLI transcript
+   * truncation is handled separately via --resume-session-at anchored at the
+   * target's uuid.
+   */
+  async truncateThreadAt(threadId: string, messageId: string): Promise<AppState> {
+    return this.update((draft) => {
+      const thread = draft.threads.find((candidate) => candidate.id === threadId);
+      if (!thread) throw new Error("Chat not found.");
+      const index = thread.messages.findIndex((candidate) => candidate.id === messageId);
+      if (index < 0 || thread.messages[index]?.role !== "user") throw new Error("Message not found.");
+      const removed = thread.messages.slice(index + 1);
+      thread.messages = thread.messages.slice(0, index + 1);
+      const removedIds = new Set(removed.map((message) => message.id));
+      if (thread.pinnedMessages) thread.pinnedMessages = thread.pinnedMessages.filter((pin) => !removedIds.has(pin.messageId));
+      if (thread.markers) thread.markers = thread.markers.filter((marker) => !removedIds.has(marker.messageId));
+      thread.status = "idle";
+      thread.truncateAtUuid = thread.messages[index]?.uuid ?? undefined;
+      thread.updatedAt = Date.now();
+    });
+  }
+
   async renameThread(threadId: string, title: string): Promise<AppState> {
     return this.update((draft) => {
       const thread = draft.threads.find((candidate) => candidate.id === threadId);
@@ -653,6 +708,22 @@ export class StateStore {
     });
   }
 
+  /**
+   * Edit-and-resend: marks the thread running after the edited user message was
+   * rewritten in place, without pushing a duplicate message. The rewritten
+   * message (which keeps its original id) is the active turn.
+   */
+  async beginEditAndResend(threadId: string): Promise<AppState> {
+    return this.update((draft) => {
+      const thread = draft.threads.find((candidate) => candidate.id === threadId);
+      if (!thread) throw new Error("Chat not found.");
+      thread.status = "running";
+      thread.unread = false;
+      draft.selectedThreadId = threadId;
+      draft.selectedProjectId = thread.projectId;
+    });
+  }
+
   async sendRunMessage(
     threadId: string,
     prompt: string,
@@ -688,6 +759,7 @@ export class StateStore {
       attachments,
       createdAt: Date.now(),
       model: model.trim(),
+      uuid: randomUUID(),
       ...(kind ? { kind } : {}),
     };
     thread.messages.push(message);

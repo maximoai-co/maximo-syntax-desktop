@@ -400,4 +400,108 @@ describe("StateStore", () => {
     expect(store.getThread(threadId)?.markers).toEqual([]);
     expect(userMessageId).not.toBe(assistantMessageId);
   });
+
+  it("rewrites an edited user message in place, drops later turns, and re-anchors the thread", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(directory, createInitialState(directory));
+    await store.initialize();
+    const project = store.snapshot().projects[0]!;
+    const created = await store.createThread(project.id);
+    const threadId = created.selectedThreadId!;
+    await store.beginRun(threadId, "Original request", [], "", "", "auto");
+    await store.finishRun(threadId, "Original answer", "complete");
+    const before = store.getThread(threadId)!;
+    const userMessage = before.messages[0]!;
+    const originalUuid = userMessage.uuid;
+    expect(before.messages).toHaveLength(2);
+
+    await store.rewriteUserMessage(threadId, userMessage.id, "Edited request");
+
+    const after = store.getThread(threadId)!;
+    // The assistant reply is discarded so the UI matches the forked transcript.
+    expect(after.messages).toHaveLength(1);
+    const edited = after.messages[0]!;
+    expect(edited.content).toBe("Edited request");
+    expect(edited.id).toBe(userMessage.id);
+    expect(edited.uuid).toBeTruthy();
+    expect(edited.uuid).not.toBe(originalUuid);
+    // Anchor points at the message before the edited one; with a single message
+    // there is nothing before it, so the anchor clears.
+    expect(after.truncateAtUuid).toBeUndefined();
+  });
+
+  it("anchors an edited later user message at the previous turn and discards the tail", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(directory, createInitialState(directory));
+    await store.initialize();
+    const project = store.snapshot().projects[0]!;
+    const created = await store.createThread(project.id);
+    const threadId = created.selectedThreadId!;
+    await store.beginRun(threadId, "First request", [], "", "", "auto");
+    await store.finishRun(threadId, "First answer", "complete");
+    await store.beginRun(threadId, "Second request", [], "", "", "auto");
+    await store.finishRun(threadId, "Second answer", "complete");
+    const before = store.getThread(threadId)!;
+    const firstAnswer = before.messages[1]!;
+    const secondUser = before.messages[2]!;
+    expect(before.messages).toHaveLength(4);
+
+    await store.rewriteUserMessage(threadId, secondUser.id, "Edited second request");
+
+    const after = store.getThread(threadId)!;
+    expect(after.messages.map((message) => message.content)).toEqual(["First request", "First answer", "Edited second request"]);
+    // Resume the CLI transcript at the message before the edited one.
+    expect(after.truncateAtUuid).toBe(firstAnswer.uuid);
+    expect(after.messages[2]!.uuid).not.toBe(secondUser.uuid);
+  });
+
+  it("truncates the thread at a user message and cleans up pins/markers", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(directory, createInitialState(directory));
+    await store.initialize();
+    const project = store.snapshot().projects[0]!;
+    const created = await store.createThread(project.id);
+    const threadId = created.selectedThreadId!;
+    await store.beginRun(threadId, "First request", [], "", "", "auto");
+    await store.finishRun(threadId, "First answer", "complete");
+    await store.beginRun(threadId, "Second request", [], "", "", "auto");
+    await store.finishRun(threadId, "Second answer", "complete");
+    const thread = store.getThread(threadId)!;
+    const firstUser = thread.messages[0]!;
+    const secondAnswer = thread.messages[3]!;
+    await store.toggleMessagePinned(threadId, secondAnswer.id);
+    await store.toggleThreadMarker(threadId, secondAnswer.id);
+
+    await store.truncateThreadAt(threadId, firstUser.id);
+
+    const truncated = store.getThread(threadId)!;
+    // Truncating at the first user message keeps only that message; everything
+    // after (its answer and the later turn) is discarded.
+    expect(truncated.messages.map((message) => message.content)).toEqual(["First request"]);
+    expect(truncated.status).toBe("idle");
+    expect(truncated.pinnedMessages ?? []).toEqual([]);
+    expect(truncated.markers ?? []).toEqual([]);
+    expect(truncated.truncateAtUuid).toBe(firstUser.uuid);
+  });
+
+  it("rejects rewriting non-user messages and truncating at non-user messages", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(directory, createInitialState(directory));
+    await store.initialize();
+    const project = store.snapshot().projects[0]!;
+    const created = await store.createThread(project.id);
+    const threadId = created.selectedThreadId!;
+    await store.beginRun(threadId, "Request", [], "", "", "auto");
+    await store.finishRun(threadId, "Answer", "complete");
+    const thread = store.getThread(threadId)!;
+    const assistantMessage = thread.messages[1]!;
+
+    await expect(store.rewriteUserMessage(threadId, assistantMessage.id, "nope")).rejects.toThrow("Message not found.");
+    await expect(store.truncateThreadAt(threadId, assistantMessage.id)).rejects.toThrow("Message not found.");
+    await expect(store.truncateThreadAt(threadId, "missing-id")).rejects.toThrow("Message not found.");
+  });
 });

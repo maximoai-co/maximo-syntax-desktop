@@ -338,6 +338,14 @@ export interface ChatMessage {
   fileChanges?: FileChange[];
   /** Context added while a run was active; rendered inside the assistant work disclosure. */
   kind?: "follow-up";
+  /**
+   * The CLI transcript uuid for this message. Defaults to the desktop id for
+   * user messages (passed as the stream-json uuid), so edits/reverts can target
+   * it with --resume-session-at / rewind_files. After an edit-and-resend the
+   * rewritten message receives a fresh uuid (the CLI dedups by uuid, so the
+   * resent turn cannot reuse the original).
+   */
+  uuid?: string;
 }
 
 export interface ProfileUsage {
@@ -388,6 +396,12 @@ export interface Thread {
   pinnedMessages?: PinnedMessage[];
   markers?: ThreadMarker[];
   notes?: string;
+  /**
+   * The CLI transcript uuid this thread is anchored to after an edit-and-resend
+   * or revert-to-message. Subsequent runs pass it as --resume-session-at so the
+   * CLI never reloads turns the desktop already discarded.
+   */
+  truncateAtUuid?: string;
 }
 
 export interface AppState {
@@ -730,6 +744,39 @@ export interface RunRequest {
   contextWindow?: number;
   /** True when this message was added as context while a run was active. */
   asFollowUp?: boolean;
+  /**
+   * Edit-and-resend: the desktop ChatMessage.id of the user message being
+   * edited. When present, the run resumes the transcript truncated at that
+   * message (the CLI's --resume-session-at) and replays the edited prompt.
+   */
+  editMessageId?: string;
+  /**
+   * Revert-to-message: the desktop ChatMessage.id of the user message to
+   * roll the transcript back to. When present, the run resumes the
+   * transcript truncated at that message with no new prompt turn.
+   */
+  revertToMessageId?: string;
+  /** Revert-to-message with file restore: also rewind tracked files to this user message. */
+  revertFiles?: boolean;
+  /**
+   * The CLI transcript uuid to truncate at for this run (--resume-session-at).
+   * For edit-and-resend this is the uuid of the message before the edited one
+   * (so the edited message is replaced, not kept); for revert it is the target
+   * user message's uuid (kept inclusive). When set, the run also forks the
+   * session so the truncated history is durable.
+   */
+  resumeSessionAt?: string;
+  /** The CLI uuid to use for this run's first user turn. */
+  userMessageUuid?: string;
+}
+
+export interface RevertResult {
+  ok: boolean;
+  error?: string;
+  /** Number of conversation messages discarded by the revert. */
+  removedMessages?: number;
+  /** Number of tracked files restored when revertFiles was requested. */
+  restoredFiles?: number;
 }
 
 export type RunEvent =
@@ -845,6 +892,8 @@ export interface DesktopApi {
   };
   startRun(request: RunRequest): Promise<RunResult>;
   sendToRun(request: RunRequest): Promise<RunResult>;
+  editAndResendMessage(request: RunRequest): Promise<RunResult>;
+  revertToMessage(input: { threadId: string; messageId: string; revertFiles?: boolean }): Promise<RevertResult & { state?: AppState }>;
   contextUsage(threadId: string): Promise<ContextUsage | null>;
   respondToPermission(threadId: string, response: { requestId: string; behavior: "allow" | "deny"; updatedInput?: Record<string, unknown>; message?: string; toolUseID?: string; updatedPermissions?: unknown[] }): Promise<boolean>;
   stopRun(threadId: string): Promise<boolean>;

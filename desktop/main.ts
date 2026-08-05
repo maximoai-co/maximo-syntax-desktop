@@ -17,7 +17,7 @@ import {
   readLocalAccountStatus,
 } from "./auth-service.js";
 import { AppUpdater } from "./app-updater.js";
-import { CliRunner } from "./cli-runner.js";
+import { CliRunner, restoreFilesFromChanges } from "./cli-runner.js";
 import { RuntimeManager } from "./runtime-manager.js";
 import { BrowserHostServer } from "./browser-host.js";
 import { BrowserManager } from "./browser-manager.js";
@@ -33,7 +33,7 @@ import {
 } from "./whats-new.js";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
 import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
-import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
+import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 
 let mainWindow: BrowserWindow | null = null;
 let store: StateStore;
@@ -915,6 +915,9 @@ function registerIpc(): void {
         .filter((path, index, paths) => path !== resolve(project.path) && paths.indexOf(path) === index && existsSync(path))
         .slice(0, MAX_PROJECT_SOURCE_COUNT - 1),
       ...(typeof request.contextWindow === "number" && Number.isFinite(request.contextWindow) && request.contextWindow > 0 ? { contextWindow: Math.round(Math.min(request.contextWindow, 10_000_000)) } : {}),
+      // After an edit-and-resend / revert, keep truncating the CLI transcript
+      // at the thread's anchor so stale turns never resurface on later sends.
+      ...(thread.truncateAtUuid ? { resumeSessionAt: thread.truncateAtUuid } : {}),
     };
     const status = await runtime.ensure();
     const engine = runtime.currentLaunch();
@@ -985,6 +988,177 @@ function registerIpc(): void {
     });
   });
   ipcMain.handle("run:stop", (_event, threadId: string) => runner.stop(safeText(threadId, 100)));
+
+  const buildSafeRequest = async (request: RunRequest, threadId: string): Promise<RunRequest> => {
+    const thread = store.getThread(threadId);
+    const project = thread ? store.getProject(thread.projectId) : undefined;
+    const permission = (["default", "plan", "acceptEdits", "auto", "full"].includes(request.permission) ? request.permission : "auto") as PermissionMode;
+    return {
+      threadId,
+      prompt: safeText(request.prompt, 100_000).trim(),
+      attachments: await normalizeAttachments(request.attachments),
+      model: typeof request.model === "string" ? request.model.slice(0, 200) : "",
+      effort: typeof request.effort === "string" ? request.effort.slice(0, 40) : "",
+      permission,
+      additionalDirectories: (project?.sourcePaths ?? [])
+        .map((path) => resolve(path))
+        .filter((path, index, paths) => path !== resolve(project?.path ?? "") && paths.indexOf(path) === index && existsSync(path))
+        .slice(0, MAX_PROJECT_SOURCE_COUNT - 1),
+      ...(typeof request.contextWindow === "number" && Number.isFinite(request.contextWindow) && request.contextWindow > 0 ? { contextWindow: Math.round(Math.min(request.contextWindow, 10_000_000)) } : {}),
+      // Preserve edit/revert fork anchors so the CLI receives --resume-session-at
+      // and the edited turn's fresh uuid (buildSafeRequest used to drop these).
+      ...(typeof request.resumeSessionAt === "string" && request.resumeSessionAt.trim()
+        ? { resumeSessionAt: request.resumeSessionAt.trim().slice(0, 200) }
+        : {}),
+      ...(typeof request.userMessageUuid === "string" && request.userMessageUuid.trim()
+        ? { userMessageUuid: request.userMessageUuid.trim().slice(0, 200) }
+        : {}),
+      ...(typeof request.editMessageId === "string" && request.editMessageId.trim()
+        ? { editMessageId: request.editMessageId.trim().slice(0, 200) }
+        : {}),
+    };
+  };
+
+  /**
+   * Edit-and-resend: rewrite the target user message in place (fresh CLI uuid),
+   * then start a run that forks the CLI transcript truncated at the message
+   * BEFORE the edited one (so the edited turn replaces it, not appends) and
+   * replays the edited prompt.
+   *
+   * A warm CLI session (process still alive after the previous turn finished)
+   * is stopped automatically — the user should not have to click Stop first.
+   */
+  ipcMain.handle("run:edit-and-resend", async (_event, request: RunRequest) => {
+    const threadId = safeText(request.threadId, 100);
+    const thread = store.getThread(threadId);
+    if (!thread) return { accepted: false, error: "Chat not found." };
+    const project = store.getProject(thread.projectId);
+    if (!project || !existsSync(project.path)) return { accepted: false, error: "The project folder is unavailable." };
+    const messageId = typeof request.editMessageId === "string" ? request.editMessageId.slice(0, 200) : "";
+    if (!messageId) return { accepted: false, error: "No message selected to edit." };
+    const targetIndex = thread.messages.findIndex((message) => message.id === messageId);
+    const target = thread.messages[targetIndex];
+    if (!target || target.role !== "user") return { accepted: false, error: "Only user messages can be edited." };
+    const prompt = safeText(request.prompt, 100_000).trim();
+    if (!prompt) return { accepted: false, error: "Write a request first." };
+    const status = await runtime.ensure();
+    const engine = runtime.currentLaunch();
+    if (!status.available || !engine) return { accepted: false, error: status.message };
+    // Warm sessions stay alive between turns for follow-ups. Edit-and-resend
+    // needs a forked replacement process, so retire the live one first.
+    if (runner.isRunning(threadId)) {
+      await runner.stopAndWait(threadId);
+    }
+    // The truncated fork ends at the message before the edited one, so the
+    // edited turn (fresh uuid) replaces it in the new session.
+    const resumeSessionAt = targetIndex > 0 ? (thread.messages[targetIndex - 1]?.uuid ?? undefined) : undefined;
+    await store.rewriteUserMessage(threadId, messageId, prompt);
+    const editedMessage = store.getThread(threadId)?.messages.find((message) => message.id === messageId);
+    const userMessageUuid = editedMessage?.uuid;
+    const safeRequest = await buildSafeRequest({ ...request, prompt, editMessageId: messageId, resumeSessionAt, userMessageUuid }, threadId);
+    const startedState = await store.beginEditAndResend(threadId);
+    // When editing the first user message there is no prior anchor — start a
+    // fresh CLI session instead of resuming the full (pre-edit) transcript.
+    const previousSessionId = resumeSessionAt ? thread.cliSessionId : undefined;
+    try {
+      runner.start(engine, safeRequest, project.path, previousSessionId, {
+        onEvent: (event: RunEvent) => {
+          sendRunEvent(event);
+          if (event.type === "context") void store.recordContextUsage(threadId, event.context);
+        },
+        onComplete: async (result) => {
+          await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
+        },
+      }, browserHost?.bridgeLaunch(threadId, project.path));
+      return { accepted: true, state: startedState };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await store.finishRun(threadId, message, "error", thread.cliSessionId, true);
+      return { accepted: false, error: message };
+    }
+  });
+
+  /**
+   * Revert-to-message: truncates the desktop transcript at the target user
+   * message and, when requested, restores files changed by the discarded turns.
+   *
+   * File restore strategy (in order):
+   *  1. Desktop reverse-apply of `fileChanges` recorded on discarded messages
+   *     (reliable, works without a warm CLI session).
+   *  2. CLI `rewind_files` checkpoint when a warm session still has one and
+   *     desktop tracking found nothing to reverse.
+   *
+   * The CLI's non-dry-run success response omits `filesChanged`, so counts
+   * always come from the dry-run list or from the desktop reverse-apply.
+   * After file work the warm process is retired so the next send forks from
+   * the truncated anchor.
+   */
+  ipcMain.handle("run:revert", async (_event, input: { threadId?: unknown; messageId?: unknown; revertFiles?: unknown }) => {
+    const threadId = safeText(input?.threadId, 100);
+    const thread = store.getThread(threadId);
+    if (!thread) return { ok: false, error: "Chat not found." } satisfies RevertResult;
+    const messageId = typeof input?.messageId === "string" ? input.messageId.slice(0, 200) : "";
+    const targetIndex = thread.messages.findIndex((message) => message.id === messageId);
+    const target = thread.messages[targetIndex];
+    if (targetIndex < 0 || !target || target.role !== "user") return { ok: false, error: "Only user messages can be reverted to." } satisfies RevertResult;
+    const removedMessages = thread.messages.length - (targetIndex + 1);
+    const wantFiles = input?.revertFiles === true;
+    // File rewinding and transcript truncation both key off the CLI uuid.
+    const targetUuid = target.uuid ?? target.id;
+
+    let restoredFiles = 0;
+    if (wantFiles) {
+      const project = store.getProject(thread.projectId);
+      if (!project || !existsSync(project.path)) return { ok: false, error: "The project folder is unavailable." } satisfies RevertResult;
+
+      // Desktop-tracked patches from every discarded turn, newest first so
+      // multi-turn edits of the same path unwind correctly.
+      const discardedChanges = thread.messages
+        .slice(targetIndex + 1)
+        .flatMap((message) => (message.fileChanges ?? []).map((change) => ({ change, createdAt: message.createdAt })))
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .map((entry) => entry.change);
+
+      if (discardedChanges.length > 0) {
+        const restored = restoreFilesFromChanges(project.path, discardedChanges);
+        restoredFiles = restored.length;
+      }
+
+      // Fall back to (or supplement with) the CLI file-history checkpoint when
+      // desktop tracking found nothing — e.g. edits that never produced a
+      // comparable text snapshot still live in the warm CLI session.
+      if (restoredFiles === 0 && runner.isRunning(threadId)) {
+        const dryRun = await runner.rewindFiles(threadId, targetUuid, true);
+        if (dryRun?.canRewind) {
+          // The CLI omits filesChanged on the real rewind response; use dry-run
+          // for the count, then perform the actual restore.
+          const expected = dryRun.filesChanged?.length ?? 0;
+          const rewind = await runner.rewindFiles(threadId, targetUuid, false);
+          if (rewind?.canRewind) {
+            restoredFiles = rewind.filesChanged?.length ?? expected;
+          }
+        }
+      }
+
+      // When neither path restored anything but the user asked for files, still
+      // succeed the transcript revert — the renderer surfaces the count. Only
+      // fail hard when we had no desktop patches AND no live session (so the
+      // user can see the "file restore wasn't available" fallback toast).
+      if (restoredFiles === 0 && discardedChanges.length === 0 && !runner.isRunning(threadId)) {
+        return { ok: false, error: "No file changes were recorded for the discarded turns, and no live session is available for file restore." } satisfies RevertResult;
+      }
+    }
+
+    // Retire the warm session so the next send starts a forked process at the
+    // truncated anchor instead of appending onto the pre-revert transcript.
+    if (runner.isRunning(threadId)) {
+      await runner.stopAndWait(threadId);
+    }
+
+    const truncatedState = await store.truncateThreadAt(threadId, messageId);
+    return { ok: true, state: truncatedState, removedMessages, ...(wantFiles ? { restoredFiles } : {}) } satisfies RevertResult & { state?: unknown };
+  });
+
   ipcMain.handle("git:status", async (_event, projectId: string) => readGitStatus(safeText(projectId, 100)));
   ipcMain.handle("git:branches", async (_event, projectId: string) => {
     const project = store.getProject(safeText(projectId, 100));

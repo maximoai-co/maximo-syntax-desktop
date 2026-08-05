@@ -78,6 +78,8 @@ const api: DesktopApi = {
   },
   startRun: (request) => ipcRenderer.invoke("run:start", request),
   sendToRun: (request) => ipcRenderer.invoke("run:send", request),
+  editAndResendMessage: (request) => ipcRenderer.invoke("run:edit-and-resend", request),
+  revertToMessage: (input) => ipcRenderer.invoke("run:revert", input),
   contextUsage: (threadId) => ipcRenderer.invoke("run:context", threadId),
   respondToPermission: (threadId, response) => ipcRenderer.invoke("run:permission-response", threadId, response),
   stopRun: (threadId) => ipcRenderer.invoke("run:stop", threadId),

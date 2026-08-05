@@ -4,7 +4,7 @@ import {
   Activity as ActivityIcon, AlertCircle, Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
   File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, LogOut, Menu, SquarePen,
   GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
-  Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, X, Zap,
+  Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Undo2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, X, Zap,
 } from "lucide-react";
 import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT } from "../desktop/types";
 import type {
@@ -1582,7 +1582,7 @@ function CopyMessageButton({ content }: { content: string }) {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1_500);
   };
-  return <button type="button" className="message-copy" onClick={() => void copy()} title={copied ? "Copied" : "Copy message"} aria-label={copied ? "Copied" : "Copy message"}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>;
+  return <button type="button" className="message-copy" onClick={() => void copy()} data-tooltip={copied ? "Copied" : "Copy message"} aria-label={copied ? "Copied" : "Copy message"}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>;
 }
 
 type AttachmentPreviewState = {
@@ -2414,13 +2414,60 @@ function AnswerModelLabel({ message, thread, models }: { message: ChatMessage; t
 
 function MessageEnvironmentActions({ message, pinned, onTogglePin }: { message: ChatMessage; pinned: boolean; onTogglePin: () => void }) {
   if (message.role !== "assistant") return null;
-  return <button type="button" className={pinned ? "active" : ""} onClick={onTogglePin} title={pinned ? "Unpin message" : "Pin message"} aria-label={pinned ? "Unpin message" : "Pin message"}><Pin size={13} /></button>;
+  return <button type="button" className={pinned ? "active" : ""} onClick={onTogglePin} data-tooltip={pinned ? "Unpin message" : "Pin message"} aria-label={pinned ? "Unpin message" : "Pin message"}><Pin size={13} /></button>;
 }
 
-function MessageView({ thread, project, git, models, live, waiting, skillNames, timestampFormat, streamingEnabled, onPreviewAttachment, onOpenFile, onTogglePin }: { thread: Thread; project?: Project; git?: GitStatus | null; models: EngineModel[]; live?: LiveRun; waiting?: boolean; skillNames?: Set<string>; timestampFormat: TimestampFormat; streamingEnabled: boolean; onPreviewAttachment: (attachment: Attachment) => void; onOpenFile: (path: string, diff?: GitDiff) => void; onTogglePin: (messageId: string) => void }) {
+function UserMessageEditForm({ initialValue, onCancel, onSubmit, disabled = false }: { initialValue: string; onCancel: () => void; onSubmit: (text: string) => void; disabled?: boolean }) {
+  const [value, setValue] = useState(initialValue);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Auto-grow the textarea so the edit form feels like the bubble, not a fixed box.
+  const resizeTextarea = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
+  };
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    resizeTextarea();
+  }, []);
+  useEffect(() => { resizeTextarea(); }, [value]);
+  const trimmed = value.replace(/\s+/g, " ").trim();
+  const canSubmit = Boolean(trimmed) && trimmed !== initialValue.trim() && !disabled;
+  const submit = () => {
+    if (!canSubmit) return;
+    onSubmit(trimmed);
+  };
+  return (
+    <form className="message-edit-form" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+      <textarea
+        ref={textareaRef}
+        value={value}
+        disabled={disabled}
+        rows={1}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(); }
+          if (event.key === "Escape") { event.preventDefault(); onCancel(); }
+        }}
+        aria-label="Edit message"
+      />
+      <div className="message-edit-form-actions">
+        <button type="button" className="message-edit-cancel" onClick={onCancel} disabled={disabled}>Cancel</button>
+        <button type="submit" className="message-edit-save" disabled={!canSubmit}>Send</button>
+      </div>
+    </form>
+  );
+}
+
+function MessageView({ thread, project, git, models, live, waiting, skillNames, timestampFormat, streamingEnabled, onPreviewAttachment, onOpenFile, onTogglePin, onEditResend, onRevert }: { thread: Thread; project?: Project; git?: GitStatus | null; models: EngineModel[]; live?: LiveRun; waiting?: boolean; skillNames?: Set<string>; timestampFormat: TimestampFormat; streamingEnabled: boolean; onPreviewAttachment: (attachment: Attachment) => void; onOpenFile: (path: string, diff?: GitDiff) => void; onTogglePin: (messageId: string) => void; onEditResend?: (messageId: string, text: string) => void; onRevert?: (messageId: string, revertFiles: boolean) => void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const previousThreadIdRef = useRef(thread.id);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   useEffect(() => {
     if (previousThreadIdRef.current !== thread.id) {
       previousThreadIdRef.current = thread.id;
@@ -2437,116 +2484,174 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
     if (!scroll) return;
     shouldStickToBottomRef.current = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 72;
   };
+  // The latest non-follow-up user message is the only one that can be edited
+  // and resent (matches Synara's resolveLatestTailUserMessageEditTarget).
+  const latestEditableUserMessageId = useMemo(() => {
+    let latest: string | null = null;
+    for (const message of thread.messages) {
+      if (message.role === "user" && message.kind !== "follow-up") latest = message.id;
+    }
+    return latest;
+  }, [thread.messages]);
+  // A user message is "revertable" when it is followed by at least one
+  // assistant turn (there is something to discard by reverting to it).
+  const revertableUserMessageIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (let index = 0; index < thread.messages.length; index += 1) {
+      const message = thread.messages[index];
+      if (message?.role !== "user" || message.kind === "follow-up") continue;
+      for (let next = index + 1; next < thread.messages.length; next += 1) {
+        const candidate = thread.messages[next];
+        if (!candidate) break;
+        if (candidate.role === "user") break;
+        if (candidate.role === "assistant" && candidate.content.trim()) {
+          ids.add(message.id);
+          break;
+        }
+      }
+    }
+    return ids;
+  }, [thread.messages]);
+  // Leave edit mode if the target message disappears (e.g. after a revert).
+  useEffect(() => {
+    if (editingMessageId && !thread.messages.some((message) => message.id === editingMessageId)) {
+      setEditingMessageId(null);
+    }
+  }, [editingMessageId, thread.messages]);
   const { renderedMessages, streamingInteractions, streamingFollowUps } = useMemo(() => {
     const renderedMessages: ReactNode[] = [];
-  const followUpsByAssistant = new Map<string, ChatMessage[]>();
-  const standaloneFollowUps = new Set<string>();
-  let pendingFollowUps: ChatMessage[] = [];
-  let lastAssistantId: string | undefined;
-  const attachFollowUps = (assistantId: string, followUps: ChatMessage[]) => {
-    followUpsByAssistant.set(assistantId, [...(followUpsByAssistant.get(assistantId) ?? []), ...followUps]);
-  };
-  // Follow-ups are persisted as messages for recovery/search, but are context
-  // for the active agent task rather than standalone conversation turns.
-  for (const message of thread.messages) {
-    if (message.role === "user" && message.kind === "follow-up") {
-      pendingFollowUps.push(message);
-      continue;
-    }
-    if (message.role === "assistant") {
-      if (pendingFollowUps.length > 0 && thread.status !== "running") {
-        attachFollowUps(message.id, pendingFollowUps);
+    const followUpsByAssistant = new Map<string, ChatMessage[]>();
+    const standaloneFollowUps = new Set<string>();
+    let pendingFollowUps: ChatMessage[] = [];
+    let lastAssistantId: string | undefined;
+    const attachFollowUps = (assistantId: string, followUps: ChatMessage[]) => {
+      followUpsByAssistant.set(assistantId, [...(followUpsByAssistant.get(assistantId) ?? []), ...followUps]);
+    };
+    // Follow-ups are persisted as messages for recovery/search, but are context
+    // for the active agent task rather than standalone conversation turns.
+    for (const message of thread.messages) {
+      if (message.role === "user" && message.kind === "follow-up") {
+        pendingFollowUps.push(message);
+        continue;
+      }
+      if (message.role === "assistant") {
+        if (pendingFollowUps.length > 0 && thread.status !== "running") {
+          attachFollowUps(message.id, pendingFollowUps);
+          pendingFollowUps = [];
+        }
+        lastAssistantId = message.id;
+        continue;
+      }
+      if (message.role === "user" && pendingFollowUps.length > 0 && lastAssistantId) {
+        attachFollowUps(lastAssistantId, pendingFollowUps);
         pendingFollowUps = [];
       }
-      lastAssistantId = message.id;
-      continue;
     }
-    if (message.role === "user" && pendingFollowUps.length > 0 && lastAssistantId) {
+    if (pendingFollowUps.length > 0 && thread.status !== "running" && lastAssistantId) {
       attachFollowUps(lastAssistantId, pendingFollowUps);
       pendingFollowUps = [];
     }
-  }
-  if (pendingFollowUps.length > 0 && thread.status !== "running" && lastAssistantId) {
-    attachFollowUps(lastAssistantId, pendingFollowUps);
-    pendingFollowUps = [];
-  }
-  if (pendingFollowUps.length > 0 && thread.status !== "running" && !lastAssistantId) {
-    pendingFollowUps.forEach((message) => standaloneFollowUps.add(message.id));
-    pendingFollowUps = [];
-  }
-  const streamingFollowUps = pendingFollowUps;
-  let pendingInteractions: TimedInteraction[] = [];
-  const flushStandaloneInteractions = (key: string) => {
-    if (pendingInteractions.length === 0) return;
-    const interactions = pendingInteractions;
-    pendingInteractions = [];
-    renderedMessages.push(
-      <article className="message assistant question-process-message" key={key}>
-        <div className="message-meta"><span className="message-avatar"><Logo compact /></span><span>Maximo Syntax</span></div>
-        <WorkTimeline entries={interactions.map((item) => ({ type: "interaction", interaction: item.interaction, timestamp: item.createdAt }))} onOpenFile={onOpenFile} />
-      </article>,
-    );
-  };
-  for (const message of thread.messages) {
-    if (message.interaction) {
-      pendingInteractions.push({ interaction: message.interaction, createdAt: message.createdAt });
-      continue;
+    if (pendingFollowUps.length > 0 && thread.status !== "running" && !lastAssistantId) {
+      pendingFollowUps.forEach((message) => standaloneFollowUps.add(message.id));
+      pendingFollowUps = [];
     }
-    if (message.role === "user") {
-      if (message.kind === "follow-up") {
-        if (!standaloneFollowUps.has(message.id)) continue;
+    const streamingFollowUps = pendingFollowUps;
+    let pendingInteractions: TimedInteraction[] = [];
+    const flushStandaloneInteractions = (key: string) => {
+      if (pendingInteractions.length === 0) return;
+      const interactions = pendingInteractions;
+      pendingInteractions = [];
+      renderedMessages.push(
+        <article className="message assistant question-process-message" key={key}>
+          <div className="message-meta"><span className="message-avatar"><Logo compact /></span><span>Maximo Syntax</span></div>
+          <WorkTimeline entries={interactions.map((item) => ({ type: "interaction", interaction: item.interaction, timestamp: item.createdAt }))} onOpenFile={onOpenFile} />
+        </article>,
+      );
+    };
+    for (const message of thread.messages) {
+      if (message.interaction) {
+        pendingInteractions.push({ interaction: message.interaction, createdAt: message.createdAt });
+        continue;
+      }
+      if (message.role === "user") {
+        if (message.kind === "follow-up") {
+          if (!standaloneFollowUps.has(message.id)) continue;
+          flushStandaloneInteractions(`question-process-before-${message.id}`);
+          renderedMessages.push(
+            <article className="message user follow-up" id={`message-${message.id}`} data-message-id={message.id} key={message.id}>
+              <div className="user-turn follow-up-turn">
+                <span className="follow-up-label">Added context</span>
+                {message.attachments?.length ? <AttachmentList attachments={message.attachments} onPreview={onPreviewAttachment} className="message-attachments" /> : null}
+                <MarkdownContent>{message.content}</MarkdownContent>
+                <div className="message-actions user-actions"><time>{formatTimestamp(message.createdAt, timestampFormat)}</time><MessageEnvironmentActions message={message} pinned={Boolean(thread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
+              </div>
+            </article>,
+          );
+          continue;
+        }
         flushStandaloneInteractions(`question-process-before-${message.id}`);
+        const isEditingThisMessage = editingMessageId === message.id;
+        const isLatestEditable = latestEditableUserMessageId === message.id;
+        const isRevertable = revertableUserMessageIds.has(message.id);
+        const threadBusy = thread.status === "running" || Boolean(waiting);
         renderedMessages.push(
-          <article className="message user follow-up" id={`message-${message.id}`} data-message-id={message.id} key={message.id}>
-            <div className="user-turn follow-up-turn">
-              <span className="follow-up-label">Added context</span>
+          <article className={`message user${isEditingThisMessage ? " editing" : ""}`} id={`message-${message.id}`} data-message-id={message.id} key={message.id}>
+            <div className={`user-turn${isEditingThisMessage ? " user-turn-editing" : ""}`}>
               {message.attachments?.length ? <AttachmentList attachments={message.attachments} onPreview={onPreviewAttachment} className="message-attachments" /> : null}
-              <MarkdownContent>{message.content}</MarkdownContent>
-               <div className="message-actions user-actions"><time>{formatTimestamp(message.createdAt, timestampFormat)}</time><MessageEnvironmentActions message={message} pinned={Boolean(thread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
+              {isEditingThisMessage ? (
+                <UserMessageEditForm
+                  initialValue={message.content}
+                  onCancel={() => setEditingMessageId(null)}
+                  onSubmit={(text) => { setEditingMessageId(null); onEditResend?.(message.id, text); }}
+                />
+              ) : (
+                skillNames && skillNames.size > 0 ? <div className="markdown"><SkillTokenize text={message.content} skillNames={skillNames} /></div> : <MarkdownContent>{message.content}</MarkdownContent>
+              )}
+              {!isEditingThisMessage && (
+                <div className="message-actions user-actions">
+                  <time>{formatTimestamp(message.createdAt, timestampFormat)}</time>
+                  <MessageEnvironmentActions message={message} pinned={Boolean(thread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} />
+                  {isLatestEditable && !threadBusy && onEditResend && (
+                    <button type="button" className="message-action-edit" onClick={() => setEditingMessageId(message.id)} data-tooltip="Edit and resend" data-tooltip-side="bottom" aria-label="Edit and resend"><SquarePen size={13} /></button>
+                  )}
+                  {isRevertable && !threadBusy && onRevert && (
+                    <button type="button" className="message-action-revert" onClick={() => onRevert(message.id, true)} data-tooltip="Revert to this message" data-tooltip-side="bottom" aria-label="Revert to this message"><Undo2 size={13} /></button>
+                  )}
+                  <CopyMessageButton content={message.content} />
+                </div>
+              )}
             </div>
           </article>,
         );
         continue;
       }
-      flushStandaloneInteractions(`question-process-before-${message.id}`);
+      const interactions = pendingInteractions;
+      pendingInteractions = [];
+      const baseTimeline: RunTimelineItem[] = message.timeline?.length ? message.timeline : message.activity?.map((item) => ({ type: "activity" as const, ...item })) ?? [];
+      const contextTimeline = (followUpsByAssistant.get(message.id) ?? []).map(followUpContextItem);
+      const turnTimeline = [...baseTimeline, ...contextTimeline].sort((left, right) => left.timestamp - right.timestamp);
       renderedMessages.push(
-        <article className="message user" id={`message-${message.id}`} data-message-id={message.id} key={message.id}>
-          <div className="user-turn">
-            {message.attachments?.length ? <AttachmentList attachments={message.attachments} onPreview={onPreviewAttachment} className="message-attachments" /> : null}
-            {skillNames && skillNames.size > 0 ? <div className="markdown"><SkillTokenize text={message.content} skillNames={skillNames} /></div> : <MarkdownContent>{message.content}</MarkdownContent>}
-             <div className="message-actions user-actions"><time>{formatTimestamp(message.createdAt, timestampFormat)}</time><MessageEnvironmentActions message={message} pinned={Boolean(thread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
+        <article className={`message ${message.role} ${message.isError ? "error" : ""}`} id={`message-${message.id}`} data-message-id={message.id} key={message.id}>
+          <div className="message-meta">
+            <span className="message-avatar"><Logo compact /></span>
+            <span>Maximo Syntax</span>
+            <time>{formatTimestamp(message.createdAt, timestampFormat)}</time>
           </div>
+          <MemoizedWorkDisclosure timeline={turnTimeline} interactions={interactions} durationMs={message.durationMs} finalContent={message.content} onOpenFile={onOpenFile} fileChanges={message.fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} />
+          {/* Error color applies only to this final body — not work-timeline partial answers. */}
+          <MarkdownContent className={message.isError ? "message-error-body" : undefined}>{message.content}</MarkdownContent>
+          <TurnFileChanges timeline={turnTimeline} fileChanges={message.fileChanges} project={project} git={git} onOpenFile={onOpenFile} />
+          <div className="message-actions assistant-actions">{message.role === "assistant" && <AnswerModelLabel message={message} thread={thread} models={models} />}<MessageEnvironmentActions message={message} pinned={Boolean(thread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
         </article>,
       );
-      continue;
     }
-    const interactions = pendingInteractions;
-    pendingInteractions = [];
-    const baseTimeline: RunTimelineItem[] = message.timeline?.length ? message.timeline : message.activity?.map((item) => ({ type: "activity" as const, ...item })) ?? [];
-    const contextTimeline = (followUpsByAssistant.get(message.id) ?? []).map(followUpContextItem);
-    const turnTimeline = [...baseTimeline, ...contextTimeline].sort((left, right) => left.timestamp - right.timestamp);
-    renderedMessages.push(
-      <article className={`message ${message.role} ${message.isError ? "error" : ""}`} id={`message-${message.id}`} data-message-id={message.id} key={message.id}>
-        <div className="message-meta">
-          <span className="message-avatar"><Logo compact /></span>
-          <span>Maximo Syntax</span>
-           <time>{formatTimestamp(message.createdAt, timestampFormat)}</time>
-        </div>
-        <MemoizedWorkDisclosure timeline={turnTimeline} interactions={interactions} durationMs={message.durationMs} finalContent={message.content} onOpenFile={onOpenFile} fileChanges={message.fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} />
-        {/* Error color applies only to this final body — not work-timeline partial answers. */}
-        <MarkdownContent className={message.isError ? "message-error-body" : undefined}>{message.content}</MarkdownContent>
-        <TurnFileChanges timeline={turnTimeline} fileChanges={message.fileChanges} project={project} git={git} onOpenFile={onOpenFile} />
-        <div className="message-actions assistant-actions">{message.role === "assistant" && <AnswerModelLabel message={message} thread={thread} models={models} />}<MessageEnvironmentActions message={message} pinned={Boolean(thread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
-      </article>,
-    );
-  }
-  if (thread.status !== "running") flushStandaloneInteractions("question-process-trailing");
+    if (thread.status !== "running") flushStandaloneInteractions("question-process-trailing");
     return {
       renderedMessages,
       streamingInteractions: pendingInteractions,
       streamingFollowUps,
     };
-  }, [git, models, onOpenFile, onPreviewAttachment, onTogglePin, project, skillNames, thread, timestampFormat]);
+  }, [editingMessageId, git, latestEditableUserMessageId, models, onEditResend, onOpenFile, onPreviewAttachment, onRevert, onTogglePin, project, revertableUserMessageIds, skillNames, thread, timestampFormat, waiting]);
   const liveTimeline = streamingEnabled ? [
     ...(live?.timeline ?? (live?.text ? [{ type: "text" as const, text: live.text, timestamp: Date.now() }] : [])),
     ...streamingFollowUps.map(followUpContextItem),
@@ -4831,6 +4936,56 @@ export default function App() {
     if (!result.accepted) { showToast(result.error ?? "Unable to start the task."); await refreshState(); }
   };
 
+  const editAndResendMessage = async (messageId: string, text: string) => {
+    const thread = currentThread;
+    if (!thread) return;
+    const model = thread.model ?? state?.settings.defaultModel ?? "";
+    const effort = thread.effort ?? state?.settings.defaultEffort ?? "";
+    const permission = thread.permission ?? state?.settings.defaultPermission ?? "auto";
+    const result = await window.maximoDesktop.editAndResendMessage({
+      threadId: thread.id,
+      prompt: text,
+      attachments: [],
+      model,
+      effort,
+      permission,
+      editMessageId: messageId,
+    });
+    if (result.state) setState(result.state);
+    if (!result.accepted) showToast(result.error ?? "Unable to edit and resend the message.");
+    else showToast("Message edited and resent.");
+  };
+
+  const revertToMessage = async (messageId: string, revertFiles: boolean) => {
+    const thread = currentThread;
+    if (!thread) return;
+    // Try the full revert (transcript + files) first; if the file checkpoint is
+    // unavailable, fall back to transcript-only so the conversation can still
+    // be rolled back.
+    const result = revertFiles
+      ? await window.maximoDesktop.revertToMessage({ threadId: thread.id, messageId, revertFiles: true })
+      : await window.maximoDesktop.revertToMessage({ threadId: thread.id, messageId, revertFiles: false });
+    if (result.state) setState(result.state);
+    if (!result.ok) {
+      if (revertFiles) {
+        const fallback = await window.maximoDesktop.revertToMessage({ threadId: thread.id, messageId, revertFiles: false });
+        if (fallback.state) setState(fallback.state);
+        if (fallback.ok) {
+          const removed = typeof fallback.removedMessages === "number" ? fallback.removedMessages : 0;
+          showToast(`Reverted to this message · ${removed} message${removed === 1 ? "" : "s"} discarded. File restore wasn't available (${result.error ?? "no file checkpoint"}).`);
+          return;
+        }
+      }
+      showToast(result.error ?? "Unable to revert the conversation.");
+      await refreshState();
+      return;
+    }
+    const removed = typeof result.removedMessages === "number" ? result.removedMessages : 0;
+    const restored = typeof result.restoredFiles === "number" ? result.restoredFiles : 0;
+    if (revertFiles) showToast(`Reverted to this message · ${removed} message${removed === 1 ? "" : "s"} discarded, ${restored} file${restored === 1 ? "" : "s"} restored.`);
+    else showToast(`Reverted to this message · ${removed} message${removed === 1 ? "" : "s"} discarded.`);
+  };
+
   const removeQueuedFollowUp = (threadId: string, id: string) => {
     setFollowUpQueues((current) => ({
       ...current,
@@ -4995,7 +5150,7 @@ export default function App() {
              <button type="button" onClick={() => requestDockPane("terminal")} title="Open terminal"><TerminalSquare size={14} /></button>
            </div>}
            {!currentThread ? <EmptyWorkspace project={currentProject} onOpenProject={openProject} onNewThread={() => void newThread(currentProject?.id)} /> : <>
-                 <MessageView thread={currentThread} project={currentProject} git={git} models={engineModels} live={liveRuns[currentThread.id]} waiting={pendingQuestion?.threadId === currentThread.id || pendingPermission?.threadId === currentThread.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} />
+                 <MessageView thread={currentThread} project={currentProject} git={git} models={engineModels} live={liveRuns[currentThread.id]} waiting={pendingQuestion?.threadId === currentThread.id || pendingPermission?.threadId === currentThread.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} onEditResend={(messageId, text) => void editAndResendMessage(messageId, text)} onRevert={(messageId, revertFiles) => void revertToMessage(messageId, revertFiles)} />
               <MessageTrail thread={currentThread} onSelect={jumpToMessage} />
              <Composer key={currentThread.id} thread={currentThread} project={currentProject} git={git} live={liveRuns[currentThread.id]} settings={state.settings} models={engineModels} modelOptions={modelOptions} slashCommands={slashCommands} skillCommands={skillCommands} discoveredSkills={discoveredSkills} contextUsage={currentContextUsage} contextLoading={Boolean(contextLoadingByThread[currentThread.id])} onRefreshContext={() => refreshContextUsage(currentThread.id)} onSend={sendPrompt} onPreviewAttachment={openAttachmentPreview}
               onStop={() => {
