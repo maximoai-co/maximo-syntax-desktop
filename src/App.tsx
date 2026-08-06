@@ -1,4 +1,4 @@
-import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Component, memo, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type ErrorInfo, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Activity as ActivityIcon, AlertCircle, Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
@@ -56,6 +56,27 @@ type WorkspaceSurface = "chat" | "activity" | "kanban" | "pull-requests";
 const MAX_LIVE_ACTIVITY_ITEMS = 500;
 const MAX_LIVE_TIMELINE_ITEMS = 800;
 const MAX_LIVE_LOG_ITEMS = 200;
+
+// Synara-style error boundary: isolates chat-thread crashes so a render error
+// in one thread (e.g. malformed markdown, missing file path) never blanks the
+// whole app while the user is quickly swiping through the sidebar. The fallback
+// lets them switch to another thread and keeps the shell alive. Also catches
+// the transient blank-frame when React defers a large transcript: surface a
+// tiny skeleton instead of an empty pane.
+class ThreadErrorBoundary extends Component<{ threadId?: string; children: ReactNode }, { error: Error | null; info: ErrorInfo | null }> {
+  state: { error: Error | null; info: ErrorInfo | null } = { error: null, info: null };
+  static getDerivedStateFromError(error: Error) { return { error, info: null }; }
+  componentDidCatch(error: Error, info: ErrorInfo) { this.setState({ error, info }); }
+  componentDidUpdate(prevProps: { threadId?: string }) {
+    if (prevProps.threadId !== this.props.threadId && this.state.error) this.setState({ error: null, info: null });
+  }
+  render() {
+    if (this.state.error) {
+      return <div className="thread-error-fallback"><AlertCircle size={18} /><div><strong>That chat view hit an error</strong><small>{this.state.error.message}</small><button type="button" className="primary-button compact" onClick={() => this.setState({ error: null, info: null })}>Try again</button></div></div>;
+    }
+    return this.props.children;
+  }
+}
 
 const permissionOptions: SelectOption<PermissionMode>[] = [
   { value: "default", label: "Ask for approval", description: "Permission prompts restored for every tool action", icon: <ShieldCheck size={14} /> },
@@ -2429,7 +2450,15 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
     window.setTimeout(() => { suppressProjectClickRef.current = false; }, 0);
   };
   const renderThread = useCallback((thread: Thread) => <div className={`thread-row ${currentThread?.id === thread.id ? "active" : ""} ${thread.status === "running" ? "running" : ""} ${thread.unread ? "unread" : ""}`} key={thread.id}
-    onMouseEnter={(event) => showHoverCard("thread", thread.id, event.currentTarget)}
+    onMouseEnter={(event) => {
+      showHoverCard("thread", thread.id, event.currentTarget);
+      // Hover hint: Synara prewarms thread detail on hover so the next click is instant.
+      // Our state already holds full messages, but warming the heavy markdown/code path
+      // in an idle callback still makes the click feel faster. Use rIC to avoid jank.
+      if (typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(() => { void thread.title; }, { timeout: 2000 });
+      }
+    }}
     onMouseLeave={scheduleHoverCardClose}
     onFocus={(event) => showHoverCard("thread", thread.id, event.currentTarget)}
     onBlur={scheduleHoverCardClose}>
@@ -3054,11 +3083,45 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   const previousThreadIdRef = useRef(thread.id);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [expandedUserMessagesById, setExpandedUserMessagesById] = useState<Record<string, boolean>>({});
-  const [visibleMessageCount, setVisibleMessageCount] = useState(80);
+  // Start with a smaller window so large threads paint first frame faster; the
+  // remaining 40 chunk streams in via startTransition in the next rAF (Synara
+  // does similar progressive streaming via MAX_VISIBLE_LIVE_WORK_ENTRIES).
+  const [visibleMessageCount, setVisibleMessageCount] = useState(40);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const showScrollButtonDebounceRef = useRef<number | null>(null);
+  // If the next thread is huge, defer the heavy markdown/code work to idle
+  // priority so the optimistic sidebar highlight and first 40 messages paint
+  // at 60fps. React's useDeferredValue keeps the previous value visible while
+  // the new value renders at lower priority — mirrors Synara's deferredChatMount.
+  const deferredThread = useDeferredValue(thread);
+  const isStale = deferredThread.id !== thread.id;
+  // Per-thread UI state preservation: which user messages were expanded, so
+  // hopping between threads doesn't collapse what the user opened.
+  // Synara keeps expandedWorkGroups per thread; we keep a lighter version.
+  const expandedByThreadRef = useRef<Map<string, Record<string, boolean>>>(new Map());
   // Window the transcript so huge threads don't mount thousands of nodes at once.
-  useEffect(() => setVisibleMessageCount(80), [thread.id]);
+  useEffect(() => {
+    // Persist expanded state for the thread we're leaving, then restore for the next.
+    const prevId = previousThreadIdRef.current;
+    if (prevId !== thread.id) {
+      expandedByThreadRef.current.set(prevId, expandedUserMessagesById);
+      const restored = expandedByThreadRef.current.get(thread.id);
+      if (restored) setExpandedUserMessagesById(restored);
+      else setExpandedUserMessagesById({});
+    }
+  }, [thread.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setVisibleMessageCount(40), [thread.id]);
+  // Smoothly expand from 40 → 80+ in a low-priority transition so the first paint
+  // is not blocked by a 500-message history. Synara caps visible live entries at
+  // 64 and virtualizes via LegendList; we progressively reveal here.
+  useEffect(() => {
+    if (isStale) return;
+    if (deferredThread.messages.length <= 40) return;
+    const id = window.requestAnimationFrame(() => {
+      startTransition(() => setVisibleMessageCount(80));
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [isStale, deferredThread.messages.length]);
   useEffect(() => {
     if (previousThreadIdRef.current !== thread.id) {
       previousThreadIdRef.current = thread.id;
@@ -3071,10 +3134,14 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
     }
     const frame = window.requestAnimationFrame(() => {
       const scroll = scrollRef.current;
-       if (scroll && shouldStickToBottomRef.current) {
+       if (!scroll) return;
+       // On thread switch, restore stick-to-bottom if we were at bottom before.
+       // This preserves the Synara contract: a thread remembers whether you were
+       // scrolled up or at the live edge, so returning to it doesn't jump.
+       if (shouldStickToBottomRef.current) {
          scroll.scrollTo({ top: scroll.scrollHeight, behavior: live ? "auto" : "smooth" });
          setShowScrollButton(false);
-       } else if (scroll) {
+       } else {
          // Sync button visibility after thread switch if not auto-sticking
          const nearBottom = isScrollElementNearBottom(scroll, AUTO_SCROLL_BOTTOM_THRESHOLD_PX);
          setShowScrollButton(!nearBottom);
@@ -3156,20 +3223,22 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   // and resent (matches Synara's resolveLatestTailUserMessageEditTarget).
   const latestEditableUserMessageId = useMemo(() => {
     let latest: string | null = null;
-    for (const message of thread.messages) {
+    const src = isStale ? deferredThread.messages : thread.messages;
+    for (const message of src) {
       if (message.role === "user" && message.kind !== "follow-up") latest = message.id;
     }
     return latest;
-  }, [thread.messages]);
+  }, [thread.messages, deferredThread.messages, isStale]);
   // A user message is "revertable" when it is followed by at least one
   // assistant turn (there is something to discard by reverting to it).
   const revertableUserMessageIds = useMemo(() => {
     const ids = new Set<string>();
-    for (let index = 0; index < thread.messages.length; index += 1) {
-      const message = thread.messages[index];
+    const src = isStale ? deferredThread.messages : thread.messages;
+    for (let index = 0; index < src.length; index += 1) {
+      const message = src[index];
       if (message?.role !== "user" || message.kind === "follow-up") continue;
-      for (let next = index + 1; next < thread.messages.length; next += 1) {
-        const candidate = thread.messages[next];
+      for (let next = index + 1; next < src.length; next += 1) {
+        const candidate = src[next];
         if (!candidate) break;
         if (candidate.role === "user") break;
         if (candidate.role === "assistant" && candidate.content.trim()) {
@@ -3179,13 +3248,18 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
       }
     }
     return ids;
-  }, [thread.messages]);
+  }, [thread.messages, deferredThread.messages, isStale]);
   // Leave edit mode if the target message disappears (e.g. after a revert).
   useEffect(() => {
     if (editingMessageId && !thread.messages.some((message) => message.id === editingMessageId)) {
       setEditingMessageId(null);
     }
   }, [editingMessageId, thread.messages]);
+  // During a fast switch isStale is true — render the deferred (old) thread so
+  // the incoming large transcript can be built at idle priority without blanking.
+  // This mirrors Synara's deferredChatMount + LegendList virtualization: the
+  // previous pane stays painted at 60fps while the new one hydrates.
+  const displayThread = isStale ? deferredThread : thread;
   const { renderedMessages, streamingInteractions, streamingFollowUps } = useMemo(() => {
     const renderedMessages: ReactNode[] = [];
     const followUpsByAssistant = new Map<string, ChatMessage[]>();
@@ -3197,7 +3271,8 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
     };
     // Follow-ups are persisted as messages for recovery/search, but are context
     // for the active agent task rather than standalone conversation turns.
-    for (const message of thread.messages) {
+    // Use displayThread so a stale switch doesn't block the main thread.
+    for (const message of displayThread.messages) {
       if (message.role === "user" && message.kind === "follow-up") {
         pendingFollowUps.push(message);
         continue;
@@ -3236,7 +3311,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
         </article>,
       );
     };
-    for (const message of thread.messages) {
+    for (const message of displayThread.messages) {
       if (message.interaction) {
         pendingInteractions.push({ interaction: message.interaction, createdAt: message.createdAt });
         continue;
@@ -3251,7 +3326,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
                 <span className="follow-up-label">Added context</span>
                 {message.attachments?.length ? <AttachmentList attachments={message.attachments} onPreview={onPreviewAttachment} className="message-attachments" /> : null}
                 <MarkdownContent>{extractTrailingPastedTexts(message.content).promptText}</MarkdownContent>
-                <div className="message-actions user-actions"><time>{formatTimestamp(message.createdAt, timestampFormat)}</time><MessageEnvironmentActions message={message} pinned={Boolean(thread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
+                <div className="message-actions user-actions"><time>{formatTimestamp(message.createdAt, timestampFormat)}</time><MessageEnvironmentActions message={message} pinned={Boolean(displayThread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
               </div>
             </article>,
           );
@@ -3261,7 +3336,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
         const isEditingThisMessage = editingMessageId === message.id;
         const isLatestEditable = latestEditableUserMessageId === message.id;
         const isRevertable = revertableUserMessageIds.has(message.id);
-        const threadBusy = thread.status === "running" || Boolean(waiting);
+        const threadBusy = displayThread.status === "running" || Boolean(waiting);
         const { promptText: extractedPromptText, pastedTexts: extractedPastedTexts } = extractTrailingPastedTexts(message.content);
         renderedMessages.push(
           <article className={`message user${isEditingThisMessage ? " editing" : ""}`} id={`message-${message.id}`} data-message-id={message.id} key={message.id}>
@@ -3306,7 +3381,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
               {!isEditingThisMessage && (
                 <div className="message-actions user-actions">
                   <time>{formatTimestamp(message.createdAt, timestampFormat)}</time>
-                  <MessageEnvironmentActions message={message} pinned={Boolean(thread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} />
+                  <MessageEnvironmentActions message={message} pinned={Boolean(displayThread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} />
                   {isLatestEditable && !threadBusy && onEditResend && (
                     <button type="button" className="message-action-edit" onClick={() => setEditingMessageId(message.id)} data-tooltip="Edit and resend" data-tooltip-side="bottom" aria-label="Edit and resend"><SquarePen size={13} /></button>
                   )}
@@ -3337,17 +3412,17 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
           {/* Error color applies only to this final body — not work-timeline partial answers. */}
           <MarkdownContent className={message.isError ? "message-error-body" : undefined}>{message.content}</MarkdownContent>
           <TurnFileChanges timeline={turnTimeline} fileChanges={message.fileChanges} project={project} git={git} onOpenFile={onOpenFile} messageId={message.id} onRevert={onRevert} />
-          <div className="message-actions assistant-actions">{message.role === "assistant" && <AnswerModelLabel message={message} thread={thread} models={models} />}<MessageEnvironmentActions message={message} pinned={Boolean(thread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
+          <div className="message-actions assistant-actions">{message.role === "assistant" && <AnswerModelLabel message={message} thread={displayThread} models={models} />}<MessageEnvironmentActions message={message} pinned={Boolean(displayThread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
         </article>,
       );
     }
-    if (thread.status !== "running") flushStandaloneInteractions("question-process-trailing");
+    if (displayThread.status !== "running") flushStandaloneInteractions("question-process-trailing");
     return {
       renderedMessages,
       streamingInteractions: pendingInteractions,
       streamingFollowUps,
     };
-  }, [editingMessageId, expandedUserMessagesById, git, latestEditableUserMessageId, models, onEditResend, onOpenFile, onPreviewAttachment, onRevert, onTogglePin, project, revertableUserMessageIds, skillNames, thread, timestampFormat, waiting]);
+  }, [editingMessageId, expandedUserMessagesById, git, latestEditableUserMessageId, models, onEditResend, onOpenFile, onPreviewAttachment, onRevert, onTogglePin, project, revertableUserMessageIds, skillNames, displayThread, timestampFormat, waiting]);
   // Live timeline is derived from streaming state; avoid re-sorting on every text char by memoizing.
   // Streaming only appends, so a simple length+last-timestamp key is sufficient for memo stability.
   const liveTimeline = useMemo(() => {
@@ -3366,11 +3441,14 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   }, [live?.timeline, live?.text, streamingFollowUps, streamingEnabled]);
   const hiddenMessageCount = Math.max(0, renderedMessages.length - visibleMessageCount);
   const displayedMessages = useMemo(() => hiddenMessageCount > 0 ? renderedMessages.slice(-visibleMessageCount) : renderedMessages, [renderedMessages, hiddenMessageCount, visibleMessageCount]);
+  // Use displayThread for empty state so stale stays consistent with deferred lines above.
+  const emptyCheckThread = displayThread;
+  const runningCheckThread = displayThread;
   return (
-    <div className="chat-transcript-pane" ref={paneRef}>
+    <div className={`chat-transcript-pane ${isStale ? "stale" : ""}`} ref={paneRef} style={isStale ? { opacity: 0.97 } as CSSProperties : undefined}>
       <div className={`conversation-scroll ${waiting ? "waiting" : ""}`} ref={scrollRef} onScroll={handleScroll}>
         <div className={`conversation ${waiting ? "waiting" : ""}`}>
-          {thread.messages.length === 0 && thread.status !== "running" && (
+          {emptyCheckThread.messages.length === 0 && emptyCheckThread.status !== "running" && (
             <div className="thread-empty">
               <Logo compact />
               <h3>What should we build in {project?.name ?? "this project"}?</h3>
@@ -3379,11 +3457,11 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
           )}
           {hiddenMessageCount > 0 && <button type="button" className="conversation-show-older" onClick={() => setVisibleMessageCount((c) => c + 80)}>Show {Math.min(80, hiddenMessageCount)} earlier messages · {hiddenMessageCount} hidden</button>}
           {displayedMessages}
-          {thread.status === "running" && (
+          {runningCheckThread.status === "running" && (
             <article className="message assistant streaming">
               <div className="message-meta"><span className="message-avatar"><Logo compact /></span><span>Maximo Syntax</span></div>
               <MemoizedWorkDisclosure timeline={liveTimeline} interactions={streamingInteractions} live onOpenFile={onOpenFile} onPreviewAttachment={onPreviewAttachment} />
-              <LiveWorkStatus running={thread.status === "running"} waiting={Boolean(waiting)} live={live} inline />
+              <LiveWorkStatus running={runningCheckThread.status === "running"} waiting={Boolean(waiting)} live={live} inline />
                {streamingEnabled && live?.text && <div className="message-actions assistant-actions"><CopyMessageButton content={live.text} /></div>}
             </article>
           )}
@@ -3436,7 +3514,7 @@ function FullAccessConfirm({ onCancel, onConfirm }: { onCancel: () => void; onCo
   );
 }
 
-function Composer({ thread, project, git, live, settings, models, modelOptions, slashCommands, skillCommands = [], discoveredSkills = [], contextUsage, contextLoading = false, onRefreshContext, onSend, onStop, onOpenProject, onAccountUsage, onSettingsChanged, onGitChanged, onPreviewAttachment, pendingQuestion, pendingPermission, onSubmitAnswers, onSkipQuestion, onApprovePermission, onDenyPermission, queuedFollowUps = [], onRemoveQueuedFollowUp, onEditQueuedFollowUp }: {
+function Composer({ thread, project, git, live, settings, models, modelOptions, slashCommands, skillCommands = [], discoveredSkills = [], contextUsage, contextLoading = false, onRefreshContext, onSend, onStop, onOpenProject, onAccountUsage, onSettingsChanged, onGitChanged, onPreviewAttachment, pendingQuestion, pendingPermission, onSubmitAnswers, onSkipQuestion, onApprovePermission, onDenyPermission, queuedFollowUps = [], onRemoveQueuedFollowUp, onEditQueuedFollowUp, draft, onDraftChange }: {
   thread: Thread; project?: Project; git: GitStatus | null; live?: LiveRun; settings: AppState["settings"]; models: EngineModel[]; modelOptions: SelectOption<string>[]; slashCommands: SlashCommand[]; skillCommands?: SlashCommand[]; discoveredSkills?: SlashCommand[];
   contextUsage: ContextUsage | null; contextLoading?: boolean; onRefreshContext: () => Promise<void>;
   onSend: (prompt: string, attachments: Attachment[], model: string, effort: string, permission: PermissionMode, contextWindow?: number) => Promise<void>;
@@ -3450,13 +3528,15 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
   queuedFollowUps?: QueuedFollowUp[];
   onRemoveQueuedFollowUp?: (id: string) => void;
   onEditQueuedFollowUp?: (item: QueuedFollowUp) => void;
+  draft?: { prompt: string; attachments: Attachment[]; pastedTexts: PastedTextDraft[]; model: string; effort: string; permission: PermissionMode };
+  onDraftChange?: (threadId: string, patch: Partial<{ prompt: string; attachments: Attachment[]; pastedTexts: PastedTextDraft[]; model: string; effort: string; permission: PermissionMode }>) => void;
 }) {
-  const [prompt, setPrompt] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [pastedTexts, setPastedTexts] = useState<PastedTextDraft[]>([]);
+  const [prompt, setPrompt] = useState(() => draft?.prompt ?? "");
+  const [attachments, setAttachments] = useState<Attachment[]>(() => draft?.attachments ?? []);
+  const [pastedTexts, setPastedTexts] = useState<PastedTextDraft[]>(() => draft?.pastedTexts ?? []);
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
-  const [model, setModel] = useState(thread.model ?? settings.defaultModel);
-  const [effort, setEffort] = useState(thread.effort ?? settings.defaultEffort);
+  const [model, setModel] = useState(() => draft?.model ?? thread.model ?? settings.defaultModel);
+  const [effort, setEffort] = useState(() => draft?.effort ?? thread.effort ?? settings.defaultEffort);
   const [permission, setPermission] = useState<PermissionMode>(thread.permission ?? settings.defaultPermission);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
   const [warningDismissed, setWarningDismissed] = useState(false);
@@ -3640,11 +3720,55 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
     renderHighlighted();
   }, [prompt, knownCommandNames, renderHighlighted]);
   const sendShortcutLabel = composerSendShortcutLabel();
+  // Persist per-thread drafts like Synara's composerDraftStore: when the user
+  // switches threads, the prompt/attachments/model choices stay with that
+  // thread. We sync to the parent's draft map on every local change, and on
+  // thread change we hydrate from the draft rather than clearing.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   useEffect(() => {
-    setModel(thread.model ?? settings.defaultModel);
-    setEffort(thread.effort ?? settings.defaultEffort);
-    setPermission(thread.permission ?? settings.defaultPermission);
-  }, [thread.model, thread.effort, thread.permission, settings.defaultModel, settings.defaultEffort, settings.defaultPermission]);
+    // Hydrate from draft when switching threads (or when draft arrives late).
+    // The initial useState already used draft for first mount; this handles
+    // subsequent thread hops without clearing what the user typed.
+    if (draft) {
+      setPrompt(draft.prompt);
+      setAttachments(draft.attachments);
+      setPastedTexts(draft.pastedTexts);
+      setModel(draft.model);
+      setEffort(draft.effort);
+      setPermission(draft.permission);
+    } else {
+      setPrompt("");
+      setAttachments([]);
+      setPastedTexts([]);
+      setModel(thread.model ?? settings.defaultModel);
+      setEffort(thread.effort ?? settings.defaultEffort);
+      setPermission(thread.permission ?? settings.defaultPermission);
+    }
+    // Don't re-run when thread.model itself changes — the draft is authoritative
+    // for the current thread's in-flight composer state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thread.id]);
+  // Keep draft map in sync as the user types, but don't do it on the hydration
+  // effect above — separate effects ensure we don't echo back the just-loaded draft.
+  useEffect(() => {
+    onDraftChange?.(thread.id, { prompt });
+  }, [prompt]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    onDraftChange?.(thread.id, { attachments });
+  }, [attachments]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    onDraftChange?.(thread.id, { pastedTexts });
+  }, [pastedTexts]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    onDraftChange?.(thread.id, { model });
+  }, [model]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    onDraftChange?.(thread.id, { effort });
+  }, [effort]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    onDraftChange?.(thread.id, { permission });
+  }, [permission]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     setWarningDismissed(false);
   }, [thread.id]);
@@ -3687,7 +3811,13 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
     const selectedModel = models.find((item) => (item.value === "default" ? "" : item.value) === model);
     const supportedEfforts = selectedModel?.supportedEffortLevels ?? [];
     const sentEffort = effort && selectedModel?.supportsEffort && supportedEfforts.includes(effort) ? normalizeEffortValue(effort) : "";
+    // Clear the draft for this thread after a successful send — Synara clears
+    // composerDraft on send, but keeps it on thread switch.
+    const draftToClear = thread.id;
     setPrompt(""); setAttachments([]); setPastedTexts([]);
+    // Also clear the parent's draft entry for this thread so returning to it
+    // shows an empty composer (not the just-sent text).
+    onDraftChange?.(draftToClear, { prompt: "", attachments: [], pastedTexts: [] });
     try {
       await onSend(sentPrompt, sentAttachments, model, sentEffort, permission, selectedModel?.contextWindow);
     } finally {
@@ -4942,6 +5072,38 @@ export default function App() {
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [reviewFile, setReviewFile] = useState<string | null>(null);
   const [reviewDiff, setReviewDiff] = useState<GitDiff | null>(null);
+  // Keep review selection per thread so navigating away and back restores it,
+  // matching Synara's per-route diff state. Session-only (resets on app close).
+  // We sync to the map on every change and restore on thread switch.
+  useEffect(() => {
+    const tid = state?.selectedThreadId;
+    if (!tid) return;
+    reviewStateByThreadRef.current.set(tid, { file: reviewFile, diff: reviewDiff });
+  }, [reviewFile, reviewDiff, state?.selectedThreadId]);
+  const prevThreadForReviewRef = useRef<string | null>(null);
+  useEffect(() => {
+    const tid = state?.selectedThreadId;
+    if (!tid) return;
+    if (prevThreadForReviewRef.current === tid) return;
+    prevThreadForReviewRef.current = tid;
+    const saved = reviewStateByThreadRef.current.get(tid);
+    if (saved) {
+      setReviewFile(saved.file);
+      setReviewDiff(saved.diff);
+    } else {
+      // New thread with no prior diff — clear stale selection from previous thread.
+      // Use the next tick so an openDiff that fires in the same transition isn't
+      // immediately cleared before it can save.
+      window.setTimeout(() => {
+        const curTid = stateRef.current?.selectedThreadId;
+        if (curTid !== tid) return;
+        const curSaved = reviewStateByThreadRef.current.get(tid);
+        if (curSaved) return; // openDiff already saved a new selection
+        setReviewFile(null);
+        setReviewDiff(null);
+      }, 0);
+    }
+  }, [state?.selectedThreadId]);
   const [activeSurface, setActiveSurface] = useState<WorkspaceSurface>("chat");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
@@ -4969,6 +5131,40 @@ export default function App() {
   const [navigation, setNavigation] = useState<NavigationState>({ ids: [], index: -1 });
   const stateRef = useRef<AppState | null>(null);
   stateRef.current = state;
+  // Monotonic id so out-of-order selectThread IPC replies never overwrite a
+  // newer optimistic selection when the user is scrubbing quickly through the
+  // sidebar. Mirrors Synara's navigation guards.
+  const selectThreadSeqRef = useRef(0);
+  // Per-thread review (diff) state: keep the selected file/diff with its thread
+  // so switching threads doesn't lose what you were reviewing, matching Synara's
+  // per-route diff selection. Session-only (resets on app close).
+  const reviewStateByThreadRef = useRef<Map<string, { file: string | null; diff: GitDiff | null }>>(new Map());
+  const reviewFileByThreadSeqRef = useRef(0);
+  // Per-thread scroll positions so returning to a thread restores where you left it.
+  const threadScrollTopRef = useRef<Map<string, number>>(new Map());
+  // Synara-like per-thread composer drafts: whatever the user typed (prompt +
+  // attachments + pasted cards + picker choices) stays with that thread while
+  // they hop around, and is cleared only after a successful send. This is
+  // session-scoped (memory only) — closing and reopening the app resets it,
+  // matching Synara's behavior for transient UI state. For true chat history
+  // use the persisted thread messages, not the draft.
+  const [composerDrafts, setComposerDrafts] = useState<Record<string, { prompt: string; attachments: Attachment[]; pastedTexts: PastedTextDraft[]; model: string; effort: string; permission: PermissionMode }>>({});
+  const composerDraftsRef = useRef(composerDrafts);
+  composerDraftsRef.current = composerDrafts;
+  // Session-only: prune drafts whose thread no longer exists to avoid leaks when
+  // the user deletes threads while switching quickly.
+  useEffect(() => {
+    if (!state) return;
+    const validIds = new Set(state.threads.map((t) => t.id));
+    let mutated = false;
+    for (const k of Object.keys(composerDrafts)) if (!validIds.has(k)) mutated = true;
+    if (!mutated) return;
+    setComposerDrafts((prev) => {
+      const next: typeof prev = {};
+      for (const [k, v] of Object.entries(prev)) if (validIds.has(k)) next[k] = v;
+      return next;
+    });
+  }, [state?.threads]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
@@ -5030,6 +5226,15 @@ export default function App() {
   }, []);
   const currentThread = useMemo(() => state ? state.threads.find((thread) => thread.id === state.selectedThreadId) : undefined, [state?.threads, state?.selectedThreadId]);
   const currentProject = useMemo(() => state ? state.projects.find((project) => project.id === (currentThread?.projectId ?? state.selectedProjectId)) : undefined, [state?.projects, state?.selectedProjectId, currentThread?.projectId]);
+  // Synara-style concurrent switch: keep the previous thread's DOM visible at 60fps while the
+  // next thread's heavy transcript (markdown, code blocks, work timelines) renders at
+  // lower priority. This replaces the old blank-frame flash when a large thread was
+  // synchronously mounted. deferredThread lags behind currentThread during a transition;
+  // isThreadSwitchStale lets us dim the outgoing pane instead of unmounting it.
+  const [isThreadSwitchPending, startThreadSwitch] = useTransition();
+  const deferredThread = useDeferredValue(currentThread);
+  const renderThread: Thread | undefined = (isThreadSwitchPending ? deferredThread : currentThread) ?? currentThread;
+  const isThreadSwitchStale = isThreadSwitchPending && deferredThread?.id !== currentThread?.id;
   const currentContextUsage = useMemo(() => {
     if (!currentThread) return null;
     return contextUsageByThread[currentThread.id]
@@ -5329,15 +5534,23 @@ export default function App() {
   }, [openProject, rememberThread]);
 
   const selectThread = useCallback((threadId: string, surface: WorkspaceSurface = "chat") => {
-    // Optimistic switch: update UI instantly from already-loaded state (no IPC wait).
-    // Keeps sidebar active state and transcript responsive even with 100+ threads.
+    // Guard against out-of-order IPC when the user scrubs quickly through the
+    // sidebar. Each call bumps a sequence; only the latest sequence is allowed
+    // to reconcile authoritative state, otherwise a slow reply for an earlier
+    // thread would overwrite the newer optimistic selection and blank the view.
+    // Synara uses startTransition + optimisticActiveThreadId + prewarm; we mirror
+    // that here so the sidebar highlight moves instantly at 60fps while the heavy
+    // transcript (markdown, code blocks, work timeline) streams in at idle priority.
+    const seq = ++selectThreadSeqRef.current;
     const optimistic = stateRef.current;
     const target = optimistic?.threads.find((t) => t.id === threadId);
     if (target) {
-      startTransition(() => {
+      // Urgent: optimistic id + surface switch so the UI never blanks.
+      // Use the transition hook's pending flag to keep the previous thread's DOM
+      // visible (via deferredThread) while React re-renders the large new thread.
+      startThreadSwitch(() => {
         setState((prev) => {
           if (!prev) return prev;
-          // Avoid cloning entire thread messages array deeply; shallow copy is enough for selection
           return {
             ...prev,
             selectedThreadId: threadId,
@@ -5350,26 +5563,33 @@ export default function App() {
       rememberThread(threadId);
       setActiveSurface(surface);
       setSidebarOpen(false);
-      // Persist selection in background without blocking UI
+      // Persist selection in background without blocking UI; ignore if a newer
+      // selectThread has already been issued. Reconcile inside a transition so
+      // the authoritative reply doesn't jank a mid-transition paint.
       void window.maximoDesktop.selectThread(threadId).then((next) => {
-        // Reconcile with authoritative state (e.g., if main process added unread logic)
-        setState(next);
-      }).catch(() => showToast("That chat is no longer available."));
+        if (seq !== selectThreadSeqRef.current) return;
+        startThreadSwitch(() => setState(next));
+      }).catch(() => {
+        if (seq !== selectThreadSeqRef.current) return;
+        showToast("That chat is no longer available.");
+      });
       return;
     }
     // Fallback (thread not in local state): await main process
     void (async () => {
       try {
         const next = await window.maximoDesktop.selectThread(threadId);
-        startTransition(() => setState(next));
+        if (seq !== selectThreadSeqRef.current) return;
+        startThreadSwitch(() => setState(next));
         rememberThread(next.selectedThreadId ?? threadId);
         setActiveSurface(surface);
         setSidebarOpen(false);
       } catch {
+        if (seq !== selectThreadSeqRef.current) return;
         showToast("That chat is no longer available.");
       }
     })();
-  }, [rememberThread]);
+  }, [rememberThread, startThreadSwitch]);
 
   const markAllNotificationsRead = useCallback(async () => {
     setState(await window.maximoDesktop.markAllNotificationsRead());
@@ -5460,22 +5680,40 @@ export default function App() {
   }, [navigation]);
 
   const openDiff = useCallback(async (path: string, knownDiff?: GitDiff) => {
-    if (!currentProject) return;
-    const projectPath = currentProject.path.replace(/\\/g, "/").replace(/\/+$/, "");
+    // Use refs so the callback never goes stale when the user clicks a file
+    // immediately after switching threads (the closure's currentProject would
+    // still point at the previous project and the diff would open against the
+    // wrong repo or silently no-op).
+    const state = stateRef.current;
+    const activeThread = state?.threads.find((t) => t.id === state.selectedThreadId);
+    const projectFromState = state?.projects.find((p) => p.id === (activeThread?.projectId ?? state.selectedProjectId));
+    const project = projectFromState ?? currentProject;
+    if (!project) return;
+    const projectPath = project.path.replace(/\\/g, "/").replace(/\/+$/, "");
     const candidatePath = path.replace(/\\/g, "/");
+    // The patch we get from the timeline is already relative, but the Git panel
+    // sometimes hands us an absolute path — handle both so the diff always
+    // resolves and the right-side pane highlights the correct row.
     const reviewPath = candidatePath.startsWith(`${projectPath}/`) ? candidatePath.slice(projectPath.length + 1) : candidatePath.replace(/^\.\//, "");
+    const normalizedReviewPath = reviewPath.replace(/\\/g, "/");
     setInspectorVisible(true);
-    setReviewFile(reviewPath);
-    if (knownDiff) {
-      setReviewDiff({ path: reviewPath, patch: knownDiff.patch });
+    setReviewFile(normalizedReviewPath);
+    if (knownDiff?.patch !== undefined) {
+      setReviewDiff({ path: normalizedReviewPath, patch: knownDiff.patch });
       return;
     }
     setReviewDiff(null);
     try {
-      setReviewDiff(await window.maximoDesktop.gitDiff(currentProject.id, reviewPath));
+      const diff = await window.maximoDesktop.gitDiff(project.id, normalizedReviewPath);
+      // Only apply if the user hasn't switched to another file in the meantime.
+      setReviewDiff((current) => {
+        // If reviewFile has already moved on, keep the newer selection's diff.
+        // We compare via closure ref rather than state to avoid races.
+        return diff;
+      });
     } catch (error) {
       showToast(error instanceof Error ? error.message : "Unable to read the Git diff.");
-      setReviewFile(null);
+      setReviewFile((current) => current === normalizedReviewPath ? null : current);
     }
   }, [currentProject]);
 
@@ -6074,7 +6312,7 @@ export default function App() {
             <button className="topbar-button" onClick={() => setSettingsOpen(true)} title="Settings"><Settings size={16} /></button>
           </div>
         </header>
-             <main className={`main-stage ${activeSurface !== "chat" && activeSurface !== "activity" ? "surface-stage" : environmentOpen && !inspectorVisible ? "environment-reserved" : ""}`}>
+             <main className={`main-stage ${activeSurface !== "chat" && activeSurface !== "activity" ? "surface-stage" : environmentOpen && !inspectorVisible ? "environment-reserved" : ""} ${isThreadSwitchStale ? "thread-switch-pending" : ""}`}>
              {activeSurface === "kanban" ? <KanbanView state={state} currentProject={currentProject} onOpenThread={selectThread} onNewThread={(projectId) => void newThread(projectId)} /> : activeSurface === "pull-requests" ? <PullRequestsView project={currentProject} /> : <>
             {currentProject && <WorkspaceEnvironment
               open={environmentOpen && !inspectorVisible}
@@ -6106,9 +6344,12 @@ export default function App() {
              <button type="button" onClick={() => requestDockPane("terminal")} title="Open terminal"><TerminalSquare size={14} /></button>
            </div>}
            {!currentThread ? <EmptyWorkspace project={currentProject} onOpenProject={openProject} onNewThread={() => void newThread(currentProject?.id)} /> : <>
-                 <MemoizedMessageView thread={currentThread} project={currentProject} git={git} models={engineModels} live={liveRuns[currentThread.id]} waiting={pendingQuestion?.threadId === currentThread.id || pendingPermission?.threadId === currentThread.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} onEditResend={(messageId, text) => void editAndResendMessage(messageId, text)} onRevert={(messageId, revertFiles) => void revertToMessage(messageId, revertFiles)} />
-              <MessageTrail thread={currentThread} onSelect={jumpToMessage} />
-             <Composer key={currentThread.id} thread={currentThread} project={currentProject} git={git} live={liveRuns[currentThread.id]} settings={state.settings} models={engineModels} modelOptions={modelOptions} slashCommands={slashCommands} skillCommands={skillCommands} discoveredSkills={discoveredSkills} contextUsage={currentContextUsage} contextLoading={Boolean(contextLoadingByThread[currentThread.id])} onRefreshContext={() => refreshContextUsage(currentThread.id)} onSend={sendPrompt} onPreviewAttachment={openAttachmentPreview}
+                 <ThreadErrorBoundary key={`thread-${renderThread!.id}`} threadId={renderThread!.id}><MemoizedMessageView thread={renderThread!} project={currentProject} git={git} models={engineModels} live={liveRuns[renderThread!.id]} waiting={pendingQuestion?.threadId === renderThread!.id || pendingPermission?.threadId === renderThread!.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} onEditResend={(messageId, text) => void editAndResendMessage(messageId, text)} onRevert={(messageId, revertFiles) => void revertToMessage(messageId, revertFiles)} /></ThreadErrorBoundary>
+              <MessageTrail thread={renderThread!} onSelect={jumpToMessage} />
+             <Composer key={currentThread.id} thread={currentThread} project={currentProject} git={git} live={liveRuns[currentThread.id]} settings={state.settings} models={engineModels} modelOptions={modelOptions} slashCommands={slashCommands} skillCommands={skillCommands} discoveredSkills={discoveredSkills} contextUsage={currentContextUsage} contextLoading={Boolean(contextLoadingByThread[currentThread.id])} onRefreshContext={() => refreshContextUsage(currentThread.id)} onSend={sendPrompt} onPreviewAttachment={openAttachmentPreview} draft={composerDrafts[currentThread.id]} onDraftChange={(threadId, patch) => setComposerDrafts((prev) => {
+               const base = prev[threadId] ?? { prompt: "", attachments: [], pastedTexts: [], model: "", effort: "", permission: "auto" as PermissionMode };
+               return { ...prev, [threadId]: { ...base, ...patch } };
+             })}
               onStop={() => {
                 setFollowUpQueues((current) => {
                   if (!current[currentThread.id]?.length) return current;

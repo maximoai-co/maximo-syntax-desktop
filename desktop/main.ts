@@ -1310,9 +1310,16 @@ async function readGitStatus(projectId: string): Promise<GitStatus> {
   const files: GitFile[] = statusResult.stdout.split(/\r?\n/).filter(Boolean).map((line) => {
     const indexStatus = line[0] ?? " ";
     const worktreeStatus = line[1] ?? " ";
-    const statusCode = line.slice(0, 2).trim() || "?";
+    let statusCode = line.slice(0, 2).trim() || "?";
+    // Normalize untracked "??" to single "?" so the UI shows a clean badge
+    // instead of "??". Synara's diff tree uses "U"/"?" with a single glyph.
+    if (statusCode === "??") statusCode = "?";
+    // For renames "R ", "RM" etc keep the primary char, but a sole "?" stays "?".
+    if (statusCode.length > 1 && statusCode[0] !== "?") statusCode = statusCode[0]!;
     const rawPath = line.slice(3);
-    const path = rawPath.includes(" -> ") ? rawPath.split(" -> ").pop()! : rawPath;
+    // Git quotes paths with spaces/unicode; strip surrounding quotes when present.
+    const unquoted = rawPath.startsWith('"') && rawPath.endsWith('"') ? rawPath.slice(1, -1).replace(/\\"/g, '"') : rawPath;
+    const path = unquoted.includes(" -> ") ? unquoted.split(" -> ").pop()! : unquoted;
     const count = counts.get(path) ?? { additions: 0, deletions: 0 };
     return {
       path,
@@ -1322,6 +1329,24 @@ async function readGitStatus(projectId: string): Promise<GitStatus> {
       unstaged: worktreeStatus !== " " && worktreeStatus !== "?",
     };
   });
+  // For untracked files Git's HEAD diff has no entry so counts stay 0/0.
+  // Fill in a useful estimate (line count) so the tree doesn't show "+0 -0"
+  // for brand-new files — Synara's working-tree view does the same.
+  for (const file of files) {
+    if (file.status === "?" && file.additions === 0 && file.deletions === 0) {
+      try {
+        const absolute = resolve(project.path, file.path);
+        if (existsSync(absolute)) {
+          const content = readFileSync(absolute, "utf8");
+          if (content.length > 0) {
+            // Count lines: number of newline-terminated rows + last line if no trailing newline.
+            const lines = content.endsWith("\n") ? content.split("\n").length - 1 : content.split("\n").length;
+            file.additions = Math.max(0, lines);
+          }
+        }
+      } catch { /* keep 0/0 if read fails */ }
+    }
+  }
   return {
     isRepository: true,
     branch: branchResult.stdout.trim(),

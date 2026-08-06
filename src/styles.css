@@ -472,19 +472,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .conversation { width: min(820px, calc(100% - var(--app-density-chat-gutter-total, 40px))); max-width: 100%; min-width: 0; margin: 0 auto; padding: 24px 0 190px; box-sizing: border-box; }
 .conversation-show-older { display: block; width: fit-content; margin: 8px auto 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 11px; font-weight: 600; }
 .conversation-show-older:hover { background: var(--surface-hover); color: var(--text); }
-.chat-transcript-pane { position: relative; min-width: 0; min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; overflow: hidden; }
+.chat-transcript-pane { position: relative; min-width: 0; min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; overflow: hidden; isolation: isolate; z-index: 1; }
 .conversation.waiting { padding-bottom: clamp(300px, 58vh, 720px); }
 /* Scroll-to-bottom: Synara-style — appears when user scrolls up (>64px from bottom), debounced 150ms.
    Positioned absolute inside the transcript pane so it stays centered in the visible chat column
    and automatically follows sidebar/inspector resizes (main-stage grid recalculates width).
-   Bottom offset clears the absolute composer (approx 96-120px) + 16px gap; z-index sits above
-   composer (z:3) but below modals. Motion matches Synara's 220ms disclosure curve. */
+   Bottom offset clears the absolute composer (approx 96-120px) + 16px gap; z-index is below
+   composer (z:5) so Effort/model/context popovers (which live inside composer at z:70+)
+   naturally paint over it. Mirrors Synara's ChatTranscriptPane where the button wrapper
+   stays pointer-events-none and hides when detail/composer menus are open. Motion matches
+   Synara's 220ms disclosure curve. */
 .scroll-to-bottom-wrapper {
   position: absolute;
   left: 0;
   right: 0;
   bottom: calc(var(--composer-height, 96px) + 16px);
-  z-index: 4;
+  z-index: 2;
   display: flex;
   justify-content: center;
   pointer-events: none;
@@ -495,7 +498,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .scroll-to-bottom-wrapper.visible {
   opacity: 1;
   transform: translateY(0);
+  /* Keep wrapper itself non-interactive; only the button should capture clicks.
+     This mirrors Synara's ChatTranscriptPane where the wrapper stays
+     pointer-events-none and the button toggles pointer-events-auto, so the
+     full-width strip never blocks the composer controls (model picker, etc.) */
+}
+.scroll-to-bottom-wrapper.visible .scroll-to-bottom-button {
   pointer-events: auto;
+}
+.scroll-to-bottom-wrapper:not(.visible) .scroll-to-bottom-button {
+  pointer-events: none;
 }
 .scroll-to-bottom-button {
   width: 32px;
@@ -510,6 +522,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   transition: background .15s ease, border-color .15s ease, transform .15s ease, color .15s ease;
+  pointer-events: none;
 }
 .scroll-to-bottom-button:hover {
   background: var(--surface-solid);
@@ -520,6 +533,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .scroll-to-bottom-button:active { transform: translateY(0); }
 @media (max-width: 720px) {
   .scroll-to-bottom-wrapper { bottom: calc(var(--composer-height, 84px) + 12px); }
+}
+/* When any composer popover is open (Effort/model/context/add/slash) the scroll button must sit
+   underneath — otherwise it peeks through the menu. Hide it (opacity 0 + no pointer) while
+   the menu is open, matching Synara's wrapper staying pointer-events-none when menus overlay.
+   Composer is z:5, button wrapper is z:2, but the :has guard also prevents the visible wrapper
+   from catching hover while the user interacts with the menu. */
+.main-stage:has(.model-control.open) .scroll-to-bottom-wrapper,
+.main-stage:has(.context-usage-control.open) .scroll-to-bottom-wrapper,
+.main-stage:has(.custom-select.open) .scroll-to-bottom-wrapper,
+.main-stage:has(.add-menu) .scroll-to-bottom-wrapper,
+.main-stage:has(.slash-command-menu) .scroll-to-bottom-wrapper {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: translateY(4px) !important;
 }
 .message-trail { position: absolute; z-index: 2; inset: 0 auto 0 0; width: 56px; display: flex; align-items: center; justify-content: center; pointer-events: none; opacity: 0; transition: opacity .18s ease; }
 .message-trail.visible { pointer-events: auto; opacity: 1; }
@@ -535,6 +562,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .message-trail-tooltip span { -webkit-line-clamp: 3; color: var(--muted); font-size: 9px; line-height: 1.35; }
 .thread-empty { min-height: clamp(280px, 53vh, 470px); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px 18px; text-align: center; }
 .thread-empty .logo-mark { width: 43px; height: 34px; margin-bottom: 18px; opacity: .62; filter: saturate(.55); }
+.thread-error-fallback { min-height: clamp(280px, 53vh, 470px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 30px 18px; text-align: center; color: var(--muted); }
+.thread-error-fallback > svg { color: var(--danger); }
+.thread-error-fallback strong { color: var(--text-strong); font-size: 13px; }
+.thread-error-fallback small { max-width: 420px; color: var(--faint); font-size: 10px; word-break: break-word; }
+.thread-error-fallback button { margin-top: 8px; }
 .thread-empty h3 { max-width: 650px; margin: 0; font-family: var(--theme-display-font-family, "Manrope"); color: var(--text-strong); font-size: clamp(19px, 2.3vw, 25px); font-weight: 400; letter-spacing: -.025em; }
 .thread-empty p { max-width: 430px; margin: 7px 0 13px; color: var(--muted); font-size: 11px; }
 .message { position: relative; min-width: 0; max-width: 100%; padding: 0 2px 22px; content-visibility: auto; contain-intrinsic-size: auto 88px; }
@@ -1277,7 +1309,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .inline-progress small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
 @media (max-width: 620px) { .message-actions { opacity: 1; } }
 
-.composer-wrap { position: absolute; z-index: 3; left: 0; right: 0; bottom: 0; padding: var(--app-density-composer-wrap-padding-top, 8px) var(--app-density-composer-wrap-padding-x, 18px) var(--app-density-composer-wrap-padding-bottom, 12px); background: linear-gradient(180deg, transparent, var(--bg) 33%, var(--bg)); }
+.composer-wrap { position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; padding: var(--app-density-composer-wrap-padding-top, 8px) var(--app-density-composer-wrap-padding-x, 18px) var(--app-density-composer-wrap-padding-bottom, 12px); background: linear-gradient(180deg, transparent, var(--bg) 33%, var(--bg)); }
+/* Keep transcript faintly dimmed while the deferred thread catches up — avoids the
+   jarring blank flash when the user scrubs quickly. Synara keeps the previous
+   pane at full opacity but holds it via deferredChatMount; we dim 3% as a hint. */
+.main-stage.thread-switch-pending .chat-transcript-pane.stale { opacity: 0.97; }
+.main-stage.thread-switch-pending .chat-transcript-pane.stale .conversation { pointer-events: none; }
 .composer { position: relative; width: min(860px, 100%); margin: 0 auto; border-radius: 16px; overflow: visible; box-shadow: var(--shadow); transition: border-color .2s, transform .2s; }
 .composer.interactive { overflow: hidden; border-color: color-mix(in srgb, var(--accent) 38%, var(--border)); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow); }
 .composer.drop-active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow); }
@@ -3059,6 +3096,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .workspace-git-file-main b { color: var(--accent); }.workspace-git-file-main i { color: var(--danger); font-style: normal; }
 .workspace-git-status { width: 22px; flex: 0 0 auto; color: var(--warning); font: 8px ui-monospace, monospace; text-align: center; }
 .workspace-git-status.status-A { color: var(--accent); }.workspace-git-status.status-M { color: var(--warning); }.workspace-git-status.status-D { color: var(--danger); }
+.workspace-git-status.status-\? { color: var(--muted); }
+.workspace-git-status.status-U { color: var(--muted); }
+.file-status { min-width: 20px; font-family: var(--theme-code-font-family, ui-monospace, monospace); font-size: 8px; color: var(--warning); }
+.file-status.status-A { color: var(--accent); }
+.file-status.status-M { color: var(--warning); }
+.file-status.status-D { color: var(--danger); }
+.file-status.status-\? { color: var(--muted); }
 .workspace-git-file-action { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 6px; background: transparent; color: var(--faint); }
 .workspace-git-file-action:hover { background: var(--surface-hover); color: var(--text); }
 .workspace-git-empty { margin: 0; padding: 4px 3px; color: var(--faint); font-size: 9px; }

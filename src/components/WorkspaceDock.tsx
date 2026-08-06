@@ -985,6 +985,26 @@ function WorkspaceDiffPane({ project, git, reviewFile, reviewDiff, onOpenDiff, o
   useEffect(() => {
     if (reviewFile && reviewDiff) setFilePatches((m) => ({ ...m, [reviewFile]: reviewDiff }));
   }, [reviewFile, reviewDiff]);
+  // When the user opens a file from the timeline (e.g. clicking main.ts in the
+  // "Edited 3 files" card) we must ensure that file is expanded in the list
+  // and its patch is cached, even if the initial auto-collapse already ran.
+  // Synara's DiffPanel does the same: the selected file is always uncollapsed.
+  useEffect(() => {
+    if (!reviewFile) return;
+    setCollapsedFiles((prev) => {
+      if (!prev.has(reviewFile)) return prev;
+      const next = new Set(prev);
+      next.delete(reviewFile);
+      return next;
+    });
+    // Also cache the known diff so the inline row can render immediately without
+    // waiting for a second gitDiff round-trip. The detail pane uses reviewDiff
+    // directly, but the file-list inline view reads from filePatches.
+    if (reviewDiff && reviewDiff.path === reviewFile) {
+      setFilePatches((m) => (m[reviewFile] ? m : { ...m, [reviewFile]: reviewDiff }));
+    }
+    if (detailCollapsed) setDetailCollapsed(false);
+  }, [reviewFile]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!active) return;
     if (scopedFiles.length === 0) return;
