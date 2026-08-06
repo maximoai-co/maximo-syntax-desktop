@@ -80,6 +80,34 @@ class ThreadErrorBoundary extends Component<{ threadId?: string; children: React
   }
 }
 
+class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("[Maximo Syntax] App shell error", error, info.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="app-error-fallback">
+          <div className="app-error-card glass-panel">
+            <AlertCircle size={20} />
+            <div>
+              <strong>Something went wrong</strong>
+              <small>{this.state.error.message || "An unexpected error blanked the workspace. Your chats and files are safe on disk."}</small>
+            </div>
+            <div className="app-error-actions">
+              <button type="button" className="primary-button compact" onClick={() => this.setState({ error: null })}>Try again</button>
+              <button type="button" className="secondary-button compact" onClick={() => window.location.reload()}>Reload app</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const permissionOptions: SelectOption<PermissionMode>[] = [
   { value: "default", label: "Ask for approval", description: "Permission prompts restored for every tool action", icon: <ShieldCheck size={14} /> },
   { value: "plan", label: "Plan mode", description: "Read-only until you approve a plan", icon: <Eye size={14} /> },
@@ -983,15 +1011,17 @@ function mergeAgentWork(agent: AgentRun, work: AgentWorkItem): AgentRun {
 
 function cloneLiveRun(run: LiveRun | undefined): LiveRun {
   const existing = run ?? { text: "", activity: [], timeline: [], logs: [] };
+  // Shallow copy only — timeline items are replaced piecemeal below, no need to clone each object every frame.
   return {
     ...existing,
-    activity: [...existing.activity],
-    timeline: existing.timeline.map((item) => ({ ...item })),
-    logs: [...existing.logs],
+    activity: existing.activity.slice(),
+    timeline: existing.timeline.slice(),
+    logs: existing.logs.slice(),
   };
 }
 
 function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly RunEvent[]): Record<string, LiveRun> {
+  try {
   const next = { ...current };
   const runs = new Map<string, LiveRun>();
   // O(1) lookups for hot paths: agent taskId -> timeline index, activity toolUseId -> indexes
@@ -1284,6 +1314,10 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
     next[threadId] = run;
   }
   return next;
+  } catch (error) {
+    console.error("[reduceLiveRunEvents] swallowed error", error);
+    return current;
+  }
 }
 
 function AgentTimelineEvent({ agent }: { agent: AgentRun }) {
@@ -3079,6 +3113,13 @@ function UserMessageCollapsibleText({ text, expanded, chatFontSizePx, onToggle, 
 }
 
 function MessageView({ thread, project, git, models, live, waiting, skillNames, timestampFormat, streamingEnabled, onPreviewAttachment, onOpenFile, onTogglePin, onEditResend, onRevert }: { thread: Thread; project?: Project; git?: GitStatus | null; models: EngineModel[]; live?: LiveRun; waiting?: boolean; skillNames?: Set<string>; timestampFormat: TimestampFormat; streamingEnabled: boolean; onPreviewAttachment: (attachment: Attachment) => void; onOpenFile: (path: string, diff?: GitDiff) => void; onTogglePin: (messageId: string) => void; onEditResend?: (messageId: string, text: string) => void; onRevert?: (messageId: string, revertFiles: boolean) => void }) {
+  if (!thread) {
+    return (
+      <div className="chat-transcript-pane">
+        <div className="conversation-scroll"><div className="conversation"><div className="thread-empty"><RefreshCw size={16} className="spin" /><span>Loading conversation…</span></div></div></div>
+      </div>
+    );
+  }
   const scrollRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -3096,7 +3137,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   // at 60fps. React's useDeferredValue keeps the previous value visible while
   // the new value renders at lower priority — mirrors Synara's deferredChatMount.
   const deferredThread = useDeferredValue(thread);
-  const isStale = deferredThread.id !== thread.id;
+  const isStale = Boolean(deferredThread && deferredThread.id !== thread.id);
   // Per-thread UI state preservation: which user messages were expanded, so
   // hopping between threads doesn't collapse what the user opened.
   // Synara keeps expandedWorkGroups per thread; we keep a lighter version.
@@ -3171,7 +3212,9 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   const handleScroll = useCallback(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
-    updateScrollButtonVisibility(scroll);
+    // Use rAF to avoid scroll jank: don't read layout synchronously on every scroll event
+    // while AI is streaming — batch through rAF like synara's scroll handler.
+    window.requestAnimationFrame(() => updateScrollButtonVisibility(scroll));
   }, [updateScrollButtonVisibility]);
   const scrollToBottom = useCallback((animated = true) => {
     const scroll = scrollRef.current;
@@ -5511,10 +5554,29 @@ export default function App() {
     }
     };
     const unsubscribe = window.maximoDesktop.onRunEvent((event: RunEvent) => {
+      if (!event || typeof (event as RunEvent).type !== "string" || typeof (event as RunEvent).threadId !== "string") return;
       pendingEvents.push(event);
       if (frame !== null) return;
       frame = window.requestAnimationFrame(() => {
         frame = null;
+        // 2026 scheduler yield: if user is actively scrolling/typing, defer this flush one frame
+        const nav = navigator as unknown as { scheduling?: { isInputPending?: () => boolean } };
+        if (nav.scheduling?.isInputPending?.()) {
+          frame = window.requestAnimationFrame(() => {
+            frame = null;
+            const retryEvents = pendingEvents.splice(0);
+            if (retryEvents.length === 0) return;
+            try {
+              startTransition(() => {
+                setLiveRuns((current) => reduceLiveRunEvents(current, retryEvents));
+              });
+            } catch { /* keep UI alive */ }
+            for (const next of retryEvents) {
+              try { processRunEvent(next); } catch { /* isolated */ }
+            }
+          });
+          return;
+        }
         const events = pendingEvents.splice(0);
         // Defer live streaming work as a transition so user interactions
         // (timeline expand, scroll, typing) remain urgent and don't hang.
@@ -5553,19 +5615,25 @@ export default function App() {
               coalesced.push({ type: "text", threadId, text: buf.text, mode: "append", timestamp: buf.timestamp });
             }
             const toReduce = coalesced.length ? coalesced : events;
-            startTransition(() => {
+            try {
+              startTransition(() => {
+                setLiveRuns((current) => reduceLiveRunEvents(current, toReduce));
+              });
+            } catch {
               setLiveRuns((current) => reduceLiveRunEvents(current, toReduce));
-            });
+            }
           }
           // processRunEvent contains high-priority UI like permission prompts;
           // keep those urgent, but run them after the transition so the frame can paint.
-          for (const next of events) processRunEvent(next);
+          for (const next of events) {
+            try { processRunEvent(next); } catch (e) { console.error("[processRunEvent] isolated error", e); }
+          }
         };
         // Use startTransition if available to keep the flush low-priority
         try {
           startTransition(flush);
         } catch {
-          flush();
+          try { flush(); } catch (e) { console.error("[flush] isolated", e); }
         }
       });
     });
@@ -6357,20 +6425,20 @@ export default function App() {
     setPendingPermission((current) => current?.requestId === target.requestId ? null : current);
   };
 
-  if (!state) return <SetupGate status={engine} onRetry={() => void window.maximoDesktop.ensureEngine(true).then(setEngine)} onContinue={() => undefined} />;
-  if (!state.onboardingComplete) return <SetupGate status={engine} onRetry={() => void window.maximoDesktop.ensureEngine(true).then(setEngine)} onContinue={() => void window.maximoDesktop.completeOnboarding().then(setState)} />;
+  if (!state) return <AppErrorBoundary><SetupGate status={engine} onRetry={() => void window.maximoDesktop.ensureEngine(true).then(setEngine)} onContinue={() => undefined} /></AppErrorBoundary>;
+  if (!state.onboardingComplete) return <AppErrorBoundary><SetupGate status={engine} onRetry={() => void window.maximoDesktop.ensureEngine(true).then(setEngine)} onContinue={() => void window.maximoDesktop.completeOnboarding().then(setState)} /></AppErrorBoundary>;
   if (!accountLoaded) {
     return (
-      <>
+      <AppErrorBoundary>
         <AccountLoadingGate theme={state.settings.theme} />
         {transientRetry && <TransientRetryNotice state={transientRetry} onDismiss={() => setTransientRetry(null)} />}
         {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
-      </>
+      </AppErrorBoundary>
     );
   }
   if (!account?.loggedIn) {
     return (
-      <>
+      <AppErrorBoundary>
         <SignInGate
           theme={state.settings.theme}
           busy={accountBusy}
@@ -6380,11 +6448,12 @@ export default function App() {
         />
         {transientRetry && <TransientRetryNotice state={transientRetry} onDismiss={() => setTransientRetry(null)} />}
         {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
-      </>
+      </AppErrorBoundary>
     );
   }
 
   return (
+    <AppErrorBoundary>
     <div className={`app-shell theme-${state.settings.theme} density-${state.settings.uiDensity} ${state.settings.useSystemUiFont ? "system-ui-font" : ""} ${sidebarVisible ? "" : "sidebar-hidden"} ${inspectorVisible ? "" : "inspector-hidden"}`} style={{ ...appearanceVariables, "--sidebar-width": `${sidebarWidth}px`, "--inspector-width": `${inspectorWidth}px` } as CSSProperties}>
 
        <MemoizedSidebar state={state} currentThread={currentThread} account={account} timestampFormat={state.settings.timestampFormat} activeSurface={activeSurface} onNavigateSurface={navigateSurface} onOpenProject={openProject} onCreateProject={() => setCreateProjectOpen(true)} onNewThread={newThread}
@@ -6534,5 +6603,6 @@ export default function App() {
       {transientRetry && <TransientRetryNotice state={transientRetry} onDismiss={() => setTransientRetry(null)} />}
       {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
     </div>
+    </AppErrorBoundary>
   );
 }

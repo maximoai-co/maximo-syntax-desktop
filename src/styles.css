@@ -147,7 +147,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .spin { animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.app-shell { --sidebar-width: clamp(292px, 18vw, 360px); --inspector-width: clamp(300px, 20vw, 390px); position: relative; display: grid; grid-template-columns: var(--sidebar-width) minmax(420px, 1fr) var(--inspector-width); width: 100%; height: 100%; min-height: 0; background: var(--bg); overflow: hidden; color: var(--text); font-family: var(--theme-ui-font-family); font-size: var(--app-font-size-base, 13px); }
+.app-shell { --sidebar-width: clamp(292px, 18vw, 360px); --inspector-width: clamp(300px, 20vw, 390px); position: relative; display: grid; grid-template-columns: var(--sidebar-width) minmax(420px, 1fr) var(--inspector-width); width: 100%; height: 100%; min-height: 0; background: var(--bg); overflow: hidden; color: var(--text); font-family: var(--theme-ui-font-family); font-size: var(--app-font-size-base, 13px); contain: layout; }
 .app-shell.system-ui-font { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }
 .app-shell.density-compact { --density-row-height: 30px; --density-section-gap: 9px; --density-composer-padding: 9px; --density-control-height: 29px; --density-sidebar-padding-y: 10px; --density-card-gap: 13px; --density-pane-header-height: 38px; }
 .app-shell.density-comfortable { --density-row-height: 34px; --density-section-gap: 13px; --density-composer-padding: 13px; --density-control-height: 34px; --density-sidebar-padding-y: 13px; --density-card-gap: 18px; --density-pane-header-height: 43px; }
@@ -468,7 +468,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .capability-row span { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--surface) 55%, transparent); font-size: 10px; }
 
 /* min-width:0 lets this flex child shrink so long AI code/tables cannot widen the stage */
-.conversation-scroll { min-width: 0; min-height: 0; height: 0; flex: 1 1 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.conversation-scroll { min-width: 0; min-height: 0; height: 0; flex: 1 1 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; -webkit-overflow-scrolling: touch; will-change: scroll-position; transform: translateZ(0); contain: layout paint; }
 .conversation { width: min(820px, calc(100% - var(--app-density-chat-gutter-total, 40px))); max-width: 100%; min-width: 0; margin: 0 auto; padding: 24px 0 190px; box-sizing: border-box; }
 .conversation-show-older { display: block; width: fit-content; margin: 8px auto 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 11px; font-weight: 600; }
 .conversation-show-older:hover { background: var(--surface-hover); color: var(--text); }
@@ -562,6 +562,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .message-trail-tooltip span { -webkit-line-clamp: 3; color: var(--muted); font-size: 9px; line-height: 1.35; }
 .thread-empty { min-height: clamp(280px, 53vh, 470px); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px 18px; text-align: center; }
 .thread-empty .logo-mark { width: 43px; height: 34px; margin-bottom: 18px; opacity: .62; filter: saturate(.55); }
+.app-error-fallback { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(12px); }
+.app-error-card { width: min(480px, calc(100vw - 32px)); padding: 22px; display: grid; gap: 12px; border-radius: 16px; text-align: left; }
+.app-error-card > svg { color: var(--danger); }
+.app-error-card strong { color: var(--text-strong); font-size: 14px; }
+.app-error-card small { color: var(--muted); font-size: 11px; line-height: 1.5; word-break: break-word; }
+.app-error-actions { display: flex; gap: 8px; margin-top: 4px; }
 .thread-error-fallback { min-height: clamp(280px, 53vh, 470px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 30px 18px; text-align: center; color: var(--muted); }
 .thread-error-fallback > svg { color: var(--danger); }
 .thread-error-fallback strong { color: var(--text-strong); font-size: 13px; }
@@ -1399,8 +1405,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .branch-create button { width: 28px; display: grid; place-items: center; border-radius: 7px; background: var(--accent-soft); color: var(--accent-strong); }
 .icon-button { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; color: var(--muted); background: transparent; }
 .icon-button:hover { color: var(--text); background: var(--surface-hover); }
-.custom-select { position: relative; min-width: 0; }
-.custom-select-trigger { width: 100%; height: 100%; padding: 0; display: flex; align-items: center; gap: 6px; border-radius: inherit; background: transparent; color: inherit; text-align: left; font-size: 10px; font-weight: 600; }
+.custom-select { position: relative; min-width: 0; contain: layout; }
+.custom-select-trigger { width: 100%; height: 100%; padding: 0; display: flex; align-items: center; gap: 6px; border-radius: inherit; background: transparent; color: inherit; text-align: left; font-size: 10px; font-weight: 600; will-change: transform; }
 /* Only the label grows — icons (theme badges, etc.) must stay fixed size */
 .custom-select-trigger > .select-option-label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .custom-select-trigger > .select-option-icon { flex: 0 0 auto; width: 20px; height: 20px; display: grid; place-items: center; color: inherit; }
@@ -3125,8 +3131,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .workspace-selected-diff-header > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-selected-diff .diff-code { min-height: 0; flex: 1; overflow: auto; padding: 8px 0 25px; font-size: 9px; scrollbar-width: thin; }
 .workspace-diff-header .workspace-diff-scope { width: 126px; height: 27px; flex: 0 0 auto; color: var(--text-strong); }
-.workspace-diff-header .workspace-diff-scope .custom-select-trigger { padding: 0 7px; border-radius: 7px; font-size: 10px; color: var(--text-strong); }
-.workspace-diff-header .workspace-diff-scope .custom-select-trigger svg { color: var(--muted); }
+.workspace-diff-header .workspace-diff-scope .custom-select-trigger { padding: 0 7px; border-radius: 7px; font-size: 10px; color: var(--text-strong); justify-content: space-between; line-height: 1; }
+.workspace-diff-header .workspace-diff-scope .custom-select-trigger > span { line-height: 1; display: flex; align-items: center; }
+.workspace-diff-header .workspace-diff-scope .custom-select-trigger svg { color: var(--muted); display: block; flex: 0 0 auto; }
 .workspace-diff-header .workspace-diff-scope .custom-select-trigger:hover, .workspace-diff-header .workspace-diff-scope.open .custom-select-trigger { background: var(--surface-hover); }
 .workspace-diff-header .workspace-diff-scope .custom-select-menu { top: calc(100% + 7px); width: 218px; min-width: 218px; }
 .workspace-diff-toolbar { min-height: 38px; padding: 6px 8px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent); background: var(--bg); }
