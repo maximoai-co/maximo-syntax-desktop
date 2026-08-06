@@ -257,29 +257,48 @@ export class RuntimeManager {
 
   /** The newest CLI version published to the npm registry, or null when it
    * could not be determined (offline, registry unreachable). Results are cached
-   * for the session and only re-checked after a cooldown. */
+   * for the session and only re-checked after a cooldown. Retries 3× on
+   * transient network failures before falling back, matching synara's
+   * retryTransient times:3 policy. */
   private async fetchLatestVersion(): Promise<string | null> {
     if (this.latestVersion) return this.latestVersion;
     const now = Date.now();
     if (now - this.latestVersionCheckedAt < LATEST_VERSION_RECHECK_MS) return this.latestVersion;
     this.latestVersionCheckedAt = now;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    try {
-      const response = await fetch(CLI_LATEST_URL, {
-        signal: controller.signal,
-        headers: { accept: "application/json" },
-      });
-      if (!response.ok) return null;
-      const data = (await response.json()) as { version?: unknown };
-      if (typeof data.version === "string" && parseVersion(data.version)) {
-        this.latestVersion = data.version;
-        return data.version;
+    // Retry 3× with backoff for transient network hiccups
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      try {
+        const response = await fetch(CLI_LATEST_URL, {
+          signal: controller.signal,
+          headers: { accept: "application/json" },
+        });
+        if (!response.ok) {
+          // 5xx is retryable, 4xx is not
+          if (response.status >= 500 && response.status < 600 && attempt < 4) {
+            const backoff = Math.min(4000, 700 * Math.pow(2, attempt - 1) + Math.random() * 200);
+            await new Promise((r) => setTimeout(r, backoff));
+            continue;
+          }
+          return null;
+        }
+        const data = (await response.json()) as { version?: unknown };
+        if (typeof data.version === "string" && parseVersion(data.version)) {
+          this.latestVersion = data.version;
+          return data.version;
+        }
+        return null;
+      } catch {
+        if (attempt < 4) {
+          const backoff = Math.min(4000, 700 * Math.pow(2, attempt - 1) + Math.random() * 200);
+          await new Promise((r) => setTimeout(r, backoff));
+          continue;
+        }
+        // Offline or registry unreachable: keep using the current engine.
+      } finally {
+        clearTimeout(timer);
       }
-    } catch {
-      // Offline or registry unreachable: keep using the current engine.
-    } finally {
-      clearTimeout(timer);
     }
     return null;
   }

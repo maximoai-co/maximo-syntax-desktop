@@ -49,6 +49,8 @@ import { composerKeyAction, composerSendShortcutLabel } from "./composerKeyboard
 import { MAXIMO_SHORTCUTS, matchesShortcut, shortcutLabel } from "./shortcuts";
 import { modelProvider, type ModelProvider } from "./utils/modelProvider.js";
 import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollElementNearBottom } from "./utils/chatScroll.js";
+import { retryWithBackoff, isRetryableError, DEFAULT_MAX_RETRIES } from "./utils/retry.js";
+import { TransientRetryNotice, type TransientRetryState } from "./components/TransientRetryNotice";
 
 type LiveRun = { text: string; activity: RunActivity[]; timeline: RunTimelineItem[]; logs: Array<{ level: string; text: string; timestamp: number }> };
 type WorkspaceSurface = "chat" | "activity" | "kanban" | "pull-requests";
@@ -3940,14 +3942,22 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
     const supported = nextModel?.supportedEffortLevels ?? [];
     setEffort((current) => current && supported.includes(current) ? normalizeEffortValue(current) : nextModel?.defaultEffort ? normalizeEffortValue(nextModel.defaultEffort) : "");
   };
+  const [branchRetry, setBranchRetry] = useState<TransientRetryState>(null);
   const refreshBranches = async () => {
     if (!project) return;
     setBranchLoading(true);
     setBranchError(null);
+    setBranchRetry(null);
     try {
-      setBranchInfo(await window.maximoDesktop.gitBranches(project.id));
+      const info = await retryWithBackoff(() => window.maximoDesktop.gitBranches(project.id), {
+        retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError,
+        onRetry: (a,m,e) => setBranchRetry({ attempt: a, max: m, message: e instanceof Error ? e.message : "Retrying…" }),
+      });
+      setBranchInfo(info);
+      setBranchRetry(null);
     } catch (error) {
       setBranchInfo(null);
+      setBranchRetry(null);
       setBranchError(error instanceof Error ? error.message : "Unable to read Git branches.");
     } finally {
       setBranchLoading(false);
@@ -3962,24 +3972,39 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
   const checkoutBranch = async (branch: string) => {
     if (!project || branch === branchInfo?.current) return setContextOpen(null);
     try {
-      const status = await window.maximoDesktop.gitCheckout(project.id, branch);
+      const status = await retryWithBackoff(() => window.maximoDesktop.gitCheckout(project.id, branch), {
+        retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError,
+        onRetry: (a,m,e) => setBranchRetry({ attempt: a, max: m, message: e instanceof Error ? e.message : "Retrying…" }),
+      });
       onGitChanged(status);
       setBranchInfo((current) => current ? { ...current, current: status.branch, dirty: !status.clean } : current);
+      setBranchRetry(null);
       setContextOpen(null);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Unable to switch branches.");
+      setBranchRetry(null);
+      if (isRetryableError(error)) {
+        setBranchError(error instanceof Error ? error.message : "Unable to switch branches.");
+      } else {
+        window.alert(error instanceof Error ? error.message : "Unable to switch branches.");
+      }
     }
   };
   const createBranch = async () => {
     if (!project || !newBranch.trim()) return;
     try {
-      const status = await window.maximoDesktop.gitCreateBranch(project.id, newBranch.trim());
+      const status = await retryWithBackoff(() => window.maximoDesktop.gitCreateBranch(project.id, newBranch.trim()), {
+        retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError,
+        onRetry: (a,m,e) => setBranchRetry({ attempt: a, max: m, message: e instanceof Error ? e.message : "Retrying…" }),
+      });
       onGitChanged(status);
       setBranchInfo((current) => current ? { ...current, current: status.branch, dirty: !status.clean, branches: [...new Set([...current.branches, status.branch])] } : current);
+      setBranchRetry(null);
       setNewBranch("");
       setContextOpen(null);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Unable to create a branch.");
+      setBranchRetry(null);
+      if (isRetryableError(error)) setBranchError(error instanceof Error ? error.message : "Unable to create a branch.");
+      else window.alert(error instanceof Error ? error.message : "Unable to create a branch.");
     }
   };
   const renderSlashMenuItem = (command: SlashMenuItem) => {
@@ -4058,7 +4083,7 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
           {git?.isRepository && <button type="button" onClick={() => void openContext("branch")}><GitBranch size={13} />{git.branch}<ChevronDown size={10} /></button>}
           {contextOpen === "project" && <div className="context-menu project-context-menu glass-panel"><strong>{project.name}</strong><small>{project.path}</small><button onClick={() => void window.maximoDesktop.openInEditor(project.path)}><Code2 size={13} />Open in editor</button><button onClick={() => void window.maximoDesktop.revealPath(project.path)}><FolderOpen size={13} />Show in Files</button><button onClick={onOpenProject}><Folder size={13} />Open another project…</button></div>}
           {contextOpen === "location" && <div className="context-menu location-context-menu glass-panel"><span className="menu-label">Start in</span><button className="selected"><HardDrive size={13} /><span><strong>Work locally</strong><small>Use this computer and project folder</small></span><Check size={13} /></button><button onClick={onAccountUsage}><Gauge size={13} /><span><strong>Usage remaining</strong><small>View live plan limits</small></span><ChevronRight size={13} /></button></div>}
-          {contextOpen === "branch" && <div className="context-menu branch-context-menu glass-panel"><span className="menu-label">Branches</span>{branchLoading ? <div className="branch-state"><RefreshCw size={12} className="spin" />Reading local branches</div> : branchError ? <div className="branch-state error">{branchError}<button type="button" onClick={() => void refreshBranches()}>Retry</button></div> : branchInfo?.dirty ? <small className="branch-dirty">Uncommitted changes are preserved when Git allows the switch.</small> : null}{!branchLoading && !branchError && branchInfo?.branches.length === 0 && <div className="branch-state">No local branches found</div>}{!branchLoading && !branchError && branchInfo?.branches.map((branch) => <button type="button" className={branch === branchInfo.current ? "selected" : ""} onClick={() => void checkoutBranch(branch)} key={branch}><GitBranch size={13} /><span>{branch}</span>{branch === branchInfo.current && <Check size={13} />}</button>)}<div className="branch-create"><input value={newBranch} onChange={(event) => setNewBranch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void createBranch(); }} placeholder="New branch name" /><button type="button" onClick={() => void createBranch()} disabled={!newBranch.trim() || branchLoading}><Plus size={13} /></button></div></div>}
+          {contextOpen === "branch" && <div className="context-menu branch-context-menu glass-panel"><span className="menu-label">Branches</span>{branchLoading ? <div className="branch-state"><RefreshCw size={12} className="spin" />{branchRetry ? `Retrying ${branchRetry.attempt}/${branchRetry.max} — ${branchRetry.message ?? "Retrying…"}` : "Reading local branches"}</div> : branchRetry ? <div className="branch-state retrying"><RefreshCw size={12} className="spin" />Retrying {branchRetry.attempt}/{branchRetry.max} — {branchRetry.message ?? "Connection issue"}</div> : branchError ? <div className="branch-state error">{branchError}<button type="button" onClick={() => void refreshBranches()}>Retry</button></div> : branchInfo?.dirty ? <small className="branch-dirty">Uncommitted changes are preserved when Git allows the switch.</small> : null}{!branchLoading && !branchError && !branchRetry && branchInfo?.branches.length === 0 && <div className="branch-state">No local branches found</div>}{!branchLoading && !branchError && !branchRetry && branchInfo?.branches.map((branch) => <button type="button" className={branch === branchInfo.current ? "selected" : ""} onClick={() => void checkoutBranch(branch)} key={branch}><GitBranch size={13} /><span>{branch}</span>{branch === branchInfo.current && <Check size={13} />}</button>)}<div className="branch-create"><input value={newBranch} onChange={(event) => setNewBranch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void createBranch(); }} placeholder="New branch name" /><button type="button" onClick={() => void createBranch()} disabled={!newBranch.trim() || branchLoading}><Plus size={13} /></button></div></div>}
         </div>}
         {attachments.length > 0 && <AttachmentList attachments={attachments} onPreview={onPreviewAttachment} onRemove={(file) => setAttachments((items) => items.filter((item) => item.path !== file.path))} className="attachment-strip" />}
         {pastedTexts.length > 0 && <div className="pasted-text-strip">{pastedTexts.map((pasted) => (
@@ -5123,6 +5148,15 @@ export default function App() {
   const [usage, setUsage] = useState<UsageSnapshot | null>(null);
   const [usageBusy, setUsageBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [transientRetry, setTransientRetry] = useState<TransientRetryState>(null);
+  const transientRetryTimerRef = useRef<number | null>(null);
+  const clearTransientRetrySoon = useCallback((delayMs = 1500) => {
+    if (transientRetryTimerRef.current !== null) window.clearTimeout(transientRetryTimerRef.current);
+    transientRetryTimerRef.current = window.setTimeout(() => { setTransientRetry(null); transientRetryTimerRef.current = null; }, delayMs);
+  }, []);
+  useEffect(() => () => {
+    if (transientRetryTimerRef.current !== null) window.clearTimeout(transientRetryTimerRef.current);
+  }, []);
   const [appDataPath, setAppDataPath] = useState("");
   const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreviewState | null>(null);
   const attachmentPreviewRequestRef = useRef(0);
@@ -5197,23 +5231,6 @@ export default function App() {
   const refreshState = useCallback(async () => setState(await window.maximoDesktop.loadState()), []);
   const engineModelsRefreshAtRef = useRef(0);
   const engineModelsRequestRef = useRef(0);
-  const refreshEngineModels = useCallback(async (force = false) => {
-    if (!force && Date.now() - engineModelsRefreshAtRef.current < 60_000) return null;
-    const requestId = ++engineModelsRequestRef.current;
-    engineModelsRefreshAtRef.current = Date.now();
-    setModelsLoading(true);
-    try {
-      const models = await window.maximoDesktop.engineModels();
-      if (requestId !== engineModelsRequestRef.current) return null;
-      setEngineModels(models);
-      return models;
-    } catch {
-      // Keep the last known active selection visible during a transient catalog failure.
-      return null;
-    } finally {
-      if (requestId === engineModelsRequestRef.current) setModelsLoading(false);
-    }
-  }, []);
   const invalidateProviderState = useCallback(() => {
     engineModelsRequestRef.current += 1;
     engineModelsRefreshAtRef.current = 0;
@@ -5258,27 +5275,82 @@ export default function App() {
     return names;
   }, [skillCommands, discoveredSkills]);
   const showToast = useCallback((message: string) => { setToast(message); window.setTimeout(() => setToast(null), 3_500); }, []);
+  const showTransientRetry = useCallback((attempt: number, max: number, error: unknown) => {
+    const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "Retrying…";
+    setTransientRetry({ attempt, max, message: raw.slice(0, 140) || "Connection issue — retrying" });
+  }, []);
+  const refreshEngineModels = useCallback(async (force = false) => {
+    if (!force && Date.now() - engineModelsRefreshAtRef.current < 60_000) return null;
+    const requestId = ++engineModelsRequestRef.current;
+    engineModelsRefreshAtRef.current = Date.now();
+    setModelsLoading(true);
+    try {
+      const models = await retryWithBackoff(() => window.maximoDesktop.engineModels(), {
+        retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+      });
+      if (requestId !== engineModelsRequestRef.current) return null;
+      setTransientRetry(null);
+      setEngineModels(models);
+      return models;
+    } catch {
+      setTransientRetry(null);
+      // Keep the last known active selection visible during a transient catalog failure.
+      return null;
+    } finally {
+      if (requestId === engineModelsRequestRef.current) setModelsLoading(false);
+    }
+  }, [showTransientRetry]);
+  const withSmallRetry = useCallback(async <T,>(fn: () => Promise<T>, label?: string): Promise<T> => {
+    try {
+      const result = await retryWithBackoff(fn, {
+        retries: DEFAULT_MAX_RETRIES,
+        isRetryable: isRetryableError,
+        onRetry: (attempt, max, error) => showTransientRetry(attempt, max, error),
+      });
+      setTransientRetry(null);
+      if (transientRetryTimerRef.current !== null) { window.clearTimeout(transientRetryTimerRef.current); transientRetryTimerRef.current = null; }
+      return result;
+    } catch (error) {
+      setTransientRetry(null);
+      throw error;
+    }
+  }, [showTransientRetry]);
+  // Fire-and-forget variant that keeps AI work alive: shows small retrying pill
+  // while auto retrying, only surfaces final error as toast after 3 attempts.
+  const runWithSmallRetry = useCallback(<T,>(fn: () => Promise<T>, onSuccess?: (v: T) => void, onFinalError?: (e: unknown) => void) => {
+    void retryWithBackoff(fn, {
+      retries: DEFAULT_MAX_RETRIES,
+      isRetryable: isRetryableError,
+      onRetry: (attempt, max, error) => showTransientRetry(attempt, max, error),
+    }).then((v) => { setTransientRetry(null); onSuccess?.(v); }).catch((e) => { setTransientRetry(null); onFinalError?.(e); });
+  }, [showTransientRetry]);
   const toggleEnvironment = useCallback(() => {
     setEnvironmentOpen((current) => {
       const next = !current;
-      void window.maximoDesktop.updateSettings({ environmentPanelDefaultOpen: next }).then(setState).catch(() => undefined);
+      runWithSmallRetry(() => window.maximoDesktop.updateSettings({ environmentPanelDefaultOpen: next }).then(setState));
       return next;
     });
-  }, []);
+  }, [runWithSmallRetry]);
   const refreshDiscoveredSkills = useCallback((projectPath?: string) => {
-    void window.maximoDesktop.listSkills(projectPath).then(setDiscoveredSkills).catch(() => setDiscoveredSkills([]));
-  }, []);
+    void retryWithBackoff(() => window.maximoDesktop.listSkills(projectPath), {
+      retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+    }).then(setDiscoveredSkills).catch(() => setDiscoveredSkills([])).finally(() => setTransientRetry(null));
+  }, [showTransientRetry]);
   const openAttachmentPreview = useCallback((attachment: Attachment) => {
     const requestId = ++attachmentPreviewRequestRef.current;
     setAttachmentPreview({ attachment, preview: null, loading: true });
-    void window.maximoDesktop.previewAttachment(attachment.path).then((preview) => {
+    void retryWithBackoff(() => window.maximoDesktop.previewAttachment(attachment.path), {
+      retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+    }).then((preview) => {
       if (requestId !== attachmentPreviewRequestRef.current) return;
       setAttachmentPreview({ attachment, preview, loading: false });
+      setTransientRetry(null);
     }).catch((error) => {
       if (requestId !== attachmentPreviewRequestRef.current) return;
+      setTransientRetry(null);
       setAttachmentPreview({ attachment, preview: null, loading: false, error: error instanceof Error ? error.message : "Unable to prepare this file preview." });
     });
-  }, []);
+  }, [showTransientRetry]);
   const rememberThread = useCallback((threadId: string | undefined) => {
     if (!threadId) return;
     setNavigation((current) => {
@@ -5290,14 +5362,18 @@ export default function App() {
   const refreshContextUsage = useCallback(async (threadId: string) => {
     setContextLoadingByThread((current) => ({ ...current, [threadId]: true }));
     try {
-      const next = await window.maximoDesktop.contextUsage(threadId);
+      const next = await retryWithBackoff(() => window.maximoDesktop.contextUsage(threadId), {
+        retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+      });
       if (next) setContextUsageByThread((current) => ({ ...current, [threadId]: next }));
+      setTransientRetry(null);
     } catch {
+      setTransientRetry(null);
       // Context telemetry is supplemental; keep the last successful reading.
     } finally {
       setContextLoadingByThread((current) => ({ ...current, [threadId]: false }));
     }
-  }, []);
+  }, [showTransientRetry]);
 
   useEffect(() => {
     let active = true;
@@ -5704,7 +5780,10 @@ export default function App() {
     }
     setReviewDiff(null);
     try {
-      const diff = await window.maximoDesktop.gitDiff(project.id, normalizedReviewPath);
+      const diff = await retryWithBackoff(() => window.maximoDesktop.gitDiff(project.id, normalizedReviewPath), {
+        retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+      });
+      setTransientRetry(null);
       // Only apply if the user hasn't switched to another file in the meantime.
       setReviewDiff((current) => {
         // If reviewFile has already moved on, keep the newer selection's diff.
@@ -5712,10 +5791,11 @@ export default function App() {
         return diff;
       });
     } catch (error) {
+      setTransientRetry(null);
       showToast(error instanceof Error ? error.message : "Unable to read the Git diff.");
       setReviewFile((current) => current === normalizedReviewPath ? null : current);
     }
-  }, [currentProject]);
+  }, [currentProject, showTransientRetry]);
 
   const jumpToMessage = useCallback((messageId: string) => {
     const element = document.getElementById(`message-${messageId}`);
@@ -5729,8 +5809,10 @@ export default function App() {
   }, []);
 
   const updateThreadEnvironment = useCallback((operation: Promise<AppState>) => {
-    void operation.then(setState).catch((error) => showToast(error instanceof Error ? error.message : "Unable to update chat environment."));
-  }, [showToast]);
+    void retryWithBackoff(() => operation, {
+      retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+    }).then((next) => { setTransientRetry(null); setState(next); }).catch((error) => { setTransientRetry(null); showToast(error instanceof Error ? error.message : "Unable to update chat environment."); });
+  }, [showToast, showTransientRetry]);
   const toggleMessagePin = useCallback((messageId: string) => {
     if (currentThread) updateThreadEnvironment(window.maximoDesktop.toggleMessagePinned(currentThread.id, messageId));
   }, [currentThread, updateThreadEnvironment]);
@@ -5837,7 +5919,10 @@ export default function App() {
 
   const checkForAppUpdates = useCallback(async () => {
     try {
-      const next = await window.maximoDesktop.checkForUpdates();
+      const next = await retryWithBackoff(() => window.maximoDesktop.checkForUpdates(), {
+        retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+      });
+      setTransientRetry(null);
       setUpdateState(next);
       if (next.status === "available") {
         showToast(`Version ${next.availableVersion ?? "a newer build"} is available.`);
@@ -5847,13 +5932,17 @@ export default function App() {
         showToast(next.message || "Could not check for updates.");
       }
     } catch (error) {
+      setTransientRetry(null);
       showToast(error instanceof Error ? error.message : "Could not check for updates.");
     }
-  }, [showToast]);
+  }, [showTransientRetry, showToast]);
 
   const openAppUpdateDownload = useCallback(async () => {
     try {
-      const result = await window.maximoDesktop.openUpdateDownload();
+      const result = await retryWithBackoff(() => window.maximoDesktop.openUpdateDownload(), {
+        retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+      });
+      setTransientRetry(null);
       setUpdateState(result.state);
       if (result.opened) {
         showToast(result.state.downloadUrl
@@ -5867,9 +5956,10 @@ export default function App() {
       }
       showToast(result.state.message || "No update download is available right now.");
     } catch (error) {
+      setTransientRetry(null);
       showToast(error instanceof Error ? error.message : "Could not open the update download.");
     }
-  }, [showToast]);
+  }, [showTransientRetry, showToast]);
 
   const refreshWhatsNew = useCallback(async (options?: { forceDialog?: boolean }) => {
     try {
@@ -6062,7 +6152,7 @@ export default function App() {
         [threadId]: (current[threadId] ?? []).filter((entry) => entry.id !== item.id),
       }));
       try {
-        const result = await window.maximoDesktop.sendToRun({
+        const result = await retryWithBackoff(() => window.maximoDesktop.sendToRun({
           threadId,
           prompt: item.prompt,
           attachments: item.attachments,
@@ -6070,7 +6160,8 @@ export default function App() {
           effort: item.effort,
           permission: item.permission,
           asFollowUp: true,
-        });
+        }), { retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) });
+        setTransientRetry(null);
         if (result.state) setState(result.state);
         if (!result.accepted) {
           showToast(result.error ?? "Unable to send queued follow-up.");
@@ -6081,6 +6172,7 @@ export default function App() {
           await refreshState().catch(() => undefined);
         }
       } catch (error) {
+        setTransientRetry(null);
         showToast(error instanceof Error ? error.message : "Unable to send queued follow-up.");
         setFollowUpQueues((current) => ({
           ...current,
@@ -6123,11 +6215,20 @@ export default function App() {
       return;
     }
     const sessionAlive = liveSessions.has(currentThread.id);
-    const result = sessionAlive
-      ? await window.maximoDesktop.sendToRun({ threadId: currentThread.id, prompt, attachments, model, effort, permission, contextWindow })
-      : await window.maximoDesktop.startRun({ threadId: currentThread.id, prompt, attachments, model, effort, permission, contextWindow });
-    if (result.state) setState(result.state);
-    if (!result.accepted) { showToast(result.error ?? "Unable to start the task."); await refreshState(); }
+    try {
+      const result = await retryWithBackoff(() => sessionAlive
+        ? window.maximoDesktop.sendToRun({ threadId: currentThread.id, prompt, attachments, model, effort, permission, contextWindow })
+        : window.maximoDesktop.startRun({ threadId: currentThread.id, prompt, attachments, model, effort, permission, contextWindow }), {
+        retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+      });
+      setTransientRetry(null);
+      if (result.state) setState(result.state);
+      if (!result.accepted) { showToast(result.error ?? "Unable to start the task."); await refreshState(); }
+    } catch (error) {
+      setTransientRetry(null);
+      showToast(error instanceof Error ? error.message : "Unable to start the task.");
+      await refreshState().catch(() => undefined);
+    }
   };
 
   const editAndResendMessage = async (messageId: string, text: string) => {
@@ -6262,6 +6363,7 @@ export default function App() {
     return (
       <>
         <AccountLoadingGate theme={state.settings.theme} />
+        {transientRetry && <TransientRetryNotice state={transientRetry} onDismiss={() => setTransientRetry(null)} />}
         {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
       </>
     );
@@ -6276,6 +6378,7 @@ export default function App() {
           onCancelLogin={() => void cancelLoginAccount()}
           onRefresh={() => void refreshAccount()}
         />
+        {transientRetry && <TransientRetryNotice state={transientRetry} onDismiss={() => setTransientRetry(null)} />}
         {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
       </>
     );
@@ -6428,6 +6531,7 @@ export default function App() {
         onClose={closeWhatsNewDialog}
         onOpenReleaseUrl={(url) => { void window.maximoDesktop.openPath(url); }}
       />
+      {transientRetry && <TransientRetryNotice state={transientRetry} onDismiss={() => setTransientRetry(null)} />}
       {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
     </div>
   );
