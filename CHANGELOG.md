@@ -4,6 +4,18 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-08-06
+
+- Faster, smoother thread switching: selection now applies optimistically from already-loaded state, the outgoing transcript stays visible while a large incoming thread hydrates at idle priority (progressive 40 → 80 message reveal), and expanded user-message state is preserved per thread.
+- Added a per-thread sequence guard so rapidly scrubbing the sidebar can never let a slow IPC reply for an earlier thread overwrite the newer selection.
+- Isolated render failures: a thread-level error boundary shows a retryable fallback instead of blanking the chat, and a top-level app error boundary keeps a crashed render from leaving an empty window.
+- Added transient retry with jittered backoff for flaky IPC calls (git branches/diffs, engine models, context usage, attachment previews, run/follow-up submission, settings, update checks), surfacing a compact non-blocking "Retrying 1/3" notice instead of blocking AI work.
+- Retried the latest-CLI-version fetch up to 4 times with backoff on 5xx/network errors, and made the live run-event pipeline yield to user input and isolate per-event errors so one bad event can't kill streaming.
+- Upgraded the bundled CLI engine to **v0.1.28**, fixing the Extra High effort crash.
+- Diff workspace improvements: lazy per-file inline diffs with per-file collapse, a jump-to-file search, and file context menus (refer in chat / ask why it changed / copy path); the selected file always expands and caches its patch when opened from the timeline.
+- Normalized git status codes (`??` → `?`, rename collapse) and line counts for untracked files so the diff tree no longer shows `+0 -0` for brand-new files.
+- Documented the macOS Gatekeeper first-launch workaround in the README.
+
 ## [0.1.6] - 2026-08-05
 
 - Fixed the macOS launch failure introduced in v0.1.5 ("The application cannot be opened for an unexpected reason, error=Code=163"). The v0.1.5 build stripped the code signature entirely, and Apple Silicon's arm64 kernel refuses to execute a fully unsigned Mach-O binary. v0.1.6 restores the working ad-hoc signed build (same as v0.1.4): the app launches normally, and if Gatekeeper blocks a downloaded copy, clear the quarantine flag with `xattr -dr com.apple.quarantine "/Applications/Maximo Syntax.app"` (or right-click → Open).
