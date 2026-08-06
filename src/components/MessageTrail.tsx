@@ -48,7 +48,10 @@ function MessageTrail({ thread, onSelect }: MessageTrailProps) {
   const [hasGutter, setHasGutter] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const [tooltip, setTooltip] = useState<{ index: number; top: number } | null>(null);
-  const items = useMemo(() => trailItemsFor(thread), [thread]);
+  // Memoize trail items strictly by thread id + message count + last message id
+  // to avoid recomputing on every parent render when thread object identity
+  // changes but content hasn't. This keeps thread switching smooth.
+  const items = useMemo(() => trailItemsFor(thread), [thread?.id, thread?.messages.length, thread?.messages.at(-1)?.id]);
   const visible = hasGutter && items.length > 1;
 
   useEffect(() => {

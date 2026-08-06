@@ -446,12 +446,12 @@ export class StateStore {
     if (!this.state.projects.some((project) => project.id === projectId)) throw new Error("Project not found.");
     const existingDraft = this.state.threads.find((candidate) => candidate.projectId === projectId && candidate.messages.length === 0 && candidate.status === "idle");
     if (existingDraft) {
-      return this.update((draft) => {
-        draft.threads = draft.threads.filter((candidate) => candidate.messages.length > 0 || candidate.id === existingDraft.id);
-        draft.selectedProjectId = projectId;
-        draft.selectedThreadId = existingDraft.id;
-        draft.selectedSpaceId = this.state.projects.find((project) => project.id === projectId)?.spaceId ?? null;
-      });
+      // Reuse empty draft without scanning all threads' messages; instant switch.
+      this.state.selectedProjectId = projectId;
+      this.state.selectedThreadId = existingDraft.id;
+      this.state.selectedSpaceId = this.state.projects.find((project) => project.id === projectId)?.spaceId ?? null;
+      void this.persist();
+      return Promise.resolve(this.snapshot());
     }
     const thread: Thread = {
       id: randomUUID(),
@@ -472,14 +472,20 @@ export class StateStore {
   }
 
   async selectThread(threadId: string): Promise<AppState> {
-    return this.update((draft) => {
-      const thread = draft.threads.find((candidate) => candidate.id === threadId);
-      if (!thread) throw new Error("Chat not found.");
-      thread.unread = false;
-      draft.selectedThreadId = thread.id;
-      draft.selectedProjectId = thread.projectId;
-      draft.selectedSpaceId = draft.projects.find((project) => project.id === thread.projectId)?.spaceId ?? null;
-    });
+    // Smooth thread switching: update in-memory state synchronously so the
+    // UI can transition immediately, then persist in background without
+    // blocking the caller. This avoids the updateQueue + file-write stall
+    // that made switching feel janky when many threads existed.
+    const thread = this.state.threads.find((candidate) => candidate.id === threadId);
+    if (!thread) throw new Error("Chat not found.");
+    thread.unread = false;
+    this.state.selectedThreadId = thread.id;
+    this.state.selectedProjectId = thread.projectId;
+    this.state.selectedSpaceId = this.state.projects.find((project) => project.id === thread.projectId)?.spaceId ?? null;
+    // Fire persist without awaiting to keep switch instant; updateQueue still
+    // serializes the write.
+    void this.persist();
+    return this.snapshot();
   }
 
   async markThreadRead(threadId: string): Promise<AppState> {

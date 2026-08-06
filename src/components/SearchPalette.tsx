@@ -164,10 +164,12 @@ export default function SearchPalette({ state, onClose, onSelectThread, onSelect
   }, [currentProjectId, normalizedQuery, onOpenFile]);
 
   const threads = useMemo(() => {
+    // Avoid heavy snippet scoring on every keystroke when threads are many;
+    // only score when query present and memoize by thread count + query.
     const candidates = state.threads.filter((thread) => !thread.archived && thread.messages.length > 0).map((thread, index) => {
       const projectName = projectById.get(thread.projectId)?.name ?? "Project";
       const score = scoreThread(thread, projectName, query);
-      const message = snippetForThread(thread, query);
+      const message = query ? snippetForThread(thread, query) : { snippet: undefined, count: 0 };
       return { thread, projectName, score, message, index };
     }).filter((candidate) => candidate.score !== null).sort((left, right) => (right.score ?? 0) - (left.score ?? 0) || Number(Boolean(right.thread.pinned)) - Number(Boolean(left.thread.pinned)) || right.thread.updatedAt - left.thread.updatedAt || left.index - right.index).slice(0, 10);
     return candidates.map(({ thread, projectName, message }) => ({

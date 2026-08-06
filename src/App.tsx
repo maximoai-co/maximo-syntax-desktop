@@ -1,7 +1,7 @@
 import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  Activity as ActivityIcon, AlertCircle, Archive, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
+  Activity as ActivityIcon, AlertCircle, Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
   File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, LogOut, Menu, SquarePen,
   GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
   Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Undo2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, X, Zap,
@@ -47,6 +47,8 @@ import WhatsNewDialog from "./components/WhatsNewDialog";
 import WhatsNewPopoutCard from "./components/WhatsNewPopoutCard";
 import { composerKeyAction, composerSendShortcutLabel } from "./composerKeyboard";
 import { MAXIMO_SHORTCUTS, matchesShortcut, shortcutLabel } from "./shortcuts";
+import { modelProvider, type ModelProvider } from "./utils/modelProvider.js";
+import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollElementNearBottom } from "./utils/chatScroll.js";
 
 type LiveRun = { text: string; activity: RunActivity[]; timeline: RunTimelineItem[]; logs: Array<{ level: string; text: string; timestamp: number }> };
 type WorkspaceSurface = "chat" | "activity" | "kanban" | "pull-requests";
@@ -190,62 +192,8 @@ function OpenCodePlanPicker({ plan, onChange, disabled }: { plan: OpenCodePlan; 
 
 const fallbackModelOptions: SelectOption<string>[] = [{ value: "", label: "CLI default", description: "Use the default reported by Syntax" }];
 
-/** Brand whose logo should be shown for a model id (or provider label). */
-export type ModelProvider =
-  | "maximo"
-  | "openai"
-  | "openai-codex"
-  | "claude"
-  | "anthropic"
-  | "grok"
-  | "google"
-  | "deepseek"
-  | "mistral"
-  | "meta"
-  | "perplexity"
-  | "ollama"
-  | "unknown";
-
-/**
- * Map a raw model id / display label to a provider brand. Checks the exact
- * id first, then falls back to prefix patterns so future model versions
- * (gpt-5.x, claude-opus-5, gemini-3, …) automatically match their brand.
- * Display labels are matched by brand words ("Maximo Atlas", "Claude Sonnet 4").
- * An empty/unknown id and the "CLI default"/"Default …" labels resolve to the
- * app's own brand (Maximo) rather than the robot fallback, since those always
- * mean the signed-in provider's recommended model. Never throws.
- */
-export function modelProvider(modelId: string | undefined | null): ModelProvider {
-  const raw = (modelId ?? "").trim();
-  const id = raw.toLowerCase();
-  if (!id || id === "default" || id === "cli default" || id === "default (recommended)") return "maximo";
-  // Exact / alias matches before pattern matching.
-  if (id === "codex" || id === "gpt-codex" || id === "openai-codex") return "openai-codex";
-  if (id === "chatgpt" || id === "openai" || id === "gpt") return "openai";
-  if (id === "claude" || id === "anthropic") return "claude";
-  if (id === "gemini" || id === "google") return "google";
-  if (id === "grok" || id === "xai") return "grok";
-  if (id === "deepseek") return "deepseek";
-  if (id === "mistral" || id === "mixtral" || id === "codestral") return "mistral";
-  if (id === "llama" || id === "meta" || id === "meta-ai") return "meta";
-  if (id === "maximo" || id === "maximo ai") return "maximo";
-  if (id === "perplexity" || id === "pplx") return "perplexity";
-  if (id === "ollama") return "ollama";
-  // Pattern matches (lowercased). Order matters: more specific first.
-  if (/^maximo-(pandora|atlas|astra|alpha)/.test(id) || /(^|[\s-_])maximo/.test(id)) return "maximo";
-  if (/^gpt-?/.test(id) || /^o[0-9](-|$)/.test(id) || /^chatgpt/.test(id) || /(^|[\s-_])gpt-?[0-9]/.test(id)) return "openai";
-  if (/codex/.test(id)) return "openai-codex";
-  if (/^claude/.test(id) || /(^|[\s-_])claude/.test(id)) return "claude";
-  if (/^anthropic/.test(id) || /(^|[\s-_])anthropic/.test(id)) return "anthropic";
-  if (/^gemini/.test(id) || /^google/.test(id) || /(^|[\s-_])gemini/.test(id)) return "google";
-  if (/^grok/.test(id) || /^xai/.test(id) || /(^|[\s-_])grok/.test(id)) return "grok";
-  if (/^deepseek/.test(id) || /(^|[\s-_])deepseek/.test(id)) return "deepseek";
-  if (/^(mistral|mixtral|codestral)/.test(id) || /(^|[\s-_])mistral/.test(id)) return "mistral";
-  if (/^(llama|meta)/.test(id) || /(^|[\s-_])llama/.test(id) || /(^|[\s-_])meta/.test(id)) return "meta";
-  if (/^perplexity|^pplx/.test(id) || /(^|[\s-_])perplexity/.test(id)) return "perplexity";
-  if (/^ollama/.test(id) || /(^|[\s-_])ollama/.test(id)) return "ollama";
-  return "unknown";
-}
+export { modelProvider };
+export type { ModelProvider };
 
 const MODEL_PROVIDER_LOGOS: Partial<Record<ModelProvider, string>> = {
   maximo: logoUrl,
@@ -265,10 +213,20 @@ const MODEL_PROVIDER_LOGOS: Partial<Record<ModelProvider, string>> = {
 function ModelLogo({ model, className }: { model?: string | null; className?: string }) {
   const provider = modelProvider(model);
   const src = provider === "unknown" ? undefined : MODEL_PROVIDER_LOGOS[provider];
+  const extra = (className ?? "").trim();
+  const maximo = provider === "maximo";
   if (src) {
-    return <img className={`model-logo ${className ?? ""}`.trim()} src={src} alt="" aria-hidden="true" draggable={false} />;
+    return (
+      <span className={`model-logo ${maximo ? "model-logo-maximo" : ""} ${extra}`.trim().replace(/\s+/g, " ")} aria-hidden="true">
+        <img className="model-logo-img" src={src} alt="" draggable={false} />
+      </span>
+    );
   }
-  return <Bot className={`model-logo-fallback ${className ?? ""}`.trim()} size={13} aria-hidden="true" />;
+  return (
+    <span className={`model-logo model-logo-fallback ${extra}`.trim().replace(/\s+/g, " ")} aria-hidden="true">
+      <Bot size={13} aria-hidden="true" />
+    </span>
+  );
 }
 // User-invocable commands used while the engine catalog is loading. The live
 // CLI catalog and local SKILL.md files replace these as soon as they arrive.
@@ -413,6 +371,19 @@ function effortLabel(value: string): string {
   return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : "Default";
 }
 
+function effortBadgeLabel(value: string): string {
+  if (value === "xhigh") return "XHigh";
+  return effortLabel(value);
+}
+
+function normalizeEffortValue(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[-_\s]+/g, "");
+  if (normalized === "extrahigh" || normalized === "ultra") return "xhigh";
+  if (normalized === "maximum") return "max";
+  if (normalized === "med") return "medium";
+  return normalized || value.trim().toLowerCase();
+}
+
 type EffortTone = "default" | "low" | "medium" | "high" | "xhigh" | "max";
 
 function effortTone(value: string | undefined): EffortTone {
@@ -528,7 +499,7 @@ function ModelControl({ model, effort, models, modelOptions, disabled, onModel, 
   const selectedEffort = efforts.find((option) => option.value === effort) ?? efforts[0];
   const selectedEffortTone = effortTone(effort || selectedModel?.activeEffort || selectedEffort?.value);
   const displayedEffort = selectedModel?.supportsEffort
-    ? (effort ? effortLabel(effort) : selectedModel.activeEffort ? effortLabel(selectedModel.activeEffort) : selectedEffort?.label)
+    ? (effort ? effortBadgeLabel(effort) : selectedModel.activeEffort ? effortBadgeLabel(selectedModel.activeEffort) : selectedEffort ? effortBadgeLabel(selectedEffort.value) : undefined)
     : undefined;
   useEffect(() => {
     if (!open) return;
@@ -899,8 +870,13 @@ function liveWorkLabel(live: LiveRun | undefined, activeAgent: AgentRun | undefi
 }
 
 function LiveWorkStatus({ running, waiting, live, inline = false, shimmer = true }: { running: boolean; waiting: boolean; live?: LiveRun; inline?: boolean; shimmer?: boolean }) {
-  const activeAgent = agentRunsFromEntries(live?.timeline ?? []).find((agent) => agent.status === "running");
-  const workLabel = liveWorkLabel(live, activeAgent);
+  const activeAgent = useMemo(() => {
+    if (!live?.timeline?.length) return undefined;
+    // Only scan for running agents when actually running; otherwise avoid expensive merge.
+    if (!running) return undefined;
+    return agentRunsFromEntries(live.timeline).find((agent) => agent.status === "running");
+  }, [live?.timeline, running]);
+  const workLabel = useMemo(() => liveWorkLabel(live, activeAgent), [live, activeAgent]);
   const [phraseIndex, setPhraseIndex] = useState(0);
 
   useEffect(() => {
@@ -995,11 +971,50 @@ function cloneLiveRun(run: LiveRun | undefined): LiveRun {
 function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly RunEvent[]): Record<string, LiveRun> {
   const next = { ...current };
   const runs = new Map<string, LiveRun>();
+  // O(1) lookups for hot paths: agent taskId -> timeline index, activity toolUseId -> indexes
+  const agentIndexByThread = new Map<string, Map<string, number>>();
+  const activityIndexByThread = new Map<string, Map<string, number[]>>();
+  const ensureAgentIndex = (threadId: string, run: LiveRun): Map<string, number> => {
+    let map = agentIndexByThread.get(threadId);
+    if (map) return map;
+    map = new Map();
+    run.timeline.forEach((item, idx) => {
+      if (item.type === "agent" && item.agent.taskId) map!.set(item.agent.taskId, idx);
+    });
+    agentIndexByThread.set(threadId, map);
+    return map;
+  };
+  const ensureActivityIndex = (threadId: string, run: LiveRun): Map<string, number[]> => {
+    let map = activityIndexByThread.get(threadId);
+    if (map) return map;
+    map = new Map();
+    run.timeline.forEach((item, idx) => {
+      if (item.type === "activity" && item.toolUseId) {
+        const list = map!.get(item.toolUseId);
+        if (list) list.push(idx);
+        else map!.set(item.toolUseId, [idx]);
+      }
+    });
+    // also index run.activity for fast result patching
+    run.activity.forEach((item, idx) => {
+      if (item.toolUseId) {
+        const key = `__act_${item.toolUseId}`;
+        const list = map!.get(key);
+        if (list) list.push(idx);
+        else map!.set(key, [idx]);
+      }
+    });
+    activityIndexByThread.set(threadId, map);
+    return map;
+  };
+
   for (const event of events) {
     if (event.type === "finished") continue;
     if (event.type === "turn-complete") {
       runs.delete(event.threadId);
       delete next[event.threadId];
+      agentIndexByThread.delete(event.threadId);
+      activityIndexByThread.delete(event.threadId);
       continue;
     }
 
@@ -1013,12 +1028,16 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
       run.activity = [];
       run.timeline = [];
       run.logs = [];
+      agentIndexByThread.set(event.threadId, new Map());
+      activityIndexByThread.set(event.threadId, new Map());
+      continue;
     }
     if (event.type === "text") {
       run.text = event.mode === "append" ? run.text + event.text : event.text;
       const last = run.timeline.at(-1);
       if (last?.type === "text") last.text = event.mode === "append" ? last.text + event.text : event.text;
       else run.timeline.push({ type: "text", text: event.text, timestamp: event.timestamp });
+      continue;
     }
     if (event.type === "activity") {
       const item: RunActivity = {
@@ -1032,10 +1051,25 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
         timestamp: event.timestamp,
       };
       run.activity.push(item);
+      const idx = run.timeline.length;
       run.timeline.push({ type: "activity", ...item });
+      if (item.toolUseId) {
+        const map = ensureActivityIndex(event.threadId, run);
+        // update incremental indexes for the newly pushed entry
+        const list = map.get(item.toolUseId);
+        if (list) list.push(idx);
+        else map.set(item.toolUseId, [idx]);
+        const actKey = `__act_${item.toolUseId}`;
+        const al = map.get(actKey);
+        if (al) al.push(run.activity.length - 1);
+        else map.set(actKey, [run.activity.length - 1]);
+      }
+      continue;
     }
     if (event.type === "agent-started") {
-      const currentAgent = run.timeline.find((item): item is Extract<RunTimelineItem, { type: "agent" }> => item.type === "agent" && item.agent.taskId === event.taskId)?.agent;
+      const aMap = ensureAgentIndex(event.threadId, run);
+      const existingIdx = aMap.get(event.taskId);
+      const currentAgent = existingIdx !== undefined ? (run.timeline[existingIdx] as Extract<RunTimelineItem, { type: "agent" }>)?.agent : undefined;
       const agent: AgentRun = {
         ...(currentAgent ?? { taskId: event.taskId, status: "running", startedAt: event.timestamp }),
         ...(event.toolUseId ? { toolUseId: event.toolUseId } : {}),
@@ -1044,11 +1078,18 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
         ...(event.agentType ? { agentType: event.agentType } : {}),
         status: "running",
       };
-      if (currentAgent) run.timeline = run.timeline.map((item) => item.type === "agent" && item.agent.taskId === event.taskId ? { ...item, agent } : item);
-      else run.timeline.push({ type: "agent", agent, timestamp: event.timestamp });
+      if (existingIdx !== undefined) {
+        run.timeline[existingIdx] = { type: "agent", agent, timestamp: run.timeline[existingIdx]!.timestamp };
+      } else {
+        aMap.set(event.taskId, run.timeline.length);
+        run.timeline.push({ type: "agent", agent, timestamp: event.timestamp });
+      }
+      continue;
     }
     if (event.type === "agent-progress") {
-      const currentAgent = run.timeline.find((item): item is Extract<RunTimelineItem, { type: "agent" }> => item.type === "agent" && item.agent.taskId === event.taskId)?.agent;
+      const aMap = ensureAgentIndex(event.threadId, run);
+      const existingIdx = aMap.get(event.taskId);
+      const currentAgent = existingIdx !== undefined ? (run.timeline[existingIdx] as Extract<RunTimelineItem, { type: "agent" }>)?.agent : undefined;
       const agent: AgentRun = {
         ...(currentAgent ?? { taskId: event.taskId, description: event.description ?? "Sub-agent task", status: "running", startedAt: event.timestamp }),
         ...(event.toolUseId ? { toolUseId: event.toolUseId } : {}),
@@ -1058,17 +1099,31 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
         ...(event.usage ? { usage: event.usage } : {}),
         status: "running",
       };
-      if (currentAgent) run.timeline = run.timeline.map((item) => item.type === "agent" && item.agent.taskId === event.taskId ? { ...item, agent } : item);
-      else run.timeline.push({ type: "agent", agent, timestamp: event.timestamp });
+      if (existingIdx !== undefined) {
+        run.timeline[existingIdx] = { type: "agent", agent, timestamp: run.timeline[existingIdx]!.timestamp };
+      } else {
+        aMap.set(event.taskId, run.timeline.length);
+        run.timeline.push({ type: "agent", agent, timestamp: event.timestamp });
+      }
+      continue;
     }
     if (event.type === "agent-work") {
-      const currentAgent = run.timeline.find((item): item is Extract<RunTimelineItem, { type: "agent" }> => item.type === "agent" && item.agent.taskId === event.taskId)?.agent;
+      const aMap = ensureAgentIndex(event.threadId, run);
+      const existingIdx = aMap.get(event.taskId);
+      const currentAgent = existingIdx !== undefined ? (run.timeline[existingIdx] as Extract<RunTimelineItem, { type: "agent" }>)?.agent : undefined;
       const agent = mergeAgentWork(currentAgent ?? { taskId: event.taskId, description: "Sub-agent task", status: "running", startedAt: event.timestamp }, event.work);
-      if (currentAgent) run.timeline = run.timeline.map((item) => item.type === "agent" && item.agent.taskId === event.taskId ? { ...item, agent } : item);
-      else run.timeline.push({ type: "agent", agent, timestamp: event.timestamp });
+      if (existingIdx !== undefined) {
+        run.timeline[existingIdx] = { type: "agent", agent, timestamp: run.timeline[existingIdx]!.timestamp };
+      } else {
+        aMap.set(event.taskId, run.timeline.length);
+        run.timeline.push({ type: "agent", agent, timestamp: event.timestamp });
+      }
+      continue;
     }
     if (event.type === "agent-finished") {
-      const currentAgent = run.timeline.find((item): item is Extract<RunTimelineItem, { type: "agent" }> => item.type === "agent" && item.agent.taskId === event.taskId)?.agent;
+      const aMap = ensureAgentIndex(event.threadId, run);
+      const existingIdx = aMap.get(event.taskId);
+      const currentAgent = existingIdx !== undefined ? (run.timeline[existingIdx] as Extract<RunTimelineItem, { type: "agent" }>)?.agent : undefined;
       const agent: AgentRun = {
         ...(currentAgent ?? { taskId: event.taskId, description: "Sub-agent task", startedAt: event.timestamp }),
         ...(event.toolUseId ? { toolUseId: event.toolUseId } : {}),
@@ -1079,28 +1134,85 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
         ...(event.usage ? { usage: event.usage } : {}),
         finishedAt: event.timestamp,
       };
-      if (currentAgent) run.timeline = run.timeline.map((item) => item.type === "agent" && item.agent.taskId === event.taskId ? { ...item, agent } : item);
-      else run.timeline.push({ type: "agent", agent, timestamp: event.timestamp });
+      if (existingIdx !== undefined) {
+        run.timeline[existingIdx] = { type: "agent", agent, timestamp: run.timeline[existingIdx]!.timestamp };
+      } else {
+        aMap.set(event.taskId, run.timeline.length);
+        run.timeline.push({ type: "agent", agent, timestamp: event.timestamp });
+      }
+      continue;
     }
     if (event.type === "status" && event.status === null) {
+      // filter is rare; rebuild indexes after
       run.activity = run.activity.filter((item) => item.label.trim().toLowerCase() !== "compacting");
       run.timeline = run.timeline.filter((item) => !(item.type === "activity" && item.label.trim().toLowerCase() === "compacting"));
+      agentIndexByThread.delete(event.threadId);
+      activityIndexByThread.delete(event.threadId);
+      continue;
     }
     if (event.type === "activity-result") {
-      run.activity = run.activity.map((item) => item.toolUseId === event.toolUseId ? {
-        ...item,
-        result: event.result,
-        isError: event.isError,
-        ...(event.fileChange ? { fileChange: event.fileChange } : {}),
-        ...(event.classifierDecision ? { classifierDecision: event.classifierDecision } : {}),
-      } : item);
-      run.timeline = run.timeline.map((item) => item.type === "activity" && item.toolUseId === event.toolUseId ? {
-        ...item,
-        result: event.result,
-        isError: event.isError,
-        ...(event.fileChange ? { fileChange: event.fileChange } : {}),
-        ...(event.classifierDecision ? { classifierDecision: event.classifierDecision } : {}),
-      } : item);
+      const actMap = ensureActivityIndex(event.threadId, run);
+      const key = `__act_${event.toolUseId}`;
+      const actIdxs = actMap.get(key);
+      if (actIdxs) {
+        for (const idx of actIdxs) {
+          const item = run.activity[idx];
+          if (item && item.toolUseId === event.toolUseId) {
+            run.activity[idx] = {
+              ...item,
+              result: event.result,
+              isError: event.isError,
+              ...(event.fileChange ? { fileChange: event.fileChange } : {}),
+              ...(event.classifierDecision ? { classifierDecision: event.classifierDecision } : {}),
+            };
+          }
+        }
+      } else {
+        // fallback small scan for first match
+        for (let i = 0; i < run.activity.length; i++) {
+          const item = run.activity[i];
+          if (item?.toolUseId === event.toolUseId) {
+            run.activity[i] = {
+              ...item!,
+              result: event.result,
+              isError: event.isError,
+              ...(event.fileChange ? { fileChange: event.fileChange } : {}),
+              ...(event.classifierDecision ? { classifierDecision: event.classifierDecision } : {}),
+            };
+            break;
+          }
+        }
+      }
+      const tIdxs = actMap.get(event.toolUseId);
+      if (tIdxs) {
+        for (const idx of tIdxs) {
+          const item = run.timeline[idx];
+          if (item?.type === "activity" && item.toolUseId === event.toolUseId) {
+            run.timeline[idx] = {
+              ...item,
+              result: event.result,
+              isError: event.isError,
+              ...(event.fileChange ? { fileChange: event.fileChange } : {}),
+              ...(event.classifierDecision ? { classifierDecision: event.classifierDecision } : {}),
+            };
+          }
+        }
+      } else {
+        for (let i = 0; i < run.timeline.length; i++) {
+          const item = run.timeline[i];
+          if (item?.type === "activity" && (item as Extract<RunTimelineItem, { type: "activity" }>).toolUseId === event.toolUseId) {
+            run.timeline[i] = {
+              ...(item as Extract<RunTimelineItem, { type: "activity" }>),
+              result: event.result,
+              isError: event.isError,
+              ...(event.fileChange ? { fileChange: event.fileChange } : {}),
+              ...(event.classifierDecision ? { classifierDecision: event.classifierDecision } : {}),
+            };
+            break;
+          }
+        }
+      }
+      continue;
     }
     if (event.type === "classifier-decision") {
       const decision = {
@@ -1108,8 +1220,36 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
         ...(event.classifier ? { classifier: event.classifier } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
       };
-      run.activity = run.activity.map((item) => item.toolUseId === event.toolUseId ? { ...item, classifierDecision: decision } : item);
-      run.timeline = run.timeline.map((item) => item.type === "activity" && item.toolUseId === event.toolUseId ? { ...item, classifierDecision: decision } : item);
+      const actMap = ensureActivityIndex(event.threadId, run);
+      const key = `__act_${event.toolUseId}`;
+      const actIdxs = actMap.get(key);
+      if (actIdxs) {
+        for (const idx of actIdxs) {
+          const item = run.activity[idx];
+          if (item && item.toolUseId === event.toolUseId) run.activity[idx] = { ...item, classifierDecision: decision };
+        }
+      } else {
+        for (let i = 0; i < run.activity.length; i++) {
+          const item = run.activity[i];
+          if (item?.toolUseId === event.toolUseId) { run.activity[i] = { ...item!, classifierDecision: decision }; break; }
+        }
+      }
+      const tIdxs = actMap.get(event.toolUseId);
+      if (tIdxs) {
+        for (const idx of tIdxs) {
+          const item = run.timeline[idx];
+          if (item?.type === "activity" && item.toolUseId === event.toolUseId) run.timeline[idx] = { ...item, classifierDecision: decision };
+        }
+      } else {
+        for (let i = 0; i < run.timeline.length; i++) {
+          const item = run.timeline[i];
+          if (item?.type === "activity" && (item as Extract<RunTimelineItem, { type: "activity" }>).toolUseId === event.toolUseId) {
+            run.timeline[i] = { ...item as Extract<RunTimelineItem, { type: "activity" }>, classifierDecision: decision };
+            break;
+          }
+        }
+      }
+      continue;
     }
     if (event.type === "log") run.logs.push({ level: event.level, text: event.text, timestamp: event.timestamp });
   }
@@ -1235,6 +1375,29 @@ function interactionToolName(interaction: ChatInteraction): string {
 }
 
 function mergeWorkTimeline(timeline: RunTimelineItem[], interactions: TimedInteraction[]): WorkTimelineEntry[] {
+  // Fast path: no interactions → timeline already sorted, just dedupe by toolUseId in one pass
+  if (interactions.length === 0) {
+    if (timeline.length === 0) return [];
+    // Quick check if timeline is already strictly sorted and has no duplicate toolUseIds
+    let sorted = true;
+    const seenToolIds = new Set<string>();
+    let hasDup = false;
+    for (let i = 1; i < timeline.length; i++) {
+      if (timeline[i]!.timestamp < timeline[i - 1]!.timestamp) { sorted = false; break; }
+    }
+    // If sorted and we can return directly (no dupes), avoid copying+sorting
+    // We still need to check for duplicate toolUseId collapsing (rare)
+    if (sorted) {
+      for (const item of timeline) {
+        if (item.type === "activity" && item.toolUseId) {
+          if (seenToolIds.has(item.toolUseId)) { hasDup = true; break; }
+          seenToolIds.add(item.toolUseId);
+        }
+      }
+      if (!hasDup) return timeline as WorkTimelineEntry[];
+    }
+    // Otherwise fall through to full merge which handles dupes + sorting
+  }
   const entries: WorkTimelineEntry[] = [];
   const inserted = new Set<number>();
   const activityByToolUseId = new Map<string, number>();
@@ -1453,14 +1616,21 @@ function ActivityTimelineEvent({ entry, path, created, reviewable, change, proje
 
 const MemoizedActivityTimelineEvent = memo(ActivityTimelineEvent);
 
-function WorkTimeline({ entries, onOpenFile, fileChanges, project, onPreviewAttachment }: { entries: WorkTimelineEntry[]; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; onPreviewAttachment?: (attachment: Attachment) => void }) {
+const MemoizedWorkTimeline = memo(function WorkTimeline({ entries, onOpenFile, fileChanges, project, onPreviewAttachment }: { entries: WorkTimelineEntry[]; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; onPreviewAttachment?: (attachment: Attachment) => void }) {
   const agentRows = useMemo(() => agentTimelineRows(entries), [entries]);
   const rowsBySource = useMemo(() => {
     const map = new Map<number, AgentTimelineRow[]>();
     for (const row of agentRows) map.set(row.sourceIndex, [...(map.get(row.sourceIndex) ?? []), row]);
     return map;
   }, [agentRows]);
-  const renderEntry = (entry: WorkTimelineEntry, index: number): ReactNode => {
+  // Stable callback cache for fileChanges lookups to avoid re-creating per entry
+  const fileChangeMap = useMemo(() => {
+    if (!fileChanges?.length || !project) return null;
+    const m = new Map<string, FileChange>();
+    for (const fc of fileChanges) m.set(relativeProjectPath(project.path, fc.path), fc);
+    return m;
+  }, [fileChanges, project?.path]);
+  const renderEntry = useCallback((entry: WorkTimelineEntry, index: number): ReactNode => {
     const assignedAgents = rowsBySource.get(index);
     if (assignedAgents?.length) return <>{assignedAgents.map((row) => <MemoizedAgentTimelineEvent agent={row.agent} key={`agent-${row.agent.taskId}`} />)}</>;
     if (entry.type === "text") return <MarkdownContent className="work-partial" key={`text-${entry.timestamp}-${index}`}>{entry.text}</MarkdownContent>;
@@ -1470,12 +1640,18 @@ function WorkTimeline({ entries, onOpenFile, fileChanges, project, onPreviewAtta
     const path = activityFilePath(entry);
     const created = (entry.toolName ?? "").toLowerCase() === "write";
     const reviewable = Boolean(path && /edit|write|notebook|patch/i.test(entry.toolName ?? entry.label));
-    const change = reviewable && path ? matchingFileChange(fileChanges, project, path) : undefined;
+    let change: FileChange | undefined;
+    if (reviewable && path) {
+      if (fileChangeMap) change = fileChangeMap.get(relativeProjectPath(project!.path, path));
+      else change = matchingFileChange(fileChanges, project, path);
+    }
     if (entry.todos?.length) return <MemoizedTodoTimelineEvent todos={entry.todos} data={entry.data} key={`todo-${entry.timestamp}-${index}`} />;
     return <MemoizedActivityTimelineEvent entry={entry} path={path} created={created} reviewable={reviewable} change={change} project={project} onOpenFile={onOpenFile} key={`activity-${entry.timestamp}-${index}`} />;
-  };
+  }, [rowsBySource, fileChanges, fileChangeMap, project, onOpenFile, onPreviewAttachment]);
   return <div className="work-timeline">{entries.map(renderEntry)}</div>;
-}
+});
+// Keep old name as alias for historic imports inside this file
+const WorkTimeline = MemoizedWorkTimeline;
 
 // Small first paint so expanding "Worked for" feels instant; more rows stream in after.
 const INITIAL_WORK_ENTRIES = 12;
@@ -1487,9 +1663,22 @@ function WorkDisclosure({ timeline, interactions = [], durationMs, live = false,
   // Defer mounting the body one frame so the chevron/open state paints immediately.
   const [bodyReady, setBodyReady] = useState(false);
   const [renderedEntryCount, setRenderedEntryCount] = useState(INITIAL_WORK_ENTRIES);
-  const entries = useMemo(() => mergeWorkTimeline(timeline ?? [], interactions), [timeline, interactions]);
-  const normalizedFinal = finalContent?.trim();
-  const workEntries = useMemo(() => entries.filter((entry) => entry.type !== "text" || !normalizedFinal || entry.text.trim() !== normalizedFinal), [entries, normalizedFinal]);
+  // For historic (non-live) disclosures, avoid merging while collapsed when we have no data to show.
+  // The disclosure header ("Worked for…") still renders, but the heavy merge + sort is deferred until open.
+  const shouldMerge = live || open || Boolean(durationMs);
+  const entries = useMemo(() => {
+    const tl = timeline ?? [];
+    const inter = interactions ?? [];
+    if (!shouldMerge && tl.length === 0 && inter.length === 0) return [] as WorkTimelineEntry[];
+    // Fast path: empty inputs
+    if (tl.length === 0 && inter.length === 0) return [] as WorkTimelineEntry[];
+    return mergeWorkTimeline(tl, inter);
+  }, [timeline, interactions, shouldMerge]);
+  const normalizedFinal = useMemo(() => finalContent?.trim() ?? "", [finalContent]);
+  const workEntries = useMemo(() => {
+    if (!normalizedFinal) return entries;
+    return entries.filter((entry) => entry.type !== "text" || entry.text.trim() !== normalizedFinal);
+  }, [entries, normalizedFinal]);
 
   useEffect(() => {
     if (!open) {
@@ -1497,9 +1686,18 @@ function WorkDisclosure({ timeline, interactions = [], durationMs, live = false,
       setRenderedEntryCount(INITIAL_WORK_ENTRIES);
       return;
     }
-    // Yield so the summary toggle paints before we mount timeline nodes.
-    const frame = window.requestAnimationFrame(() => setBodyReady(true));
-    return () => window.cancelAnimationFrame(frame);
+    // Double-rAF: first frame paints the <details open> state + chevron rotation,
+    // second frame mounts the timeline DOM. This keeps the click feeling instant
+    // even when React is busy streaming live updates.
+    let frame1: number | null = null;
+    let frame2: number | null = null;
+    frame1 = window.requestAnimationFrame(() => {
+      frame2 = window.requestAnimationFrame(() => setBodyReady(true));
+    });
+    return () => {
+      if (frame1 !== null) window.cancelAnimationFrame(frame1);
+      if (frame2 !== null) window.cancelAnimationFrame(frame2);
+    };
   }, [open]);
 
   useEffect(() => {
@@ -1513,13 +1711,34 @@ function WorkDisclosure({ timeline, interactions = [], durationMs, live = false,
     return () => window.cancelAnimationFrame(frame);
   }, [open, bodyReady, renderedEntryCount, workEntries.length]);
 
+  // Reset progressive count when timeline grows while open (e.g. historic message gets new timeline? rare)
+  useEffect(() => {
+    if (open && bodyReady && renderedEntryCount < workEntries.length && workEntries.length <= INITIAL_WORK_ENTRIES) {
+      setRenderedEntryCount(workEntries.length);
+    }
+  }, [open, bodyReady, renderedEntryCount, workEntries.length]);
+
   if (live) {
-    const visibleLiveEntries = entries.length > MAX_VISIBLE_LIVE_WORK_ENTRIES ? entries.slice(-MAX_VISIBLE_LIVE_WORK_ENTRIES) : entries;
-    return visibleLiveEntries.length > 0 ? <div className="agent-flow live-agent-flow"><WorkTimeline entries={visibleLiveEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} /></div> : null;
+    const visibleLiveEntries = useMemo(() => {
+      if (entries.length <= MAX_VISIBLE_LIVE_WORK_ENTRIES) return entries;
+      return entries.slice(-MAX_VISIBLE_LIVE_WORK_ENTRIES);
+    }, [entries]);
+    if (visibleLiveEntries.length === 0) return null;
+    // Memoize live WorkTimeline props to avoid re-creating timeline nodes when parent re-renders for unrelated state
+    return <div className="agent-flow live-agent-flow"><WorkTimeline entries={visibleLiveEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} /></div>;
   }
   if (!durationMs && workEntries.length === 0) return null;
-  const visibleWorkEntries = workEntries.slice(0, renderedEntryCount);
-  return <div className="agent-flow"><details className="worked-disclosure" onToggle={(event) => setOpen(event.currentTarget.open)}>
+  const visibleWorkEntries = useMemo(() => workEntries.slice(0, renderedEntryCount), [workEntries, renderedEntryCount]);
+  const handleToggle = useCallback((event: React.SyntheticEvent<HTMLDetailsElement>) => {
+    // Capture open state synchronously so the browser's native <details> animation starts immediately,
+    // then schedule React state as urgent. This avoids the "hang before it opens" when the main thread
+    // is busy with live streaming renders.
+    const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+    // Use flushSync-like urgency: update state in next microtask but allow paint first
+    // We use startTransition for the body mount, but open itself is urgent.
+    setOpen(nextOpen);
+  }, []);
+  return <div className="agent-flow"><details className="worked-disclosure" onToggle={handleToggle}>
     <summary><span>Worked for {formatDuration(durationMs ?? 0)}</span><ChevronRight size={13} /></summary>
     {open && (workEntries.length > 0 ? (
       bodyReady ? <>
@@ -1544,36 +1763,73 @@ function matchingFileChange(fileChanges: FileChange[] | undefined, project: Proj
   return fileChanges.find((change) => (project ? relativeProjectPath(project.path, change.path) : change.path.replace(/\\/g, "/")) === target);
 }
 
-function TurnFileChanges({ timeline, fileChanges, project, git, onOpenFile }: { timeline?: RunTimelineItem[]; fileChanges?: FileChange[]; project?: Project; git?: GitStatus | null; onOpenFile: (path: string, diff?: GitDiff) => void }) {
+function TurnFileChanges({ timeline, fileChanges, project, git, onOpenFile, messageId, onRevert }: { timeline?: RunTimelineItem[]; fileChanges?: FileChange[]; project?: Project; git?: GitStatus | null; onOpenFile: (path: string, diff?: GitDiff) => void; messageId?: string; onRevert?: (messageId: string, revertFiles: boolean) => void }) {
   if (!project) return null;
-  const recordedChanges = (fileChanges ?? []).map((change) => ({ ...change, path: relativeProjectPath(project.path, change.path) }));
-  const timelinePaths = (timeline ?? []).flatMap((item) => {
+  const recordedChanges = useMemo(() => (fileChanges ?? []).map((change) => ({ ...change, path: relativeProjectPath(project.path, change.path) })), [fileChanges, project.path]);
+  const timelinePaths = useMemo(() => (timeline ?? []).flatMap((item) => {
     if (item.type !== "activity" || !/edit|write|notebook|patch/i.test(item.toolName ?? item.label)) return [];
     const path = activityFilePath(item);
     return path ? [{ path, tool: item.toolName ?? "" }] : [];
-  });
-  const paths = recordedChanges.length > 0 ? [...new Set(recordedChanges.map((change) => change.path))] : [...new Set(timelinePaths.map((item) => relativeProjectPath(project.path, item.path)))];
+  }), [timeline]);
+  const paths = useMemo(() => recordedChanges.length > 0 ? [...new Set(recordedChanges.map((change) => change.path))] : [...new Set(timelinePaths.map((item) => relativeProjectPath(project.path, item.path)))], [recordedChanges, timelinePaths, project.path]);
   if (paths.length === 0) return null;
-  const counts = paths.reduce((total, path) => {
+  const counts = useMemo(() => paths.reduce((total, path) => {
     const change = recordedChanges.find((item) => item.path === path);
     const gitFile = git?.files.find((file) => file.path.replace(/\\/g, "/") === path);
     return { additions: total.additions + (change?.additions ?? gitFile?.additions ?? 0), deletions: total.deletions + (change?.deletions ?? gitFile?.deletions ?? 0) };
-  }, { additions: 0, deletions: 0 });
-  const createdCount = timelinePaths.filter((item) => (item.tool || "").toLowerCase() === "write" && recordedChanges.length === 0).length;
+  }, { additions: 0, deletions: 0 }), [paths, recordedChanges, git]);
+  const createdCount = useMemo(() => timelinePaths.filter((item) => (item.tool || "").toLowerCase() === "write" && recordedChanges.length === 0).length, [timelinePaths, recordedChanges.length]);
   const headerLabel = createdCount === paths.length ? "Created" : "Edited";
-  return <div className="turn-file-changes">
-    <div className="turn-file-changes-header"><span><FileCode2 size={13} />{headerLabel} {paths.length} file{paths.length === 1 ? "" : "s"}</span>{(counts.additions > 0 || counts.deletions > 0) && <span className="turn-file-count"><b>+{counts.additions}</b> <i>-{counts.deletions}</i></span>}</div>
-    {paths.map((path) => {
-    const change = recordedChanges.find((item) => item.path === path);
-    const changed = git?.files.find((file) => file.path.replace(/\\/g, "/") === path);
-    const created = recordedChanges.length === 0 && timelinePaths.some((item) => (item.tool || "").toLowerCase() === "write" && relativeProjectPath(project.path, item.path) === path);
-    return <div className={`turn-file-change ${created ? "created" : ""}`} key={path}>
-      <span className="turn-file-icon"><FileCode2 size={14} /></span>
-      <span><strong>{created ? "Created" : "Edited"} {shortPath(path)}</strong><small>{path}</small></span>
-      {(change || changed) && <span className="turn-file-count"><b>+{change?.additions ?? changed?.additions ?? 0}</b> <i>-{change?.deletions ?? changed?.deletions ?? 0}</i></span>}
-      <button type="button" onClick={() => onOpenFile(path, change ? { path: change.path, patch: change.patch } : undefined)}>{created ? "Review new file" : "Review"}</button>
-    </div>;
-  })}</div>;
+  const editedLabel = `${headerLabel} ${paths.length} ${paths.length === 1 ? "file" : "files"}`;
+  const [expanded, setExpanded] = useState(true);
+  const [showAll, setShowAll] = useState(false);
+  const MAX_VISIBLE = 5;
+  const visiblePaths = showAll ? paths : paths.slice(0, MAX_VISIBLE);
+  const overflowCount = Math.max(0, paths.length - MAX_VISIBLE);
+  const fileIconForPath = (path: string) => {
+    const ext = path.split(".").pop()?.toLowerCase() ?? "";
+    if (["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(ext)) return <FileCode2 size={14} />;
+    if (ext === "py") return <FileCode2 size={14} />;
+    return <FileCode2 size={14} />;
+  };
+  return <div className={`turn-file-changes turn-file-card ${expanded ? "expanded" : "collapsed"}`}>
+    <div className="turn-file-changes-header turn-file-card-header">
+      <div className="turn-file-card-title">
+        <span className="turn-file-card-icon"><FileCode2 size={13} /></span>
+        <div className="turn-file-card-label">
+          <strong>{editedLabel}</strong>
+          {(counts.additions > 0 || counts.deletions > 0) && <span className="turn-file-count"><b>+{counts.additions}</b> <i>-{counts.deletions}</i></span>}
+        </div>
+      </div>
+      <div className="turn-file-card-actions">
+        {messageId && onRevert && <button type="button" className="turn-file-action turn-file-undo" onClick={() => onRevert(messageId, true)} title="Undo file changes for this turn"><Undo2 size={12} />Undo</button>}
+        <button type="button" className="turn-file-action turn-file-review" onClick={() => {
+          // Review opens the diff pane for the first file (or all if called from header)
+          const first = recordedChanges[0];
+          if (first) onOpenFile(first.path, { path: first.path, patch: first.patch });
+          else if (paths[0]) onOpenFile(paths[0]);
+        }}>Review</button>
+        <button type="button" className="turn-file-collapse" aria-expanded={expanded} aria-label={expanded ? "Collapse changed files" : "Expand changed files"} onClick={() => setExpanded((v) => !v)}><ChevronDown size={13} className={expanded ? "open" : ""} /></button>
+      </div>
+    </div>
+    {expanded && <div className="turn-file-list">
+      {visiblePaths.map((path) => {
+        const change = recordedChanges.find((item) => item.path === path);
+        const changed = git?.files.find((file) => file.path.replace(/\\/g, "/") === path);
+        const created = recordedChanges.length === 0 && timelinePaths.some((item) => (item.tool || "").toLowerCase() === "write" && relativeProjectPath(project.path, item.path) === path);
+        const additions = change?.additions ?? changed?.additions ?? 0;
+        const deletions = change?.deletions ?? changed?.deletions ?? 0;
+        return <button type="button" className={`turn-file-row ${created ? "created" : ""}`} key={path} onClick={() => onOpenFile(path, change ? { path: change.path, patch: change.patch } : undefined)} title={path}>
+          <span className="turn-file-row-icon">{fileIconForPath(path)}</span>
+          <span className="turn-file-row-path"><strong>{path.split(/[\\/]/).pop()}</strong><small>{path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "Project root"}</small></span>
+          {(additions > 0 || deletions > 0) && <span className="turn-file-count"><b>+{additions}</b> <i>-{deletions}</i></span>}
+          <ChevronRight size={12} className="turn-file-chevron" />
+        </button>;
+      })}
+      {overflowCount > 0 && !showAll && <button type="button" className="turn-file-show-more" onClick={() => setShowAll(true)}><ChevronDown size={12} />Show {overflowCount} more {overflowCount === 1 ? "file" : "files"}</button>}
+      {overflowCount > 0 && showAll && <button type="button" className="turn-file-show-more" onClick={() => setShowAll(false)}><ChevronDown size={12} className="open" />Show less</button>}
+    </div>}
+  </div>;
 }
 
 async function copyText(value: string): Promise<void> {
@@ -2076,7 +2332,7 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
     setThreadMenu({ id: threadId, top, left });
   };
   const activeSpaceId = state.selectedSpaceId ?? null;
-  const projects = [...state.projects]
+  const projects = useMemo(() => [...state.projects]
     .filter((project) => (project.spaceId ?? null) === activeSpaceId)
     .sort((left, right) => {
       const pinned = Number(Boolean(right.pinned)) - Number(Boolean(left.pinned));
@@ -2084,32 +2340,63 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
       if (state.settings.sidebarProjectSortOrder === "updated_at") return right.lastOpenedAt - left.lastOpenedAt;
       if (state.settings.sidebarProjectSortOrder === "created_at") return right.createdAt - left.createdAt;
       return 0;
-    });
-  const visibleProjectIds = new Set(projects.map((project) => project.id));
-  const sentThreads = state.threads
-    .filter((thread) => thread.messages.length > 0 && !thread.archived && visibleProjectIds.has(thread.projectId))
-    .sort((left, right) => {
+    }), [state.projects, activeSpaceId, state.settings.sidebarProjectSortOrder]);
+  const visibleProjectIds = useMemo(() => new Set(projects.map((project) => project.id)), [projects]);
+  // Build once so per-project lists are O(1) lookups instead of O(P*T) filters.
+  const threadsByProject = useMemo(() => {
+    const map = new Map<string, Thread[]>();
+    for (const thread of state.threads) {
+      if (thread.archived || thread.messages.length === 0) continue;
+      // Only keep threads for currently visible projects to bound memory with many spaces.
+      if (!visibleProjectIds.has(thread.projectId)) continue;
+      const list = map.get(thread.projectId);
+      if (list) list.push(thread);
+      else map.set(thread.projectId, [thread]);
+    }
+    // Sort each bucket once using the current sidebar thread sort order.
+    const sortFn = (left: Thread, right: Thread): number => {
+      const pinned = Number(Boolean(right.pinned)) - Number(Boolean(left.pinned));
+      if (pinned !== 0) return pinned;
+      return state.settings.sidebarThreadSortOrder === "created_at" ? right.createdAt - left.createdAt : right.updatedAt - left.updatedAt;
+    };
+    for (const list of map.values()) list.sort(sortFn);
+    return map;
+  }, [state.threads, visibleProjectIds, state.settings.sidebarThreadSortOrder]);
+  const sentThreads = useMemo(() => {
+    const all: Thread[] = [];
+    for (const list of threadsByProject.values()) all.push(...list);
+    all.sort((left, right) => {
       const pinned = Number(Boolean(right.pinned)) - Number(Boolean(left.pinned));
       if (pinned !== 0) return pinned;
       return state.settings.sidebarThreadSortOrder === "created_at" ? right.createdAt - left.createdAt : right.updatedAt - left.updatedAt;
     });
-  const pinnedThreads = sentThreads.filter((thread) => thread.pinned).slice(0, 6);
-  const recentThreads = sentThreads.filter((thread) => !thread.pinned);
-  const visibleRecentThreads = showAllRecent ? recentThreads : recentThreads.slice(0, 8);
-  const activeProjectMenu = projectMenu ? state.projects.find((project) => project.id === projectMenu.id) : undefined;
-  const activeThreadMenu = threadMenu ? state.threads.find((thread) => thread.id === threadMenu.id) : undefined;
+    return all;
+  }, [threadsByProject, state.settings.sidebarThreadSortOrder]);
+  const pinnedThreads = useMemo(() => sentThreads.filter((thread) => thread.pinned).slice(0, 6), [sentThreads]);
+  const recentThreads = useMemo(() => sentThreads.filter((thread) => !thread.pinned), [sentThreads]);
+  const visibleRecentThreads = useMemo(() => showAllRecent ? recentThreads : recentThreads.slice(0, 8), [recentThreads, showAllRecent]);
+  const activeProjectMenu = useMemo(() => projectMenu ? state.projects.find((project) => project.id === projectMenu.id) : undefined, [projectMenu, state.projects]);
+  const activeThreadMenu = useMemo(() => threadMenu ? state.threads.find((thread) => thread.id === threadMenu.id) : undefined, [threadMenu, state.threads]);
 
-  const activeRunningThreads = state.threads.filter((t) => !t.archived && t.messages.length > 0 && t.status === "running");
-  const unreadThreads = state.threads.filter((t) => !t.archived && t.messages.length > 0 && t.unread && t.status !== "running");
+  const { activeRunningThreads, unreadThreads } = useMemo(() => {
+    const running: Thread[] = [];
+    const unread: Thread[] = [];
+    for (const t of state.threads) {
+      if (t.archived || t.messages.length === 0) continue;
+      if (t.status === "running") running.push(t);
+      else if (t.unread) unread.push(t);
+    }
+    return { activeRunningThreads: running, unreadThreads: unread };
+  }, [state.threads]);
   const totalAttentionCount = activeRunningThreads.length + unreadThreads.length;
-  const priorityThreads = [...activeRunningThreads, ...unreadThreads.filter((thread) => thread.status === "error" || thread.status === "cancelled")]
-    .sort((left, right) => right.updatedAt - left.updatedAt);
-  const unreadCompletedThreads = unreadThreads
+  const priorityThreads = useMemo(() => [...activeRunningThreads, ...unreadThreads.filter((thread) => thread.status === "error" || thread.status === "cancelled")]
+    .sort((left, right) => right.updatedAt - left.updatedAt), [activeRunningThreads, unreadThreads]);
+  const unreadCompletedThreads = useMemo(() => unreadThreads
     .filter((thread) => !priorityThreads.some((priorityThread) => priorityThread.id === thread.id))
-    .sort((left, right) => right.updatedAt - left.updatedAt);
-  const todayUnreadThreads = unreadCompletedThreads.filter((thread) => isNotificationDay(thread.updatedAt, 0));
-  const yesterdayUnreadThreads = unreadCompletedThreads.filter((thread) => isNotificationDay(thread.updatedAt, 1));
-  const earlierUnreadThreads = unreadCompletedThreads.filter((thread) => !isNotificationDay(thread.updatedAt, 0) && !isNotificationDay(thread.updatedAt, 1));
+    .sort((left, right) => right.updatedAt - left.updatedAt), [unreadThreads, priorityThreads]);
+  const todayUnreadThreads = useMemo(() => unreadCompletedThreads.filter((thread) => isNotificationDay(thread.updatedAt, 0)), [unreadCompletedThreads]);
+  const yesterdayUnreadThreads = useMemo(() => unreadCompletedThreads.filter((thread) => isNotificationDay(thread.updatedAt, 1)), [unreadCompletedThreads]);
+  const earlierUnreadThreads = useMemo(() => unreadCompletedThreads.filter((thread) => !isNotificationDay(thread.updatedAt, 0) && !isNotificationDay(thread.updatedAt, 1)), [unreadCompletedThreads]);
 
   const handleProjectDragStart = (event: ReactDragEvent<HTMLButtonElement>, projectId: string) => {
     cancelHoverCardClose();
@@ -2141,7 +2428,7 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
     setDropTargetProjectId(null);
     window.setTimeout(() => { suppressProjectClickRef.current = false; }, 0);
   };
-  const renderThread = (thread: Thread) => <div className={`thread-row ${currentThread?.id === thread.id ? "active" : ""} ${thread.status === "running" ? "running" : ""} ${thread.unread ? "unread" : ""}`} key={thread.id}
+  const renderThread = useCallback((thread: Thread) => <div className={`thread-row ${currentThread?.id === thread.id ? "active" : ""} ${thread.status === "running" ? "running" : ""} ${thread.unread ? "unread" : ""}`} key={thread.id}
     onMouseEnter={(event) => showHoverCard("thread", thread.id, event.currentTarget)}
     onMouseLeave={scheduleHoverCardClose}
     onFocus={(event) => showHoverCard("thread", thread.id, event.currentTarget)}
@@ -2154,9 +2441,20 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
       {thread.status === "error" && !thread.unread && <span className="status-dot error" title="Chat has an error" aria-label="Chat has an error" />}
     </button>
     <button className="thread-actions" title="Chat options" onClick={(event) => openThreadMenu(event, thread.id)}><MoreHorizontal size={14} /></button>
-  </div>;
-  const renderNotification = (thread: Thread) => {
-    const project = state.projects.find((project) => project.id === thread.projectId);
+  </div>, [currentThread?.id, onSelectThread]);
+  const projectById = useMemo(() => new Map(state.projects.map((p) => [p.id, p])), [state.projects]);
+  const threadById = useMemo(() => new Map(state.threads.map((t) => [t.id, t])), [state.threads]);
+  const chatCountByProject = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const t of state.threads) {
+      if (t.archived || t.messages.length === 0) continue;
+      m.set(t.projectId, (m.get(t.projectId) ?? 0) + 1);
+    }
+    return m;
+  }, [state.threads]);
+  const projectByIdForNotifications = projectById;
+  const renderNotification = useCallback((thread: Thread) => {
+    const project = projectByIdForNotifications.get(thread.projectId);
     const isRunning = thread.status === "running";
     const isError = thread.status === "error" || thread.status === "cancelled";
     const statusLabel = isRunning ? "Working now" : isError ? (thread.status === "cancelled" ? "Stopped" : "Needs attention") : "Done · Unread";
@@ -2179,7 +2477,7 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
         <ChevronRight size={13} className="notification-item-arrow" />
       </button>
     );
-  };
+  }, [projectByIdForNotifications, onSelectThread, timestampFormat]);
   const primaryNav = (
     <nav className="sidebar-primary-nav" aria-label="Workspace views">
       <button type="button" className={activeSurface === "activity" ? "active" : ""} aria-label={activeSurface === "activity" ? "Switch to classic view" : "Switch to activity view"} aria-pressed={activeSurface === "activity"} title={activeSurface === "activity" ? "Switch to classic view" : "Switch to activity view"} onClick={() => { setNotificationsOpen(false); onNavigateSurface(activeSurface === "activity" ? "chat" : "activity"); }}><ActivityIcon size={15} /><span>Activity</span></button>
@@ -2263,13 +2561,7 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
             {projects.map((project) => {
               const isSelected = project.id === selectedProjectId;
               const isExpanded = expandedProjects.has(project.id);
-              const projectThreads = state.threads
-                .filter((thread) => thread.projectId === project.id && thread.messages.length > 0 && !thread.archived)
-                 .sort((left, right) => {
-                   const pinned = Number(Boolean(right.pinned)) - Number(Boolean(left.pinned));
-                   if (pinned !== 0) return pinned;
-                   return state.settings.sidebarThreadSortOrder === "created_at" ? right.createdAt - left.createdAt : right.updatedAt - left.updatedAt;
-                 });
+              const projectThreads = threadsByProject.get(project.id) ?? [];
               return (
                    <div className={`project-group ${isSelected ? "selected" : ""} ${draggingProjectId === project.id ? "dragging" : ""} ${dropTargetProjectId === project.id ? "drop-target" : ""}`} key={project.id}
                      onDragOver={(event) => handleProjectDragOver(event, project.id)}
@@ -2319,9 +2611,9 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
         {hoverCard && createPortal(
          <SidebarHoverCard
            kind={hoverCard.kind}
-           project={hoverCard.kind === "project" ? state.projects.find((project) => project.id === hoverCard.id) : state.projects.find((project) => project.id === state.threads.find((thread) => thread.id === hoverCard.id)?.projectId)}
-           thread={hoverCard.kind === "thread" ? state.threads.find((thread) => thread.id === hoverCard.id) : undefined}
-           chatCount={hoverCard.kind === "project" ? state.threads.filter((thread) => thread.projectId === hoverCard.id && thread.messages.length > 0 && !thread.archived).length : undefined}
+           project={hoverCard.kind === "project" ? projectById.get(hoverCard.id) : projectById.get(threadById.get(hoverCard.id)?.projectId ?? "")}
+           thread={hoverCard.kind === "thread" ? threadById.get(hoverCard.id) : undefined}
+           chatCount={hoverCard.kind === "project" ? chatCountByProject.get(hoverCard.id) : undefined}
            top={hoverCard.top}
            left={hoverCard.left}
            theme={state.settings.theme}
@@ -2355,6 +2647,22 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
     </>
   );
 }
+
+const MemoizedSidebar = memo(Sidebar, (prev, next) =>
+  prev.state.projects === next.state.projects &&
+  prev.state.threads === next.state.threads &&
+  prev.state.spaces === next.state.spaces &&
+  prev.state.settings === next.state.settings &&
+  prev.state.selectedSpaceId === next.state.selectedSpaceId &&
+  prev.state.selectedProjectId === next.state.selectedProjectId &&
+  prev.state.selectedThreadId === next.state.selectedThreadId &&
+  prev.currentThread?.id === next.currentThread?.id &&
+  prev.activeSurface === next.activeSurface &&
+  prev.open === next.open &&
+  prev.account === next.account &&
+  prev.timestampFormat === next.timestampFormat &&
+  prev.updateState === next.updateState
+);
 
 function EmptyWorkspace({ project, onOpenProject, onNewThread }: { project?: Project; onOpenProject: () => void; onNewThread: () => void }) {
   return (
@@ -2741,26 +3049,109 @@ function UserMessageCollapsibleText({ text, expanded, chatFontSizePx, onToggle, 
 
 function MessageView({ thread, project, git, models, live, waiting, skillNames, timestampFormat, streamingEnabled, onPreviewAttachment, onOpenFile, onTogglePin, onEditResend, onRevert }: { thread: Thread; project?: Project; git?: GitStatus | null; models: EngineModel[]; live?: LiveRun; waiting?: boolean; skillNames?: Set<string>; timestampFormat: TimestampFormat; streamingEnabled: boolean; onPreviewAttachment: (attachment: Attachment) => void; onOpenFile: (path: string, diff?: GitDiff) => void; onTogglePin: (messageId: string) => void; onEditResend?: (messageId: string, text: string) => void; onRevert?: (messageId: string, revertFiles: boolean) => void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const paneRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const previousThreadIdRef = useRef(thread.id);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [expandedUserMessagesById, setExpandedUserMessagesById] = useState<Record<string, boolean>>({});
+  const [visibleMessageCount, setVisibleMessageCount] = useState(80);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const showScrollButtonDebounceRef = useRef<number | null>(null);
+  // Window the transcript so huge threads don't mount thousands of nodes at once.
+  useEffect(() => setVisibleMessageCount(80), [thread.id]);
   useEffect(() => {
     if (previousThreadIdRef.current !== thread.id) {
       previousThreadIdRef.current = thread.id;
       shouldStickToBottomRef.current = true;
+      if (showScrollButtonDebounceRef.current !== null) {
+        window.clearTimeout(showScrollButtonDebounceRef.current);
+        showScrollButtonDebounceRef.current = null;
+      }
+      setShowScrollButton(false);
     }
     const frame = window.requestAnimationFrame(() => {
       const scroll = scrollRef.current;
-       if (scroll && shouldStickToBottomRef.current) scroll.scrollTo({ top: scroll.scrollHeight, behavior: live ? "auto" : "smooth" });
+       if (scroll && shouldStickToBottomRef.current) {
+         scroll.scrollTo({ top: scroll.scrollHeight, behavior: live ? "auto" : "smooth" });
+         setShowScrollButton(false);
+       } else if (scroll) {
+         // Sync button visibility after thread switch if not auto-sticking
+         const nearBottom = isScrollElementNearBottom(scroll, AUTO_SCROLL_BOTTOM_THRESHOLD_PX);
+         setShowScrollButton(!nearBottom);
+       }
     });
     return () => window.cancelAnimationFrame(frame);
   }, [thread.id, thread.messages.length, live?.text, waiting]);
-  const handleScroll = () => {
+  const updateScrollButtonVisibility = useCallback((scroll: HTMLElement) => {
+    const nearBottom = isScrollElementNearBottom(scroll, AUTO_SCROLL_BOTTOM_THRESHOLD_PX);
+    shouldStickToBottomRef.current = nearBottom;
+    if (nearBottom) {
+      if (showScrollButtonDebounceRef.current !== null) {
+        window.clearTimeout(showScrollButtonDebounceRef.current);
+        showScrollButtonDebounceRef.current = null;
+      }
+      setShowScrollButton(false);
+    } else {
+      if (showScrollButtonDebounceRef.current !== null) return;
+      showScrollButtonDebounceRef.current = window.setTimeout(() => {
+        showScrollButtonDebounceRef.current = null;
+        setShowScrollButton(true);
+      }, 150);
+    }
+  }, []);
+  const handleScroll = useCallback(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
-    shouldStickToBottomRef.current = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 72;
-  };
+    updateScrollButtonVisibility(scroll);
+  }, [updateScrollButtonVisibility]);
+  const scrollToBottom = useCallback((animated = true) => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    shouldStickToBottomRef.current = true;
+    if (showScrollButtonDebounceRef.current !== null) {
+      window.clearTimeout(showScrollButtonDebounceRef.current);
+      showScrollButtonDebounceRef.current = null;
+    }
+    setShowScrollButton(false);
+    scroll.scrollTo({ top: scroll.scrollHeight, behavior: animated ? "smooth" : "auto" });
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (showScrollButtonDebounceRef.current !== null) {
+        window.clearTimeout(showScrollButtonDebounceRef.current);
+      }
+    };
+  }, []);
+  // Keep the scroll-to-bottom button clear of the absolute composer (which
+  // changes height with attachments/expansion). Mirrors Synara's contentInset
+  // concept — here we measure composer height and expose it as a CSS variable
+  // so the button's bottom calc stays above the composer and recenters on
+  // sidebar/inspector resizes via the grid.
+  useLayoutEffect(() => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    const findComposer = (): HTMLElement | null => pane.closest(".main-stage")?.querySelector<HTMLElement>(".composer-wrap") ?? document.querySelector<HTMLElement>(".composer-wrap");
+    const composer = findComposer();
+    if (!composer) return;
+    const update = () => {
+      const h = composer.offsetHeight;
+      if (h > 0) pane.style.setProperty("--composer-height", `${h}px`);
+    };
+    update();
+    let ro: ResizeObserver | null = null;
+    try {
+      ro = new ResizeObserver(update);
+      ro.observe(composer);
+    } catch { /* ResizeObserver optional */ }
+    window.addEventListener("resize", update);
+    // Composer mounts slightly after transcript on first paint — poll once
+    const timer = window.setTimeout(update, 300);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", update);
+      ro?.disconnect();
+    };
+  }, []);
   // The latest non-follow-up user message is the only one that can be edited
   // and resent (matches Synara's resolveLatestTailUserMessageEditTarget).
   const latestEditableUserMessageId = useMemo(() => {
@@ -2945,7 +3336,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
           <MemoizedWorkDisclosure timeline={turnTimeline} interactions={interactions} durationMs={message.durationMs} finalContent={message.content} onOpenFile={onOpenFile} fileChanges={message.fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} />
           {/* Error color applies only to this final body — not work-timeline partial answers. */}
           <MarkdownContent className={message.isError ? "message-error-body" : undefined}>{message.content}</MarkdownContent>
-          <TurnFileChanges timeline={turnTimeline} fileChanges={message.fileChanges} project={project} git={git} onOpenFile={onOpenFile} />
+          <TurnFileChanges timeline={turnTimeline} fileChanges={message.fileChanges} project={project} git={git} onOpenFile={onOpenFile} messageId={message.id} onRevert={onRevert} />
           <div className="message-actions assistant-actions">{message.role === "assistant" && <AnswerModelLabel message={message} thread={thread} models={models} />}<MessageEnvironmentActions message={message} pinned={Boolean(thread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
         </article>,
       );
@@ -2957,33 +3348,75 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
       streamingFollowUps,
     };
   }, [editingMessageId, expandedUserMessagesById, git, latestEditableUserMessageId, models, onEditResend, onOpenFile, onPreviewAttachment, onRevert, onTogglePin, project, revertableUserMessageIds, skillNames, thread, timestampFormat, waiting]);
-  const liveTimeline = streamingEnabled ? [
-    ...(live?.timeline ?? (live?.text ? [{ type: "text" as const, text: live.text, timestamp: Date.now() }] : [])),
-    ...streamingFollowUps.map(followUpContextItem),
-  ].sort((left, right) => left.timestamp - right.timestamp) : [];
+  // Live timeline is derived from streaming state; avoid re-sorting on every text char by memoizing.
+  // Streaming only appends, so a simple length+last-timestamp key is sufficient for memo stability.
+  const liveTimeline = useMemo(() => {
+    if (!streamingEnabled) return [] as RunTimelineItem[];
+    const base = live?.timeline ?? (live?.text ? [{ type: "text" as const, text: live.text, timestamp: Date.now() }] : []);
+    const follow = streamingFollowUps.map(followUpContextItem);
+    if (base.length === 0 && follow.length === 0) return [] as RunTimelineItem[];
+    // Merge is already sorted per timestamp; streaming appends are monotonic, so we can avoid full sort
+    // when the appended follow-ups are newer than all base entries.
+    const merged = [...base, ...follow];
+    // Only sort if follow-ups could interleave (rare); otherwise keep base order.
+    if (follow.length > 0 && base.length > 0 && follow[0]!.timestamp < base[base.length - 1]!.timestamp) {
+      merged.sort((a, b) => a.timestamp - b.timestamp);
+    }
+    return merged;
+  }, [live?.timeline, live?.text, streamingFollowUps, streamingEnabled]);
+  const hiddenMessageCount = Math.max(0, renderedMessages.length - visibleMessageCount);
+  const displayedMessages = useMemo(() => hiddenMessageCount > 0 ? renderedMessages.slice(-visibleMessageCount) : renderedMessages, [renderedMessages, hiddenMessageCount, visibleMessageCount]);
   return (
-    <div className={`conversation-scroll ${waiting ? "waiting" : ""}`} ref={scrollRef} onScroll={handleScroll}>
-      <div className={`conversation ${waiting ? "waiting" : ""}`}>
-        {thread.messages.length === 0 && thread.status !== "running" && (
-          <div className="thread-empty">
-            <Logo compact />
-            <h3>What should we build in {project?.name ?? "this project"}?</h3>
-            <p>Describe the outcome, attach useful files, and Maximo Syntax will work directly in this project.</p>
-          </div>
-        )}
-        {renderedMessages}
-        {thread.status === "running" && (
-          <article className="message assistant streaming">
-            <div className="message-meta"><span className="message-avatar"><Logo compact /></span><span>Maximo Syntax</span></div>
-            <MemoizedWorkDisclosure timeline={liveTimeline} interactions={streamingInteractions} live onOpenFile={onOpenFile} onPreviewAttachment={onPreviewAttachment} />
-            <LiveWorkStatus running={thread.status === "running"} waiting={Boolean(waiting)} live={live} inline />
-             {streamingEnabled && live?.text && <div className="message-actions assistant-actions"><CopyMessageButton content={live.text} /></div>}
-          </article>
-        )}
+    <div className="chat-transcript-pane" ref={paneRef}>
+      <div className={`conversation-scroll ${waiting ? "waiting" : ""}`} ref={scrollRef} onScroll={handleScroll}>
+        <div className={`conversation ${waiting ? "waiting" : ""}`}>
+          {thread.messages.length === 0 && thread.status !== "running" && (
+            <div className="thread-empty">
+              <Logo compact />
+              <h3>What should we build in {project?.name ?? "this project"}?</h3>
+              <p>Describe the outcome, attach useful files, and Maximo Syntax will work directly in this project.</p>
+            </div>
+          )}
+          {hiddenMessageCount > 0 && <button type="button" className="conversation-show-older" onClick={() => setVisibleMessageCount((c) => c + 80)}>Show {Math.min(80, hiddenMessageCount)} earlier messages · {hiddenMessageCount} hidden</button>}
+          {displayedMessages}
+          {thread.status === "running" && (
+            <article className="message assistant streaming">
+              <div className="message-meta"><span className="message-avatar"><Logo compact /></span><span>Maximo Syntax</span></div>
+              <MemoizedWorkDisclosure timeline={liveTimeline} interactions={streamingInteractions} live onOpenFile={onOpenFile} onPreviewAttachment={onPreviewAttachment} />
+              <LiveWorkStatus running={thread.status === "running"} waiting={Boolean(waiting)} live={live} inline />
+               {streamingEnabled && live?.text && <div className="message-actions assistant-actions"><CopyMessageButton content={live.text} /></div>}
+            </article>
+          )}
+        </div>
+      </div>
+      <div className={`scroll-to-bottom-wrapper ${showScrollButton ? "visible" : ""}`} aria-hidden={!showScrollButton}>
+        <button
+          type="button"
+          className="scroll-to-bottom-button"
+          onClick={() => scrollToBottom(true)}
+          aria-label="Scroll to bottom"
+          aria-hidden={!showScrollButton}
+          tabIndex={showScrollButton ? 0 : -1}
+          title="Scroll to bottom"
+        >
+          <ArrowDown size={16} />
+        </button>
       </div>
     </div>
   );
 }
+
+const MemoizedMessageView = memo(MessageView, (prev, next) =>
+  prev.thread === next.thread &&
+  prev.project === next.project &&
+  prev.git === next.git &&
+  prev.models === next.models &&
+  prev.live === next.live &&
+  prev.waiting === next.waiting &&
+  prev.skillNames === next.skillNames &&
+  prev.timestampFormat === next.timestampFormat &&
+  prev.streamingEnabled === next.streamingEnabled
+);
 
 function FullAccessConfirm({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
   return createPortal(
@@ -3253,7 +3686,7 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
     const sentAttachments = attachments;
     const selectedModel = models.find((item) => (item.value === "default" ? "" : item.value) === model);
     const supportedEfforts = selectedModel?.supportedEffortLevels ?? [];
-    const sentEffort = effort && selectedModel?.supportsEffort && supportedEfforts.includes(effort) ? effort : "";
+    const sentEffort = effort && selectedModel?.supportsEffort && supportedEfforts.includes(effort) ? normalizeEffortValue(effort) : "";
     setPrompt(""); setAttachments([]); setPastedTexts([]);
     try {
       await onSend(sentPrompt, sentAttachments, model, sentEffort, permission, selectedModel?.contextWindow);
@@ -3375,7 +3808,7 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
     setModel(next);
     const nextModel = models.find((item) => (item.value === "default" ? "" : item.value) === next);
     const supported = nextModel?.supportedEffortLevels ?? [];
-    setEffort((current) => current && supported.includes(current) ? current : nextModel?.defaultEffort ?? "");
+    setEffort((current) => current && supported.includes(current) ? normalizeEffortValue(current) : nextModel?.defaultEffort ? normalizeEffortValue(nextModel.defaultEffort) : "");
   };
   const refreshBranches = async () => {
     if (!project) return;
@@ -3743,60 +4176,88 @@ function ProfileStatsPanel({ state, account, models, skills }: { state: AppState
   const [editing, setEditing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [hoveredDay, setHoveredDay] = useState<{ date: Date; tokens: number; activities: number; rect: DOMRect } | null>(null);
-  const messages = state.threads.flatMap((thread) => thread.messages.map((message) => ({ thread, message })));
-  const userMessages = messages.filter(({ message }) => message.role === "user");
-  const promptCount = userMessages.length;
-  const activityByDay = new Map<string, number>();
-  const promptCountByDay = new Map<string, number>();
-  const promptDays = new Set<string>();
-  const hourCounts = new Map<number, number>();
-  const projectCounts = new Map<string, number>();
-  const effortCounts = new Map<string, number>();
-  const modelPromptCounts = new Map<string, number>();
-  const skillCounts = new Map<string, number>();
-  const knownSkills = new Set(skills.map((skill) => skill.name.toLowerCase()));
-  for (const { thread, message } of userMessages) {
-    const day = profileDateKey(message.createdAt);
-    promptDays.add(day);
-    promptCountByDay.set(day, (promptCountByDay.get(day) ?? 0) + 1);
-    activityByDay.set(day, (activityByDay.get(day) ?? 0) + 1);
-    hourCounts.set(new Date(message.createdAt).getHours(), (hourCounts.get(new Date(message.createdAt).getHours()) ?? 0) + 1);
-    projectCounts.set(thread.projectId, (projectCounts.get(thread.projectId) ?? 0) + 1);
-    if (thread.effort) effortCounts.set(thread.effort, (effortCounts.get(thread.effort) ?? 0) + 1);
-    const model = message.model || thread.model || "CLI default";
-    modelPromptCounts.set(model, (modelPromptCounts.get(model) ?? 0) + 1);
-    for (const match of message.content.matchAll(/(^|\s)\/([a-zA-Z][a-zA-Z0-9:_-]*)/g)) {
-      const skill = match[2]?.toLowerCase();
-      if (skill && (knownSkills.size === 0 || knownSkills.has(skill))) skillCounts.set(skill, (skillCounts.get(skill) ?? 0) + 1);
-    }
-  }
-  const profile = state.profile ?? ({ totalTokens: 0, dailyTokens: {}, modelTokens: {}, threadTokenTotals: {} } satisfies ProfileUsage);
-  const fallbackTokens = state.threads.reduce((sum, thread) => sum + (thread.contextUsage?.totalProcessedTokens ?? 0), 0);
-  const derivedDailyTokens: Record<string, number> = { ...profile.dailyTokens };
-  if (Object.keys(derivedDailyTokens).length === 0) {
-    for (const thread of state.threads) {
-      const tokens = thread.contextUsage?.totalProcessedTokens ?? 0;
-      if (tokens > 0) {
-        const day = profileDateKey(thread.updatedAt);
-        derivedDailyTokens[day] = (derivedDailyTokens[day] ?? 0) + tokens;
+  // Heavy derived stats — memoize so opening the profile panel doesn't freeze with many threads.
+  const profileStats = useMemo(() => {
+    const messagesInner = state.threads.flatMap((thread) => thread.messages.map((message) => ({ thread, message })));
+    const userMessagesInner = messagesInner.filter(({ message }) => message.role === "user");
+    const promptCountInner = userMessagesInner.length;
+    const activityByDayInner = new Map<string, number>();
+    const promptCountByDayInner = new Map<string, number>();
+    const promptDaysInner = new Set<string>();
+    const hourCountsInner = new Map<number, number>();
+    const projectCountsInner = new Map<string, number>();
+    const effortCountsInner = new Map<string, number>();
+    const modelPromptCountsInner = new Map<string, number>();
+    const skillCountsInner = new Map<string, number>();
+    const knownSkillsInner = new Set(skills.map((skill) => skill.name.toLowerCase()));
+    for (const { thread, message } of userMessagesInner) {
+      const day = profileDateKey(message.createdAt);
+      promptDaysInner.add(day);
+      promptCountByDayInner.set(day, (promptCountByDayInner.get(day) ?? 0) + 1);
+      activityByDayInner.set(day, (activityByDayInner.get(day) ?? 0) + 1);
+      hourCountsInner.set(new Date(message.createdAt).getHours(), (hourCountsInner.get(new Date(message.createdAt).getHours()) ?? 0) + 1);
+      projectCountsInner.set(thread.projectId, (projectCountsInner.get(thread.projectId) ?? 0) + 1);
+      if (thread.effort) effortCountsInner.set(thread.effort, (effortCountsInner.get(thread.effort) ?? 0) + 1);
+      const model = message.model || thread.model || "CLI default";
+      modelPromptCountsInner.set(model, (modelPromptCountsInner.get(model) ?? 0) + 1);
+      for (const match of message.content.matchAll(/(^|\s)\/([a-zA-Z][a-zA-Z0-9:_-]*)/g)) {
+        const skill = match[2]?.toLowerCase();
+        if (skill && (knownSkillsInner.size === 0 || knownSkillsInner.has(skill))) skillCountsInner.set(skill, (skillCountsInner.get(skill) ?? 0) + 1);
       }
     }
-  }
-  const lifetimeTokens = profile.totalTokens || fallbackTokens;
-  if (Object.keys(derivedDailyTokens).length === 0 && lifetimeTokens > 0) {
-    const latestActivity = Math.max(...state.threads.map((thread) => thread.updatedAt), Date.now());
-    derivedDailyTokens[profileDateKey(latestActivity)] = lifetimeTokens;
-  }
-  for (const [day, tokens] of Object.entries(derivedDailyTokens)) activityByDay.set(day, (activityByDay.get(day) ?? 0) + Math.max(1, Math.round(tokens / 10_000)));
-  const activityDates = new Set(activityByDay.keys());
-  const streaks = profileStreaks(activityDates);
-  const peakDay = Math.max(0, ...Object.values(derivedDailyTokens));
-  const topHour = [...hourCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
-  const topProject = [...projectCounts.entries()].sort((left, right) => right[1] - left[1])[0];
-  const topEffort = [...effortCounts.entries()].sort((left, right) => right[1] - left[1])[0];
-  const modelRows = Object.entries(profile.modelTokens).length > 0
-    ? Object.entries(profile.modelTokens).sort((left, right) => right[1] - left[1]).map(([model, value]) => ({ model, value }))
-    : [...modelPromptCounts.entries()].sort((left, right) => right[1] - left[1]).map(([model, value]) => ({ model, value }));
+    const profileInner = state.profile ?? ({ totalTokens: 0, dailyTokens: {}, modelTokens: {}, threadTokenTotals: {} } satisfies ProfileUsage);
+    const fallbackTokensInner = state.threads.reduce((sum, thread) => sum + (thread.contextUsage?.totalProcessedTokens ?? 0), 0);
+    const derivedDailyTokensInner: Record<string, number> = { ...profileInner.dailyTokens };
+    if (Object.keys(derivedDailyTokensInner).length === 0) {
+      for (const thread of state.threads) {
+        const tokens = thread.contextUsage?.totalProcessedTokens ?? 0;
+        if (tokens > 0) {
+          const day = profileDateKey(thread.updatedAt);
+          derivedDailyTokensInner[day] = (derivedDailyTokensInner[day] ?? 0) + tokens;
+        }
+      }
+    }
+    const lifetimeTokensInner = profileInner.totalTokens || fallbackTokensInner;
+    if (Object.keys(derivedDailyTokensInner).length === 0 && lifetimeTokensInner > 0) {
+      const latestActivityInner = Math.max(...state.threads.map((thread) => thread.updatedAt), Date.now());
+      derivedDailyTokensInner[profileDateKey(latestActivityInner)] = lifetimeTokensInner;
+    }
+    for (const [day, tokens] of Object.entries(derivedDailyTokensInner)) activityByDayInner.set(day, (activityByDayInner.get(day) ?? 0) + Math.max(1, Math.round(tokens / 10_000)));
+    const activityDatesInner = new Set(activityByDayInner.keys());
+    const streaksInner = profileStreaks(activityDatesInner);
+    const peakDayInner = Math.max(0, ...Object.values(derivedDailyTokensInner));
+    const topHourInner = [...hourCountsInner.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
+    const topProjectInner = [...projectCountsInner.entries()].sort((left, right) => right[1] - left[1])[0];
+    const topEffortInner = [...effortCountsInner.entries()].sort((left, right) => right[1] - left[1])[0];
+    const modelRowsInner = Object.entries(profileInner.modelTokens).length > 0
+      ? Object.entries(profileInner.modelTokens).sort((left, right) => right[1] - left[1]).map(([model, value]) => ({ model, value }))
+      : [...modelPromptCountsInner.entries()].sort((left, right) => right[1] - left[1]).map(([model, value]) => ({ model, value }));
+    return {
+      messages: messagesInner,
+      userMessages: userMessagesInner,
+      promptCount: promptCountInner,
+      activityByDay: activityByDayInner,
+      promptCountByDay: promptCountByDayInner,
+      promptDays: promptDaysInner,
+      hourCounts: hourCountsInner,
+      projectCounts: projectCountsInner,
+      effortCounts: effortCountsInner,
+      modelPromptCounts: modelPromptCountsInner,
+      skillCounts: skillCountsInner,
+      profile: profileInner,
+      fallbackTokens: fallbackTokensInner,
+      derivedDailyTokens: derivedDailyTokensInner,
+      lifetimeTokens: lifetimeTokensInner,
+      activityDates: activityDatesInner,
+      streaks: streaksInner,
+      peakDay: peakDayInner,
+      topHour: topHourInner,
+      topProject: topProjectInner,
+      topEffort: topEffortInner,
+      modelRows: modelRowsInner,
+    };
+  }, [state.threads, state.profile, skills]);
+  const { messages, userMessages, promptCount, activityByDay, promptCountByDay, promptDays, hourCounts, projectCounts, effortCounts, modelPromptCounts, skillCounts, profile, fallbackTokens, derivedDailyTokens, lifetimeTokens, activityDates, streaks, peakDay, topHour, topProject, topEffort, modelRows } = profileStats;
   const currentModelLabel = state.settings.defaultModel
     || models.find((model) => model.isCurrent)?.displayName
     || models.find((model) => model.value === "default")?.displayName
@@ -3933,6 +4394,33 @@ function ThemePackEditor({ variant, active, theme, onChange, onReset }: { varian
     <label className="theme-pack-row theme-contrast-row"><span><strong>Contrast</strong><small>Increase surface, border, and text separation without changing the base colors.</small></span><span className="theme-contrast-control"><input type="range" min={0} max={100} step={1} value={theme.contrast} onChange={(event) => update({ contrast: Number(event.target.value) })} aria-label={`${title} contrast`} /><output>{theme.contrast}</output></span></label>
     {notice && <p className="theme-pack-notice" role="status">{notice}</p>}
   </section>;
+}
+
+function RetentionCard({ threads }: { threads: Thread[] }) {
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const inactiveCount = useMemo(() => {
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    return threads.filter((t) => !t.archived && t.messages.length > 0 && t.status !== "running" && t.updatedAt < cutoff).length;
+  }, [threads]);
+  const run = async () => {
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const candidates = threads.filter((t) => !t.archived && t.messages.length > 0 && t.status !== "running" && t.updatedAt < cutoff).map((t) => t.id);
+    if (candidates.length === 0) { setNotice("No chats older than 30 days to archive."); return; }
+    if (!window.confirm(`Archive ${candidates.length} chat${candidates.length === 1 ? "" : "s"} older than 30 days? You can restore them from Archived chats.`)) return;
+    setBusy(true);
+    try {
+      const batchSize = 25;
+      for (let i = 0; i < candidates.length; i += batchSize) {
+        const chunk = candidates.slice(i, i + batchSize);
+        for (const id of chunk) await window.maximoDesktop.archiveThread(id).catch(() => undefined);
+        await new Promise<void>((r) => setTimeout(r, 50));
+      }
+      setNotice(`Archived ${candidates.length} chat${candidates.length === 1 ? "" : "s"}. Refreshing…`);
+      window.setTimeout(() => window.location.reload(), 600);
+    } finally { setBusy(false); }
+  };
+  return <section className="settings-card"><h2>Conversation storage</h2><p>Keep the app fast when you have many chats. Archiving hides chats from the sidebar but keeps them restorable.</p><div className="settings-row"><span><strong>Inactive chats</strong><small>{inactiveCount === 0 ? "No chats older than 30 days." : `${inactiveCount} chat${inactiveCount === 1 ? "" : "s"} older than 30 days · not running`}</small></span><button type="button" className="settings-action" disabled={busy || inactiveCount === 0} onClick={() => void run()}><Archive size={12} />{busy ? "Archiving…" : "Archive inactive"}</button></div>{notice && <p className="settings-notification-status" role="status">{notice}</p>}</section>;
 }
 
 type EnhancedSettingsSectionId = "general" | "profile" | "appearance" | "behavior" | "shortcuts" | "defaults" | "models" | "skills" | "notifications" | "account" | "integrations" | "engine" | "advanced" | "archived";
@@ -4073,9 +4561,10 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     const entries = shortcutRows.filter((definition) => definition.category === category);
     return entries.length > 0 ? [{ category, entries }] : [];
   });
-  const allSkills = [...new Map(skills.map((skill) => [skill.name.toLowerCase(), skill])).values()];
-  const archivedThreads = state.threads.filter((thread) => thread.archived).sort((left, right) => right.updatedAt - left.updatedAt);
-  const projectName = (projectId: string) => state.projects.find((project) => project.id === projectId)?.name ?? "Unknown project";
+  const allSkills = useMemo(() => [...new Map(skills.map((skill) => [skill.name.toLowerCase(), skill])).values()], [skills]);
+  const archivedThreads = useMemo(() => state.threads.filter((thread) => thread.archived).sort((left, right) => right.updatedAt - left.updatedAt), [state.threads]);
+  const projectNameMap = useMemo(() => new Map(state.projects.map((p) => [p.id, p.name])), [state.projects]);
+  const projectName = useCallback((projectId: string) => projectNameMap.get(projectId) ?? "Unknown project", [projectNameMap]);
 
   const renderPanel = (): ReactNode => {
     if (activeSection === "general") return <div className="settings-panel-stack">
@@ -4146,7 +4635,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
 
     if (activeSection === "engine") return <div className="settings-panel-stack"><section className="settings-card"><h2>Maximo Syntax CLI</h2><div className="engine-settings"><div><span className={`engine-dot ${engine?.phase ?? "checking"}`} /><p><strong>{engine?.available ? `Ready · ${engine.version}` : "Needs attention"}</strong><small>{engine?.message}{engine?.available && engine?.latestVersion ? (engine.version === engine.latestVersion ? " Up to date with the latest CLI." : ` Latest available: ${engine.latestVersion}.`) : ""}</small></p></div><button type="button" onClick={() => void onRepair()}><RefreshCw size={13} />Repair / update</button></div><label className="settings-engine-path"><span><strong>Custom CLI path</strong><small>Optional. The bundled CLI is used automatically when this is blank.</small></span><input value={values.cliPath} onChange={(event) => update("cliPath", event.target.value)} placeholder="/path/to/maximo-syntax-cli" /></label></section><section className="settings-card"><h2>Runtime details</h2><div className="settings-row"><span><strong>Desktop version</strong><small>Installed Maximo Syntax application.</small></span><span className="setting-value">{appVersion || "Unknown"}</span></div><div className="settings-row"><span><strong>CLI version</strong><small>Currently selected runtime engine.</small></span><span className="setting-value">{engine?.version || "Unknown"}</span></div></section></div>;
 
-    if (activeSection === "advanced") return <div className="settings-panel-stack"><section className="settings-card"><h2>Desktop updates</h2><div className="settings-row"><span><strong>Installed version</strong><small>Current Maximo Syntax desktop application.</small></span><span className="setting-value">{appVersion || updateState?.currentVersion || "Unknown"}</span></div><div className="settings-row"><span><strong>Update status</strong><small>{updateState?.message || (updateState?.status === "available" ? `Version ${updateState.availableVersion} is available from GitHub Releases.` : updateState?.status === "up-to-date" ? "You are on the latest published release." : updateState?.status === "checking" ? "Checking GitHub Releases…" : updateState?.status === "error" ? "The last update check failed." : "Checks GitHub Releases for a newer desktop build.")}</small></span><div className="settings-row-actions">{shouldShowAppUpdateButton(updateState) ? <button type="button" className="settings-action" disabled={updateBusy} onClick={() => { setUpdateBusy(true); void onOpenUpdateDownload().finally(() => setUpdateBusy(false)); }}><Download size={12} />Download update</button> : null}<button type="button" className="settings-action" disabled={updateBusy || updateState?.status === "checking"} onClick={() => { setUpdateBusy(true); void onCheckForUpdates().finally(() => setUpdateBusy(false)); }}><RefreshCw size={12} className={updateState?.status === "checking" || updateBusy ? "spin" : undefined} />{updateState?.status === "checking" || updateBusy ? "Checking…" : "Check for updates"}</button></div></div>{updateState?.availableVersion && <div className="settings-row"><span><strong>Latest release</strong><small>{updateState.releaseName || `v${updateState.availableVersion}`}</small></span><span className="setting-value">v{updateState.availableVersion}</span></div>}<div className="settings-row"><span><strong>What&rsquo;s new</strong><small>Review the installed version&rsquo;s release notes from GitHub and the local changelog.</small></span><button type="button" className="settings-action" onClick={onOpenWhatsNew}><Sparkles size={12} />Open release notes</button></div></section><section className="settings-card"><h2>System tools</h2><div className="settings-row"><span><strong>Provider selection reset</strong><small>Clear the current model, effort, and CLI session selections from chats before switching accounts.</small></span><button type="button" className="settings-action" onClick={() => void onResetProvider()}><RotateCcw size={12} />Reset</button></div><div className="settings-row"><span><strong>Application data</strong><small>{appDataPath || "Local Maximo Syntax state directory."}</small></span><button type="button" className="settings-action" onClick={onRevealDataPath} disabled={!appDataPath}><Monitor size={12} />Reveal</button></div></section><section className="settings-card"><h2>Safety and privacy</h2><div className="settings-row"><span><strong>Local-first storage</strong><small>Chats, projects, preferences, and cached activity stay in the desktop data directory on this computer.</small></span><span className="setting-value">Enabled</span></div><div className="settings-row"><span><strong>Native bridge</strong><small>Filesystem, process, Git, and shell actions run through the isolated Electron main process.</small></span><span className="setting-value">Sandboxed</span></div></section></div>;
+    if (activeSection === "advanced") return <div className="settings-panel-stack"><section className="settings-card"><h2>Desktop updates</h2><div className="settings-row"><span><strong>Installed version</strong><small>Current Maximo Syntax desktop application.</small></span><span className="setting-value">{appVersion || updateState?.currentVersion || "Unknown"}</span></div><div className="settings-row"><span><strong>Update status</strong><small>{updateState?.message || (updateState?.status === "available" ? `Version ${updateState.availableVersion} is available from GitHub Releases.` : updateState?.status === "up-to-date" ? "You are on the latest published release." : updateState?.status === "checking" ? "Checking GitHub Releases…" : updateState?.status === "error" ? "The last update check failed." : "Checks GitHub Releases for a newer desktop build.")}</small></span><div className="settings-row-actions">{shouldShowAppUpdateButton(updateState) ? <button type="button" className="settings-action" disabled={updateBusy} onClick={() => { setUpdateBusy(true); void onOpenUpdateDownload().finally(() => setUpdateBusy(false)); }}><Download size={12} />Download update</button> : null}<button type="button" className="settings-action" disabled={updateBusy || updateState?.status === "checking"} onClick={() => { setUpdateBusy(true); void onCheckForUpdates().finally(() => setUpdateBusy(false)); }}><RefreshCw size={12} className={updateState?.status === "checking" || updateBusy ? "spin" : undefined} />{updateState?.status === "checking" || updateBusy ? "Checking…" : "Check for updates"}</button></div></div>{updateState?.availableVersion && <div className="settings-row"><span><strong>Latest release</strong><small>{updateState.releaseName || `v${updateState.availableVersion}`}</small></span><span className="setting-value">v{updateState.availableVersion}</span></div>}<div className="settings-row"><span><strong>What&rsquo;s new</strong><small>Review the installed version&rsquo;s release notes from GitHub and the local changelog.</small></span><button type="button" className="settings-action" onClick={onOpenWhatsNew}><Sparkles size={12} />Open release notes</button></div></section><section className="settings-card"><h2>System tools</h2><div className="settings-row"><span><strong>Provider selection reset</strong><small>Clear the current model, effort, and CLI session selections from chats before switching accounts.</small></span><button type="button" className="settings-action" onClick={() => void onResetProvider()}><RotateCcw size={12} />Reset</button></div><div className="settings-row"><span><strong>Application data</strong><small>{appDataPath || "Local Maximo Syntax state directory."}</small></span><button type="button" className="settings-action" onClick={onRevealDataPath} disabled={!appDataPath}><Monitor size={12} />Reveal</button></div></section><RetentionCard threads={state.threads} /><section className="settings-card"><h2>Safety and privacy</h2><div className="settings-row"><span><strong>Local-first storage</strong><small>Chats, projects, preferences, and cached activity stay in the desktop data directory on this computer.</small></span><span className="setting-value">Enabled</span></div><div className="settings-row"><span><strong>Native bridge</strong><small>Filesystem, process, Git, and shell actions run through the isolated Electron main process.</small></span><span className="setting-value">Sandboxed</span></div></section></div>;
 
     return <div className="settings-panel-stack"><section className="settings-card"><h2>Archived chats</h2>{archivedThreads.length > 0 ? <div className="settings-archive-list">{archivedThreads.map((thread) => <div className="settings-archive-row" key={thread.id}><span><strong>{thread.title}</strong><small>{projectName(thread.projectId)} · {new Date(thread.updatedAt).toLocaleDateString()}</small></span><div className="settings-row-actions"><button type="button" className="settings-action" onClick={() => void onRestoreThread(thread.id)}>Restore</button><button type="button" className="settings-action danger" onClick={() => void onDeleteArchivedThread(thread.id)}>Delete</button></div></div>)}</div> : <div className="settings-empty-state"><Archive size={18} />No archived chats. Archived conversations will appear here and can be restored.</div>}</section></div>;
   };
@@ -4539,8 +5028,8 @@ export default function App() {
     setContextLoadingByThread({});
     setFollowUpQueues({});
   }, []);
-  const currentThread = useMemo(() => state?.threads.find((thread) => thread.id === state.selectedThreadId), [state]);
-  const currentProject = useMemo(() => state?.projects.find((project) => project.id === (currentThread?.projectId ?? state.selectedProjectId)), [state, currentThread]);
+  const currentThread = useMemo(() => state ? state.threads.find((thread) => thread.id === state.selectedThreadId) : undefined, [state?.threads, state?.selectedThreadId]);
+  const currentProject = useMemo(() => state ? state.projects.find((project) => project.id === (currentThread?.projectId ?? state.selectedProjectId)) : undefined, [state?.projects, state?.selectedProjectId, currentThread?.projectId]);
   const currentContextUsage = useMemo(() => {
     if (!currentThread) return null;
     return contextUsageByThread[currentThread.id]
@@ -4746,20 +5235,57 @@ export default function App() {
       frame = window.requestAnimationFrame(() => {
         frame = null;
         const events = pendingEvents.splice(0);
-        if (events.some((event) => event.type === "started" || event.type === "finished")) {
-          setLiveSessions((current) => {
-            const next = new Set(current);
-            for (const event of events) {
-              if (event.type === "started") next.add(event.threadId);
-              if (event.type === "finished") next.delete(event.threadId);
+        // Defer live streaming work as a transition so user interactions
+        // (timeline expand, scroll, typing) remain urgent and don't hang.
+        const flush = () => {
+          if (events.some((event) => event.type === "started" || event.type === "finished")) {
+            setLiveSessions((current) => {
+              const next = new Set(current);
+              for (const event of events) {
+                if (event.type === "started") next.add(event.threadId);
+                if (event.type === "finished") next.delete(event.threadId);
+              }
+              return next;
+            });
+          }
+          if (events.some((event) => event.type !== "finished")) {
+            // Coalesce text appends within the same frame to avoid
+            // per-char React churn when the model streams rapidly.
+            const coalesced: RunEvent[] = [];
+            const textBuffer = new Map<string, { text: string; timestamp: number }>();
+            for (const ev of events) {
+              if (ev.type === "text" && ev.mode === "append") {
+                const buf = textBuffer.get(ev.threadId);
+                if (buf) buf.text += ev.text;
+                else textBuffer.set(ev.threadId, { text: ev.text, timestamp: ev.timestamp });
+              } else {
+                // flush any buffered text for this thread before non-text event
+                const buf = textBuffer.get(ev.threadId);
+                if (buf) {
+                  coalesced.push({ type: "text", threadId: ev.threadId, text: buf.text, mode: "append", timestamp: buf.timestamp });
+                  textBuffer.delete(ev.threadId);
+                }
+                coalesced.push(ev);
+              }
             }
-            return next;
-          });
+            for (const [threadId, buf] of textBuffer) {
+              coalesced.push({ type: "text", threadId, text: buf.text, mode: "append", timestamp: buf.timestamp });
+            }
+            const toReduce = coalesced.length ? coalesced : events;
+            startTransition(() => {
+              setLiveRuns((current) => reduceLiveRunEvents(current, toReduce));
+            });
+          }
+          // processRunEvent contains high-priority UI like permission prompts;
+          // keep those urgent, but run them after the transition so the frame can paint.
+          for (const next of events) processRunEvent(next);
+        };
+        // Use startTransition if available to keep the flush low-priority
+        try {
+          startTransition(flush);
+        } catch {
+          flush();
         }
-        if (events.some((event) => event.type !== "finished")) {
-          setLiveRuns((current) => reduceLiveRunEvents(current, events));
-        }
-        for (const next of events) processRunEvent(next);
       });
     });
     return () => {
@@ -4802,9 +5328,47 @@ export default function App() {
      setState(next); rememberThread(next.selectedThreadId); setActiveSurface("chat"); setSidebarOpen(false);
   }, [openProject, rememberThread]);
 
-  const selectThread = useCallback(async (threadId: string, surface: WorkspaceSurface = "chat") => {
-    const next = await window.maximoDesktop.selectThread(threadId);
-    setState(next); rememberThread(next.selectedThreadId ?? threadId); setActiveSurface(surface); setSidebarOpen(false);
+  const selectThread = useCallback((threadId: string, surface: WorkspaceSurface = "chat") => {
+    // Optimistic switch: update UI instantly from already-loaded state (no IPC wait).
+    // Keeps sidebar active state and transcript responsive even with 100+ threads.
+    const optimistic = stateRef.current;
+    const target = optimistic?.threads.find((t) => t.id === threadId);
+    if (target) {
+      startTransition(() => {
+        setState((prev) => {
+          if (!prev) return prev;
+          // Avoid cloning entire thread messages array deeply; shallow copy is enough for selection
+          return {
+            ...prev,
+            selectedThreadId: threadId,
+            selectedProjectId: target.projectId,
+            selectedSpaceId: prev.projects.find((p) => p.id === target.projectId)?.spaceId ?? prev.selectedSpaceId,
+            threads: prev.threads.map((t) => t.id === threadId && t.unread ? { ...t, unread: false } : t),
+          };
+        });
+      });
+      rememberThread(threadId);
+      setActiveSurface(surface);
+      setSidebarOpen(false);
+      // Persist selection in background without blocking UI
+      void window.maximoDesktop.selectThread(threadId).then((next) => {
+        // Reconcile with authoritative state (e.g., if main process added unread logic)
+        setState(next);
+      }).catch(() => showToast("That chat is no longer available."));
+      return;
+    }
+    // Fallback (thread not in local state): await main process
+    void (async () => {
+      try {
+        const next = await window.maximoDesktop.selectThread(threadId);
+        startTransition(() => setState(next));
+        rememberThread(next.selectedThreadId ?? threadId);
+        setActiveSurface(surface);
+        setSidebarOpen(false);
+      } catch {
+        showToast("That chat is no longer available.");
+      }
+    })();
   }, [rememberThread]);
 
   const markAllNotificationsRead = useCallback(async () => {
@@ -5030,8 +5594,8 @@ export default function App() {
   }), []);
 
   useEffect(() => window.maximoDesktop.notifications.onOpenThread((threadId) => {
-    void selectThread(threadId).catch(() => showToast("That notification chat is no longer available."));
-  }), [selectThread, showToast]);
+    selectThread(threadId);
+  }), [selectThread]);
 
   const checkForAppUpdates = useCallback(async () => {
     try {
@@ -5482,7 +6046,7 @@ export default function App() {
   return (
     <div className={`app-shell theme-${state.settings.theme} density-${state.settings.uiDensity} ${state.settings.useSystemUiFont ? "system-ui-font" : ""} ${sidebarVisible ? "" : "sidebar-hidden"} ${inspectorVisible ? "" : "inspector-hidden"}`} style={{ ...appearanceVariables, "--sidebar-width": `${sidebarWidth}px`, "--inspector-width": `${inspectorWidth}px` } as CSSProperties}>
 
-       <Sidebar state={state} currentThread={currentThread} account={account} timestampFormat={state.settings.timestampFormat} activeSurface={activeSurface} onNavigateSurface={navigateSurface} onOpenProject={openProject} onCreateProject={() => setCreateProjectOpen(true)} onNewThread={newThread}
+       <MemoizedSidebar state={state} currentThread={currentThread} account={account} timestampFormat={state.settings.timestampFormat} activeSurface={activeSurface} onNavigateSurface={navigateSurface} onOpenProject={openProject} onCreateProject={() => setCreateProjectOpen(true)} onNewThread={newThread}
          onSelectProject={(id) => void selectProject(id)} onSelectThread={(id, surface) => void selectThread(id, surface)} onOpenSearch={() => setSearchOpen(true)} onToggleSidebar={() => window.innerWidth <= 900 ? setSidebarOpen(false) : setSidebarVisible((value) => !value)} onBack={() => void goBack()} onForward={() => void goForward()} canGoBack={navigation.index > 0} canGoForward={navigation.index >= 0 && navigation.index < navigation.ids.length - 1} onSettings={() => setSettingsOpen(true)} onAccount={openAccount}
          onUsage={() => { setAccountOpen(true); void refreshUsage(); }} onLogout={() => void logoutAccount()} onMarkThreadRead={(id) => void markThreadRead(id)} onMarkAllNotificationsRead={() => void markAllNotificationsRead()}
           onDeleteThread={(id) => { if (state.settings.confirmThreadDelete && !window.confirm("Delete this chat from Maximo Syntax Desktop? The project files will not be touched.")) return; void window.maximoDesktop.deleteThread(id).then(setState); }}
@@ -5542,7 +6106,7 @@ export default function App() {
              <button type="button" onClick={() => requestDockPane("terminal")} title="Open terminal"><TerminalSquare size={14} /></button>
            </div>}
            {!currentThread ? <EmptyWorkspace project={currentProject} onOpenProject={openProject} onNewThread={() => void newThread(currentProject?.id)} /> : <>
-                 <MessageView thread={currentThread} project={currentProject} git={git} models={engineModels} live={liveRuns[currentThread.id]} waiting={pendingQuestion?.threadId === currentThread.id || pendingPermission?.threadId === currentThread.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} onEditResend={(messageId, text) => void editAndResendMessage(messageId, text)} onRevert={(messageId, revertFiles) => void revertToMessage(messageId, revertFiles)} />
+                 <MemoizedMessageView thread={currentThread} project={currentProject} git={git} models={engineModels} live={liveRuns[currentThread.id]} waiting={pendingQuestion?.threadId === currentThread.id || pendingPermission?.threadId === currentThread.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} onEditResend={(messageId, text) => void editAndResendMessage(messageId, text)} onRevert={(messageId, revertFiles) => void revertToMessage(messageId, revertFiles)} />
               <MessageTrail thread={currentThread} onSelect={jumpToMessage} />
              <Composer key={currentThread.id} thread={currentThread} project={currentProject} git={git} live={liveRuns[currentThread.id]} settings={state.settings} models={engineModels} modelOptions={modelOptions} slashCommands={slashCommands} skillCommands={skillCommands} discoveredSkills={discoveredSkills} contextUsage={currentContextUsage} contextLoading={Boolean(contextLoadingByThread[currentThread.id])} onRefreshContext={() => refreshContextUsage(currentThread.id)} onSend={sendPrompt} onPreviewAttachment={openAttachmentPreview}
               onStop={() => {

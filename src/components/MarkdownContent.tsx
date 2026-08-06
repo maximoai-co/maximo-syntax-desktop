@@ -71,4 +71,6 @@ function MarkdownContent({ children, className }: MarkdownContentProps) {
 
 // Transcript updates are frequent while a run is active. Completed markdown is
 // immutable, so avoid reparsing it when a sibling status or disclosure changes.
-export default memo(MarkdownContent);
+// Memoization is keyed strictly on content + className to keep thread switching smooth
+// when parent re-renders with new thread identity but same markdown.
+export default memo(MarkdownContent, (prev, next) => prev.children === next.children && prev.className === next.className);

@@ -17,6 +17,7 @@ import {
   Code2,
   Copy,
   Diff,
+  Ellipsis,
   ExternalLink,
   File,
   FileCode2,
@@ -32,6 +33,7 @@ import {
   Maximize2,
   MessageCircle,
   Minus,
+  MoreHorizontal,
   PanelRightClose,
   Plus,
   RefreshCw,
@@ -923,15 +925,25 @@ function WorkspaceDiffPane({ project, git, reviewFile, reviewDiff, onOpenDiff, o
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"stacked" | "split">("stacked");
   const [wrapped, setWrapped] = useState(defaultWrapped);
+  const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(() => new Set());
+  const [filePatches, setFilePatches] = useState<Record<string, GitDiff | null>>({});
+  const [loadingFiles, setLoadingFiles] = useState<Set<string>>(() => new Set());
   const [detailCollapsed, setDetailCollapsed] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [fileMenuOpen, setFileMenuOpen] = useState<string | null>(null);
+  const [diffHeaderMenuOpen, setDiffHeaderMenuOpen] = useState(false);
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const jumpRef = useRef<HTMLDivElement>(null);
   const files = git?.files ?? [];
   const scopedFiles = files.filter((file) => {
     if (scope === "staged") return file.staged;
     if (scope === "unstaged") return !file.staged;
     return true;
-  }).filter((file) => file.path.toLowerCase().includes(query.trim().toLowerCase()));
+  });
+  const filteredFiles = scopedFiles.filter((file) => file.path.toLowerCase().includes(query.trim().toLowerCase()));
+  const scopedFilesForJump = filteredFiles;
   const selectedFile = files.find((file) => file.path === reviewFile);
   const stats = reviewDiff ? patchStats(reviewDiff.patch) : { additions: selectedFile?.additions ?? 0, deletions: selectedFile?.deletions ?? 0 };
   const copyDiff = async () => {
@@ -940,18 +952,114 @@ function WorkspaceDiffPane({ project, git, reviewFile, reviewDiff, onOpenDiff, o
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1_400);
   };
+  const showToast = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 1_800); };
+  const copyPath = async (path: string) => { await navigator.clipboard.writeText(path); showToast("Path copied"); };
+  const referInChat = async (path: string) => { await navigator.clipboard.writeText(`@${path}`); showToast("Reference copied — paste in chat"); };
+  const askWhy = async (path: string) => { await navigator.clipboard.writeText(`Why did ${path} change in this turn?`); showToast("Prompt copied — paste in chat"); };
+  const toggleFileCollapsed = (path: string) => {
+    const wasCollapsed = collapsedFiles.has(path);
+    setCollapsedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+    if (wasCollapsed) {
+      const needsFetch = !filePatches[path] && !loadingFiles.has(path);
+      if (needsFetch) {
+        if (path === reviewFile && reviewDiff) {
+          setFilePatches((m) => ({ ...m, [path]: reviewDiff }));
+          return;
+        }
+        setLoadingFiles((s) => new Set(s).add(path));
+        void window.maximoDesktop.gitDiff(project.id, path).then((diff) => {
+          setFilePatches((m) => ({ ...m, [path]: diff }));
+        }).catch(() => setFilePatches((m) => ({ ...m, [path]: null }))).finally(() => {
+          setLoadingFiles((s) => { const n = new Set(s); n.delete(path); return n; });
+        });
+      }
+    }
+  };
 
   useEffect(() => setWrapped(defaultWrapped), [defaultWrapped]);
+  useEffect(() => {
+    if (reviewFile && reviewDiff) setFilePatches((m) => ({ ...m, [reviewFile]: reviewDiff }));
+  }, [reviewFile, reviewDiff]);
+  useEffect(() => {
+    if (!active) return;
+    if (scopedFiles.length === 0) return;
+    if (collapsedFiles.size !== 0) return;
+    if (Object.keys(filePatches).length !== 0) return;
+    const init = new Set(scopedFiles.map((f) => f.path));
+    if (reviewFile) init.delete(reviewFile);
+    if (init.size > 0) setCollapsedFiles(init);
+  }, [active, scopedFiles, reviewFile, collapsedFiles.size, filePatches]);
+  useEffect(() => {
+    if (!jumpOpen) return;
+    const close = (e: MouseEvent) => {
+      if (!jumpRef.current?.contains(e.target as Node)) setJumpOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [jumpOpen]);
+  useEffect(() => {
+    if (!fileMenuOpen && !diffHeaderMenuOpen && !jumpOpen) return;
+    const close = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest(".file-context-menu") && !target.closest(".file-menu-trigger")) setFileMenuOpen(null);
+      if (!target.closest(".diff-header-menu") && !target.closest(".diff-header-menu-trigger")) setDiffHeaderMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [fileMenuOpen, diffHeaderMenuOpen, jumpOpen]);
 
   if (!active) return <div className="workspace-empty-state compact"><Diff size={17} /><span>Panel paused</span><small>Activate this pane to resume the diff.</small></div>;
 
+  const isDetailCollapsed = detailCollapsed;
+
   return <div className="workspace-diff-pane">
-     <header className="workspace-pane-titlebar workspace-diff-header"><div><Diff size={15} /><DiffScopeSelect value={scope} onChange={setScope} /><span>{scopedFiles.length} file{scopedFiles.length === 1 ? "" : "s"}</span></div><span className="workspace-diff-totals"><b>+{git?.additions ?? 0}</b> <i>-{git?.deletions ?? 0}</i></span></header>
-    <div className="workspace-diff-toolbar"><label><Search size={12} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Jump to file" aria-label="Search changed files" /></label><button type="button" className={view === "stacked" ? "active" : ""} onClick={() => setView("stacked")} title="Stacked diff">Stacked</button><button type="button" className={view === "split" ? "active" : ""} onClick={() => setView("split")} title="Split diff">Split</button><button type="button" className={wrapped ? "active" : ""} onClick={() => setWrapped((value) => !value)} title="Wrap long lines">Wrap</button><button type="button" onClick={() => setDetailCollapsed((value) => !value)} title={detailCollapsed ? "Expand diff" : "Collapse diff"}>{detailCollapsed ? "Expand" : "Collapse"}</button><button type="button" onClick={() => void copyDiff()} disabled={!reviewDiff?.patch} title="Copy diff"><Copy size={12} />{copied ? "Copied" : "Copy"}</button><div className="workspace-diff-actions"><button type="button" onClick={() => setActionsOpen((value) => !value)} title="Git actions">•••</button>{actionsOpen && <div className="workspace-diff-actions-menu"><button type="button" onClick={onOpenGit}><GitCommitHorizontal size={13} />Open source control</button><button type="button" onClick={() => onOpenEditor(reviewFile ? projectFilePath(project, reviewFile) : project.path)}><ExternalLink size={13} />Open in editor</button></div>}</div></div>
-    <div className={`workspace-diff-workspace ${view} ${wrapped ? "wrapped" : ""} ${detailCollapsed ? "detail-collapsed" : ""}`}>
-      <aside className="workspace-diff-file-list">{scopedFiles.length === 0 ? <div className="workspace-tree-state">{files.length ? "No files match this view." : "Working tree is clean."}</div> : scopedFiles.map((file) => <button type="button" className={`workspace-diff-file-card ${reviewFile === file.path ? "selected" : ""}`} key={file.path} onClick={() => onOpenDiff(file.path)}><span className={`workspace-git-status status-${file.status[0]}`}>{file.status}</span><span className="workspace-diff-file-copy"><strong>{file.path.split(/[\\/]/).at(-1)}</strong><small>{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "Project root"}</small></span><span className="workspace-diff-file-stats"><b>+{file.additions}</b><i>-{file.deletions}</i></span><ChevronRight size={12} /></button>)}</aside>
-       <section className="workspace-diff-detail">{!reviewFile ? <div className="workspace-empty-state"><Diff size={20} /><span>Select a file to review its changes.</span><small>Choose a changed file on the left to inspect the full patch.</small></div> : <><header className="workspace-diff-detail-header"><button type="button" onClick={onCloseReview} title="Back to changed files"><ChevronRight size={14} className="rotate-180" /></button><div><strong>{reviewFile}</strong><small><b>+{stats.additions}</b> <i>-{stats.deletions}</i></small></div><button type="button" onClick={() => onOpenEditor(projectFilePath(project, reviewFile))} title="Open in editor"><ExternalLink size={13} /></button></header>{reviewDiff?.patch ? <div className="workspace-diff-code"><DiffCode patch={reviewDiff.patch} language={diffLanguageForPath(reviewDiff.path)} showMetadata={false} className={view === "split" ? "split-view" : ""} /></div> : <div className="workspace-empty-state"><RefreshCw size={18} className="spin" /><span>Reading diff…</span></div>}</>}</section>
+     <header className="workspace-pane-titlebar workspace-diff-header"><div><Diff size={15} /><DiffScopeSelect value={scope} onChange={setScope} /><span>{filteredFiles.length} file{filteredFiles.length === 1 ? "" : "s"}</span></div><span className="workspace-diff-totals"><b>+{git?.additions ?? 0}</b> <i>-{git?.deletions ?? 0}</i></span></header>
+    <div className="workspace-diff-toolbar"><div className="workspace-diff-toolbar-left"><button type="button" className="workspace-diff-icon-btn" onClick={() => setJumpOpen((v) => !v)} title="Jump to file" aria-label="Jump to file"><Search size={14} /></button>{jumpOpen && <div ref={jumpRef} className="workspace-diff-jump-menu"><div className="workspace-diff-jump-header"><Search size={13} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Jump to file" aria-label="Search changed files" /></div><div className="workspace-diff-jump-list">{scopedFilesForJump.length === 0 ? <div className="workspace-tree-state">{files.length ? "No matching files" : "Working tree is clean."}</div> : scopedFilesForJump.map((file) => <button type="button" key={file.path} className="workspace-diff-jump-item" onClick={() => { onOpenDiff(file.path); setJumpOpen(false); }}><span className="workspace-diff-jump-icon"><FileCode2 size={13} /></span><span className="workspace-diff-jump-copy"><strong>{file.path.split(/[\\/]/).at(-1)}</strong><small>{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "Project root"}</small></span><span className="workspace-diff-jump-stats"><b>+{file.additions}</b><i>-{file.deletions}</i></span></button>)}</div></div>}</div><div className="workspace-diff-toolbar-actions"><button type="button" className={`workspace-diff-view-btn ${view === "stacked" ? "active" : ""}`} onClick={() => setView("stacked")} title="Stacked diff">Stacked</button><button type="button" className={`workspace-diff-view-btn ${view === "split" ? "active" : ""}`} onClick={() => setView("split")} title="Split diff">Split</button><button type="button" className={`workspace-diff-view-btn ${wrapped ? "active" : ""}`} onClick={() => setWrapped((value) => !value)} title="Wrap long lines">Wrap</button><button type="button" className="workspace-diff-view-btn" onClick={() => setDetailCollapsed((value) => !value)} title={detailCollapsed ? "Expand diff" : "Collapse diff"}>{detailCollapsed ? "Expand" : "Collapse"}</button><button type="button" className="workspace-diff-icon-btn" onClick={() => void copyDiff()} disabled={!reviewDiff?.patch} title={copied ? "Copied" : "Copy diff"}>{copied ? <Check size={12} /> : <Copy size={12} />}</button><div className="workspace-diff-actions"><button type="button" className="workspace-diff-icon-btn" onClick={() => setActionsOpen((value) => !value)} title="Diff options" aria-label="Diff options"><MoreHorizontal size={14} /></button>{actionsOpen && <div className="workspace-diff-actions-menu"><button type="button" onClick={() => { setWrapped((v) => !v); setActionsOpen(false); }}><Copy size={13} />{wrapped ? "Disable wrap" : "Wrap long lines"}</button><button type="button" onClick={() => { void copyDiff(); setActionsOpen(false); }}><Copy size={13} />{copied ? "Copied" : "Copy diff"}</button><button type="button" onClick={() => { const allCollapsed = filteredFiles.every((f) => collapsedFiles.has(f.path)); if (allCollapsed) setCollapsedFiles(new Set()); else setCollapsedFiles(new Set(filteredFiles.map((f) => f.path))); setActionsOpen(false); }}><Folder size={13} />{filteredFiles.every((f) => collapsedFiles.has(f.path)) ? "Expand all" : "Collapse all"}</button><button type="button" onClick={onOpenGit}><GitCommitHorizontal size={13} />Open source control</button><button type="button" onClick={() => onOpenEditor(reviewFile ? projectFilePath(project, reviewFile) : project.path)}><ExternalLink size={13} />Open in editor</button></div>}</div></div></div>
+    <div className={`workspace-diff-workspace ${view} ${wrapped ? "wrapped" : ""} ${isDetailCollapsed ? "detail-collapsed" : ""}`}>
+      <aside className="workspace-diff-file-list">{filteredFiles.length === 0 ? <div className="workspace-tree-state">{files.length ? "No files match this view." : "Working tree is clean."}</div> : filteredFiles.map((file) => {
+        const isCollapsed = collapsedFiles.has(file.path);
+        const patchEntry = filePatches[file.path];
+        const isLoading = loadingFiles.has(file.path);
+        const handleHeaderClickCapture = (event: React.MouseEvent<HTMLDivElement>) => {
+          const native = event.nativeEvent as unknown as { composedPath?: () => EventTarget[] };
+          const path = typeof native.composedPath === "function" ? native.composedPath() : [];
+          const clickedMenu = path.some((node) => node instanceof Element && node.hasAttribute("data-diff-header-menu"));
+          if (clickedMenu) return;
+          const clickedHeader = path.some((node) => node instanceof Element && (node.hasAttribute("data-diff-file-header") || node.hasAttribute("data-diffs-header") || node.hasAttribute("data-file-info")));
+          if (!clickedHeader) return;
+          event.stopPropagation();
+          toggleFileCollapsed(file.path);
+        };
+        return <div key={file.path} className={`workspace-diff-file-row ${reviewFile === file.path ? "selected" : ""} ${isCollapsed ? "collapsed" : "expanded"}`} data-diff-file-path={file.path}>
+          <div className="workspace-diff-file-row-header" data-diff-file-header="" onClickCapture={handleHeaderClickCapture}>
+            <button type="button" className="workspace-diff-file-card" onClick={() => onOpenDiff(file.path)} title={file.path}><span className={`workspace-git-status status-${file.status[0]}`}>{file.status}</span><span className="workspace-diff-file-icon"><FileCode2 size={14} /></span><span className="workspace-diff-file-copy"><strong>{file.path.split(/[\\/]/).at(-1)}</strong><small>{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "Project root"}</small></span><span className="workspace-diff-file-stats"><b>+{file.additions}</b><i>-{file.deletions}</i></span></button>
+            <span data-diff-header-menu="true" className="inline-flex"><button type="button" className="file-menu-trigger" onClick={(e) => { e.stopPropagation(); setFileMenuOpen(fileMenuOpen === file.path ? null : file.path); }} aria-label="File actions"><Ellipsis size={14} /></button></span>
+            <button type="button" className="turn-file-collapse file-row-collapse" aria-label={isCollapsed ? "Expand diff" : "Collapse diff"} onClick={(e) => { e.stopPropagation(); toggleFileCollapsed(file.path); }}><ChevronDown size={14} className={isCollapsed ? "" : "open"} /></button>
+            {fileMenuOpen === file.path && <div className="file-context-menu"><button type="button" onClick={() => { void referInChat(file.path); setFileMenuOpen(null); }}>Refer {file.path.split(/[\\/]/).at(-1)}</button><button type="button" onClick={() => { void askWhy(file.path); setFileMenuOpen(null); }}>Ask why this changed</button><button type="button" onClick={() => { void copyPath(file.path); setFileMenuOpen(null); }}>Copy path</button></div>}
+          </div>
+          {!isCollapsed && <div className="workspace-diff-file-inline">
+            {isLoading ? <div className="workspace-tree-state"><RefreshCw size={12} className="spin" />Loading diff…</div> : patchEntry?.patch ? <div className="workspace-diff-code inline"><DiffCode patch={patchEntry.patch} language={diffLanguageForPath(patchEntry.path)} showMetadata={false} className={view === "split" ? "split-view" : ""} /></div> : <div className="workspace-tree-state">No diff available.</div>}
+          </div>}
+        </div>;
+      })}</aside>
+       <section className="workspace-diff-detail">{!reviewFile ? <div className="workspace-empty-state"><Diff size={20} /><span>Select a file to review its changes.</span><small>Choose a changed file on the left to inspect the full patch.</small></div> : <><header className="workspace-diff-detail-header" data-diff-file-header="" onClickCapture={(event) => {
+        const native = event.nativeEvent as unknown as { composedPath?: () => EventTarget[] };
+        const path = typeof native.composedPath === "function" ? native.composedPath() : [];
+        if (path.some((node) => node instanceof Element && node.hasAttribute("data-diff-header-menu"))) return;
+        const clickedHeader = path.some((node) => node instanceof Element && (node.hasAttribute("data-diff-file-header") || node.hasAttribute("data-file-info")));
+        if (!clickedHeader) return;
+        const target = event.target as Element;
+        if (target.closest("button") && !target.closest(".turn-file-collapse")) return;
+        event.stopPropagation();
+        toggleFileCollapsed(reviewFile);
+      }}><div className="workspace-diff-detail-fileinfo" data-file-info=""><FileCode2 size={14} /><div><strong>{reviewFile.split(/[\\/]/).at(-1)}</strong><small>{reviewFile.includes("/") ? reviewFile.slice(0, reviewFile.lastIndexOf("/")) : "Project root"}</small></div></div><div className="workspace-diff-detail-stats"><b>+{stats.additions}</b> <i>-{stats.deletions}</i></div><div className="diff-header-actions"><span data-diff-header-menu="true" className="inline-flex"><button type="button" className="diff-header-menu-trigger" onClick={() => setDiffHeaderMenuOpen((v) => !v)} aria-label="Diff actions"><Ellipsis size={14} /></button></span>{diffHeaderMenuOpen && <div className="file-context-menu diff-header-menu"><button type="button" onClick={() => { void referInChat(reviewFile); setDiffHeaderMenuOpen(false); }}>Refer {reviewFile.split(/[\\/]/).at(-1)}</button><button type="button" onClick={() => { void askWhy(reviewFile); setDiffHeaderMenuOpen(false); }}>Ask why this changed</button><button type="button" onClick={() => { void copyPath(reviewFile); setDiffHeaderMenuOpen(false); }}>Copy path</button></div>}<button type="button" className="workspace-diff-icon-btn" onClick={(e) => { e.stopPropagation(); onOpenEditor(projectFilePath(project, reviewFile)); }} title="Open in editor"><ExternalLink size={13} /></button><button type="button" className="turn-file-collapse" aria-label={isDetailCollapsed ? "Expand diff" : "Collapse diff"} onClick={(e) => { e.stopPropagation(); setDetailCollapsed((v) => !v); }}><ChevronDown size={14} className={isDetailCollapsed ? "" : "open"} /></button></div></header>{isDetailCollapsed ? null : reviewDiff?.patch ? <div className="workspace-diff-code"><DiffCode patch={reviewDiff.patch} language={diffLanguageForPath(reviewDiff.path)} showMetadata={false} className={view === "split" ? "split-view" : ""} /></div> : <div className="workspace-empty-state"><RefreshCw size={18} className="spin" /><span>Reading diff…</span></div>}</>}</section>
     </div>
+    {toast && <div className="diff-toast">{toast}</div>}
   </div>;
 }
 
