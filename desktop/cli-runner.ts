@@ -1060,7 +1060,12 @@ export function buildCliArguments(
     ...permissionArguments(request.permission),
   ];
   if (request.model.trim()) args.push("--model", request.model.trim());
-  if (request.effort.trim()) args.push("--effort", request.effort.trim());
+  if (request.effort.trim()) {
+    const normalizedEffort = request.effort.trim().toLowerCase().replace(/[-_\s]+/g, "").replace(/^extrahigh$/, "xhigh").replace(/^ultra$/, "xhigh").replace(/^maximum$/, "max").replace(/^med$/, "medium");
+    // Providers require exact lowercase tokens: xhigh (not "Extra High"). Normalize before sending.
+    // Sources: OpenAI reasoning_effort enum [none,minimal,low,medium,high,xhigh,max], Anthropic effort [low,medium,high,xhigh,max].
+    args.push("--effort", normalizedEffort || request.effort.trim().toLowerCase());
+  }
   if (request.additionalDirectories?.length) args.push("--add-dir", ...request.additionalDirectories);
   if (browserBridge) {
     // The bridge is a Maximo-owned MCP server. Keeping its configuration in the
