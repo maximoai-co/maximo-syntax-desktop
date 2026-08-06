@@ -4,6 +4,12 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-08-06
+
+- Fixed mid-turn model/effort changes: when the user switches model or effort while a warm session is still running, the desktop now restarts the session with `--resume` at the transcript anchor so the new flags take effect instead of reusing the stale live process; follow-up injections ride the same turn and intentionally do not restart.
+- Fixed effort being silently dropped when the user picks a custom model slug or changes effort while the engine catalog is still loading — the CLI shim now forwards it and the provider validates, instead of requiring the catalog to declare `supportsEffort`.
+- Fixed the thread message-model/effort fields being left stale when the user clears them to "Default" — the store now deletes the field instead of keeping the previous non-default.
+
 ## [0.1.7] - 2026-08-06
 
 - Faster, smoother thread switching: selection now applies optimistically from already-loaded state, the outgoing transcript stays visible while a large incoming thread hydrates at idle priority (progressive 40 → 80 message reveal), and expanded user-message state is preserved per thread.

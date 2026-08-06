@@ -3854,8 +3854,23 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
     const sentPrompt = appendPastedTextsToPrompt(basePrompt, pastedTexts);
     const sentAttachments = attachments;
     const selectedModel = models.find((item) => (item.value === "default" ? "" : item.value) === model);
+    // For custom slugs or while the catalog is still loading, selectedModel is
+    // undefined but the user explicitly chose an effort. Don't silently drop it
+    // — the CLI shim forwards it via MAXIMO_SYNTAX_ALWAYS_ENABLE_EFFORT and the
+    // provider validates. Only drop when the catalog says the model truly doesn't
+    // support effort.
+    const selectedSupportsEffort = selectedModel?.supportsEffort;
     const supportedEfforts = selectedModel?.supportedEffortLevels ?? [];
-    const sentEffort = effort && selectedModel?.supportsEffort && supportedEfforts.includes(effort) ? normalizeEffortValue(effort) : "";
+    const normalizedEffort = effort ? normalizeEffortValue(effort) : "";
+    const sentEffort = !normalizedEffort
+      ? ""
+      : selectedModel === undefined
+        ? normalizedEffort
+        : selectedSupportsEffort && (supportedEfforts.length === 0 || supportedEfforts.includes(normalizedEffort))
+          ? normalizedEffort
+          : selectedSupportsEffort === false
+            ? ""
+            : normalizedEffort;
     // Clear the draft for this thread after a successful send — Synara clears
     // composerDraft on send, but keeps it on thread switch.
     const draftToClear = thread.id;
@@ -3982,8 +3997,21 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
   const chooseModel = (next: string) => {
     setModel(next);
     const nextModel = models.find((item) => (item.value === "default" ? "" : item.value) === next);
-    const supported = nextModel?.supportedEffortLevels ?? [];
-    setEffort((current) => current && supported.includes(current) ? normalizeEffortValue(current) : nextModel?.defaultEffort ? normalizeEffortValue(nextModel.defaultEffort) : "");
+    // Custom slugs or loading state: keep the user's explicit effort (the CLI
+    // shim will forward it and the provider validates). Only clear when the
+    // catalog knows the target model and the effort is unsupported.
+    if (!nextModel) return;
+    const supported = nextModel.supportedEffortLevels ?? [];
+    const supportsEffort = nextModel.supportsEffort ?? supported.length > 0;
+    if (!supportsEffort) {
+      setEffort("");
+      return;
+    }
+    setEffort((current) => {
+      const normalized = current ? normalizeEffortValue(current) : "";
+      if (normalized && (supported.length === 0 || supported.includes(normalized))) return normalized;
+      return nextModel.defaultEffort ? normalizeEffortValue(nextModel.defaultEffort) : normalized;
+    });
   };
   const [branchRetry, setBranchRetry] = useState<TransientRetryState>(null);
   const refreshBranches = async () => {

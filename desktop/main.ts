@@ -46,6 +46,11 @@ let isQuitting = false;
 const activeDesktopNotifications = new Set<ElectronNotification>();
 const runner = new CliRunner();
 const pendingRunEvents: RunEvent[] = [];
+// Tracks the model/effort that the live CLI process was started with.
+// Needed because thread.model diverges from process args when the user
+// changes model while a warm session is alive — send would otherwise reuse
+// the old process with stale flags.
+const runningModel = new Map<string, { model: string; effort: string }>();
 let runEventFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Local staging ceiling; the CLI applies its format-specific API limits when
@@ -928,11 +933,13 @@ function registerIpc(): void {
         onEvent: (event: RunEvent) => {
           sendRunEvent(event);
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);
+          if (event.type === "finished") runningModel.delete(threadId);
         },
         onComplete: async (result) => {
           await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
         },
       }, browserHost?.bridgeLaunch(threadId, project.path));
+      runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort });
       return { accepted: true, state: startedState };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -962,8 +969,61 @@ function registerIpc(): void {
         .filter((path, index, paths) => path !== resolve(project.path) && paths.indexOf(path) === index && existsSync(path))
         .slice(0, MAX_PROJECT_SOURCE_COUNT - 1),
       ...(typeof request.contextWindow === "number" && Number.isFinite(request.contextWindow) && request.contextWindow > 0 ? { contextWindow: Math.round(Math.min(request.contextWindow, 10_000_000)) } : {}),
+      ...(thread.truncateAtUuid ? { resumeSessionAt: thread.truncateAtUuid } : {}),
     };
     const asFollowUp = request.asFollowUp === true;
+    // If the user changed model/effort while a warm session is alive, the old
+    // process was started with stale --model/--effort flags. Reusing it via
+    // runner.send would answer with the wrong model. Restart with --resume so
+    // the transcript continues but the new flags take effect.
+    const running = runningModel.get(threadId);
+    const effectivePrevModel = running?.model ?? thread.model ?? "";
+    const effectivePrevEffort = running?.effort ?? thread.effort ?? "";
+    const modelChanged = safeRequest.model !== effectivePrevModel;
+    const effortChanged = safeRequest.effort !== effectivePrevEffort;
+    // Mid-turn follow-ups (asFollowUp) ride the current query's injection point
+    // and must not restart — they are steering within the same turn.
+    if ((modelChanged || effortChanged) && !asFollowUp) {
+      // The follow-up flag reflects an in-turn injection; a turn-boundary
+      // model change needs a fresh process. Stop the warm session and start a
+      // resumed one that continues the transcript with the new model.
+      await runner.stopAndWait(threadId);
+      runningModel.delete(threadId);
+      const sentState = await store.sendRunMessage(threadId, prompt, safeRequest.attachments, safeRequest.model, safeRequest.effort, permission, { asFollowUp });
+      const status = await runtime.ensure();
+      const engine = runtime.currentLaunch();
+      if (!status.available || !engine) {
+        await store.finishRun(threadId, status.message, "error", thread.cliSessionId, true);
+        return { accepted: false, error: status.message };
+      }
+      // Keep truncating at the fork anchor after edit/revert/file-rewind.
+      const resumedRequest: RunRequest = {
+        ...safeRequest,
+        ...(thread.truncateAtUuid ? { resumeSessionAt: thread.truncateAtUuid } : safeRequest.resumeSessionAt ? { resumeSessionAt: safeRequest.resumeSessionAt } : {}),
+      };
+      // The previous session id is still on the thread (set by the last turn's
+      // onComplete). Use the latest thread state after sendRunMessage.
+      const latestThread = store.getThread(threadId);
+      const previousSessionId = latestThread?.cliSessionId ?? thread.cliSessionId;
+      try {
+        runner.start(engine, resumedRequest, project.path, previousSessionId, {
+          onEvent: (event: RunEvent) => {
+            sendRunEvent(event);
+            if (event.type === "context") void store.recordContextUsage(threadId, event.context);
+            if (event.type === "finished") runningModel.delete(threadId);
+          },
+          onComplete: async (result) => {
+            await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
+          },
+        }, browserHost?.bridgeLaunch(threadId, project.path));
+        runningModel.set(threadId, { model: resumedRequest.model, effort: resumedRequest.effort });
+        return { accepted: true, state: sentState };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await store.finishRun(threadId, message, "error", latestThread?.cliSessionId ?? thread.cliSessionId, true);
+        return { accepted: false, error: message };
+      }
+    }
     const sentState = await store.sendRunMessage(threadId, prompt, safeRequest.attachments, safeRequest.model, safeRequest.effort, permission, { asFollowUp });
     const accepted = runner.send(threadId, prompt, safeRequest.attachments);
     if (!accepted) {
@@ -987,7 +1047,11 @@ function registerIpc(): void {
       updatedPermissions,
     });
   });
-  ipcMain.handle("run:stop", (_event, threadId: string) => runner.stop(safeText(threadId, 100)));
+  ipcMain.handle("run:stop", (_event, threadId: string) => {
+    const id = safeText(threadId, 100);
+    runningModel.delete(id);
+    return runner.stop(id);
+  });
 
   const buildSafeRequest = async (request: RunRequest, threadId: string): Promise<RunRequest> => {
     const thread = store.getThread(threadId);
@@ -1048,6 +1112,7 @@ function registerIpc(): void {
     // needs a forked replacement process, so retire the live one first.
     if (runner.isRunning(threadId)) {
       await runner.stopAndWait(threadId);
+      runningModel.delete(threadId);
     }
     // The truncated fork ends at the message before the edited one, so the
     // edited turn (fresh uuid) replaces it in the new session.
@@ -1065,11 +1130,13 @@ function registerIpc(): void {
         onEvent: (event: RunEvent) => {
           sendRunEvent(event);
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);
+          if (event.type === "finished") runningModel.delete(threadId);
         },
         onComplete: async (result) => {
           await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
         },
       }, browserHost?.bridgeLaunch(threadId, project.path));
+      runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort });
       return { accepted: true, state: startedState };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1153,6 +1220,7 @@ function registerIpc(): void {
     // truncated anchor instead of appending onto the pre-revert transcript.
     if (runner.isRunning(threadId)) {
       await runner.stopAndWait(threadId);
+      runningModel.delete(threadId);
     }
 
     const truncatedState = await store.truncateThreadAt(threadId, messageId);

@@ -772,8 +772,12 @@ export class StateStore {
     if (thread.messages.filter((item) => item.role === "user").length === 1) {
       thread.title = prompt.replace(/\s+/g, " ").trim().slice(0, 54) || "New chat";
     }
-    if (model) thread.model = model;
-    if (effort) thread.effort = effort;
+    const trimmedModel = model.trim();
+    const trimmedEffort = effort.trim();
+    if (trimmedModel) thread.model = trimmedModel;
+    else delete thread.model;
+    if (trimmedEffort) thread.effort = trimmedEffort;
+    else delete thread.effort;
     thread.permission = permission;
     thread.updatedAt = Date.now();
   }
