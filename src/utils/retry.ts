@@ -1,5 +1,8 @@
 // Synara-style retry: small inline retrying, auto retry 3× before surfacing failure.
-// Mirrors synara's HttpClient.retryTransient({ times: 3 }) and workLog "OpenCode retrying" collapse.
+// Mirrors synara's HttpClient.retryTransient({ times: 3 }), providerRuntimeEventPump
+// exponential backoff, and workLog "OpenCode retrying" collapse. Shape-agnostic:
+// Maximo AI API can throw errors as string, Error, {message}, {error}, {detail},
+// {cause}, nested JSON, or numeric HTTP status — we extract generically.
 export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_BASE_DELAY_MS = 800;
 export const DEFAULT_MAX_DELAY_MS = 5000;
@@ -18,6 +21,8 @@ export type RetryOptions = {
 // Synara treats network / timeout / 5xx / transient as retryable, but not auth/validation.
 // This mirrors ProviderHealth's single retry for transient false negatives and
 // workLog "Provider request failed; retrying." classification.
+// TRANSIENT_PATTERNS are hints, not a hard allowlist — unknown shapes are still retried
+// unless they match NON_RETRYABLE, matching synara's "retry unless permanentFailure".
 const TRANSIENT_PATTERNS = [
   /network/i,
   /fetch failed/i,
@@ -55,10 +60,73 @@ const NON_RETRYABLE_PATTERNS = [
   /credential/i,
 ];
 
+function collectMessages(error: unknown, seen: Set<unknown>, out: string[]): void {
+  if (error == null || seen.has(error)) return;
+  seen.add(error);
+  if (typeof error === "string") {
+    if (error.trim()) out.push(error);
+    return;
+  }
+  if (typeof error === "number") {
+    out.push(String(error));
+    return;
+  }
+  if (error instanceof Error) {
+    if (error.message) out.push(error.message);
+    const cause = (error as unknown as Record<string, unknown>).cause;
+    if (cause != null) collectMessages(cause, seen, out);
+    // also inspect stack for network hints without spamming full stack
+    if (error.stack && /fetch|network|timeout|ECONN/i.test(error.stack)) out.push(error.stack.slice(0, 400));
+    return;
+  }
+  if (typeof error === "object") {
+    const rec = error as Record<string, unknown>;
+    const keys = ["message", "error", "detail", "msg", "reason", "cause", "data", "description", "title", "statusText", "err", "errorMessage"];
+    for (const k of keys) {
+      if (k in rec && rec[k] != null) collectMessages(rec[k], seen, out);
+    }
+    // numeric status/code fields — important for Maximo AI API throwing {status: 429} or {code: "ECONNRESET"}
+    for (const k of ["status", "statusCode", "code", "errorCode"]) {
+      if (k in rec && rec[k] != null) {
+        const v = rec[k];
+        if (typeof v === "number" || typeof v === "string") out.push(String(v));
+      }
+    }
+    // if none of the known keys produced output, fallback to JSON, but truncate
+    if (out.length === 0) {
+      try {
+        const j = JSON.stringify(error);
+        if (j && j !== "{}" && j !== "[]") out.push(j.slice(0, 800));
+        else out.push(String(error).slice(0, 800));
+      } catch {
+        out.push(String(error).slice(0, 800));
+      }
+    }
+    return;
+  }
+  out.push(String(error).slice(0, 800));
+}
+
 function messageOf(error: unknown): string {
-  if (error instanceof Error) return `${error.message} ${String((error as unknown as Record<string, unknown>).cause ?? "")}`;
-  if (typeof error === "string") return error;
-  try { return JSON.stringify(error); } catch { return String(error); }
+  const parts: string[] = [];
+  collectMessages(error, new Set(), parts);
+  // dedupe fragments while preserving order
+  const seen = new Set<string>();
+  const uniq: string[] = [];
+  for (const p of parts) {
+    const t = p.trim();
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    uniq.push(t);
+  }
+  if (uniq.length === 0) {
+    try {
+      return JSON.stringify(error).slice(0, 800);
+    } catch {
+      return String(error).slice(0, 800);
+    }
+  }
+  return uniq.join(" | ");
 }
 
 export function isTransientMessage(message: string): boolean {
@@ -69,16 +137,50 @@ export function isNonRetryableMessage(message: string): boolean {
   return NON_RETRYABLE_PATTERNS.some((re) => re.test(message));
 }
 
+function hasRetryableStatus(error: unknown): boolean {
+  if (error == null || typeof error !== "object") return false;
+  const rec = error as Record<string, unknown>;
+  const candidates: unknown[] = [rec.status, rec.statusCode, rec.code, rec.errorCode, rec["status_code"]];
+  // also check nested error object
+  if (rec.error && typeof rec.error === "object") {
+    const nested = rec.error as Record<string, unknown>;
+    candidates.push(nested.status, nested.statusCode, nested.code);
+  }
+  for (const v of candidates) {
+    if (typeof v === "number") {
+      if (v === 429 || (v >= 500 && v <= 599)) return true;
+      if (v === 408) return true;
+    }
+    if (typeof v === "string") {
+      if (/^429$/.test(v) || /^5\d\d$/.test(v) || v === "408") return true;
+      if (/ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH/i.test(v)) return true;
+    }
+  }
+  return false;
+}
+
 export function isRetryableError(error: unknown): boolean {
   if (!error) return false;
   // Explicit opt-out: synara marks wsTransport errors with retryable:false
   if (typeof error === "object" && error !== null && "retryable" in error && (error as Record<string, unknown>).retryable === false) return false;
+  // Explicit opt-in: retryable:true always retried even if message looks non-retryable? No, respect non-retryable first.
   const msg = messageOf(error);
   if (isNonRetryableMessage(msg)) return false;
+  if (hasRetryableStatus(error)) return true;
   if (isTransientMessage(msg)) return true;
-  // Unknown errors are not retried by default to avoid hiding validation bugs.
-  // Allow retry for TypeError: Failed to fetch style network errors where message may be empty but stack hints network.
-  if (error instanceof TypeError && /fetch/i.test(msg)) return true;
+  // Generically handle Maximo AI API throwing any shape:
+  // - TypeError/fetch style network errors
+  if (error instanceof TypeError) return true;
+  // - DOMException AbortError should NOT be retried (user cancelled) — but network fetch abort is retryable
+  if (error instanceof DOMException && error.name === "AbortError") return false;
+  // - Plain object without non-retryable marker and with some message — treat as transient
+  //   This is the core "do not hardcode" fix: any Maximo AI API error shape that isn't
+  //   explicitly auth/validation is retried, mirroring synara's retry-unless-permanent.
+  //   We only exclude empty/falsy errors already handled.
+  if (typeof error === "object" || typeof error === "string") {
+    // if we have any message content and it wasn't classified non-retryable, retry it
+    if (msg.trim().length > 0) return true;
+  }
   return false;
 }
 
@@ -125,3 +227,9 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOp
 // Convenience: wrap an async IPC/action so callers can show small "retrying 1/3" UI
 // without stopping AI work, matching synara's workLog retry collapse.
 export type RetryState = { attempt: number; max: number; message: string; delayMs: number } | null;
+
+export function getRetryMessage(error: unknown): string {
+  const msg = messageOf(error);
+  if (!msg) return "Connection issue — retrying";
+  return msg.slice(0, 140) || "Connection issue — retrying";
+}

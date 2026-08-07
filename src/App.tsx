@@ -49,7 +49,7 @@ import { composerKeyAction, composerSendShortcutLabel } from "./composerKeyboard
 import { MAXIMO_SHORTCUTS, matchesShortcut, shortcutLabel } from "./shortcuts";
 import { modelProvider, type ModelProvider } from "./utils/modelProvider.js";
 import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollElementNearBottom } from "./utils/chatScroll.js";
-import { retryWithBackoff, isRetryableError, DEFAULT_MAX_RETRIES } from "./utils/retry.js";
+import { retryWithBackoff, isRetryableError, DEFAULT_MAX_RETRIES, getRetryMessage } from "./utils/retry.js";
 import { TransientRetryNotice, type TransientRetryState } from "./components/TransientRetryNotice";
 
 type LiveRun = { text: string; activity: RunActivity[]; timeline: RunTimelineItem[]; logs: Array<{ level: string; text: string; timestamp: number }> };
@@ -5376,7 +5376,6 @@ export default function App() {
     document.documentElement.dataset.themeVariant = resolvedThemeVariant;
   }, [appearanceVariables, resolvedThemeVariant, state]);
 
-  const refreshState = useCallback(async () => setState(await window.maximoDesktop.loadState()), []);
   const engineModelsRefreshAtRef = useRef(0);
   const engineModelsRequestRef = useRef(0);
   const invalidateProviderState = useCallback(() => {
@@ -5431,8 +5430,7 @@ export default function App() {
   }, [skillCommands, discoveredSkills]);
   const showToast = useCallback((message: string) => { setToast(message); window.setTimeout(() => setToast(null), 3_500); }, []);
   const showTransientRetry = useCallback((attempt: number, max: number, error: unknown) => {
-    const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "Retrying…";
-    setTransientRetry({ attempt, max, message: raw.slice(0, 140) || "Connection issue — retrying" });
+    setTransientRetry({ attempt, max, message: getRetryMessage(error) });
   }, []);
   const refreshEngineModels = useCallback(async (force = false) => {
     if (!force && Date.now() - engineModelsRefreshAtRef.current < 60_000) return null;
@@ -5479,6 +5477,9 @@ export default function App() {
       onRetry: (attempt, max, error) => showTransientRetry(attempt, max, error),
     }).then((v) => { setTransientRetry(null); onSuccess?.(v); }).catch((e) => { setTransientRetry(null); onFinalError?.(e); });
   }, [showTransientRetry]);
+  const refreshState = useCallback(async () => setState(await retryWithBackoff(() => window.maximoDesktop.loadState(), {
+    retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+  }).finally(() => setTransientRetry(null))), [showTransientRetry]);
   const toggleEnvironment = useCallback(() => {
     setEnvironmentOpen((current) => {
       const next = !current;
@@ -5533,32 +5534,46 @@ export default function App() {
   useEffect(() => {
     let active = true;
     const initialize = async () => {
-      const loaded = await window.maximoDesktop.loadState();
-      if (!active) return;
-       setState(loaded); setInspectorVisible(loaded.settings.showInspector); setEnvironmentOpen(loaded.settings.environmentPanelDefaultOpen);
-       void window.maximoDesktop.appInfo().then((info) => { if (active) { setAppVersion(info.version); setAppDataPath(info.dataPath); } }).catch(() => { if (active) { setAppVersion(""); setAppDataPath(""); } });
-      void window.maximoDesktop.getUpdateState().then((next) => { if (active) setUpdateState(next); }).catch(() => { if (active) setUpdateState(null); });
-      void window.maximoDesktop.accountStatus().then((status) => {
+      try {
+        const loaded = await retryWithBackoff(() => window.maximoDesktop.loadState(), {
+          retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+        });
+        if (!active) return;
+        setState(loaded); setInspectorVisible(loaded.settings.showInspector); setEnvironmentOpen(loaded.settings.environmentPanelDefaultOpen);
+        setTransientRetry(null);
+      } catch {
+        if (active) setTransientRetry(null);
+        // proceed with other bootstraps even if loadState final failure
+        if (!active) return;
+      }
+       void retryWithBackoff(() => window.maximoDesktop.appInfo(), { retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((info) => { if (active) { setAppVersion(info.version); setAppDataPath(info.dataPath); setTransientRetry(null); } }).catch(() => { if (active) { setAppVersion(""); setAppDataPath(""); setTransientRetry(null); } });
+      void retryWithBackoff(() => window.maximoDesktop.getUpdateState(), { retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((next) => { if (active) { setUpdateState(next); setTransientRetry(null); } }).catch(() => { if (active) { setUpdateState(null); setTransientRetry(null); } });
+      void retryWithBackoff(() => window.maximoDesktop.accountStatus(), { retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((status) => {
         if (!active) return;
         setAccount(status);
         setAccountLoaded(true);
+        setTransientRetry(null);
       }).catch(() => {
         if (!active) return;
         setAccount(null);
         setAccountLoaded(true);
+        setTransientRetry(null);
       });
       try {
-        const nextEngine = await window.maximoDesktop.ensureEngine();
+        const nextEngine = await retryWithBackoff(() => window.maximoDesktop.ensureEngine(), {
+          retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+        });
         if (!active) return;
         setEngine(nextEngine);
+        setTransientRetry(null);
         if (nextEngine.available) void refreshEngineModels();
       } catch {
-        if (active) setEngine({ phase: "error", available: false, message: "Unable to check the Maximo Syntax engine.", checkedAt: Date.now() });
+        if (active) { setTransientRetry(null); setEngine({ phase: "error", available: false, message: "Unable to check the Maximo Syntax engine.", checkedAt: Date.now() }); }
       }
     };
     void initialize();
     return () => { active = false; };
-  }, [refreshEngineModels]);
+  }, [refreshEngineModels, showTransientRetry]);
 
   useEffect(() => {
     if (!engine?.available) return;
@@ -5652,7 +5667,7 @@ export default function App() {
       setPendingPermission((current) => current?.threadId === event.threadId ? null : current);
       void refreshContextUsage(event.threadId);
       void refreshState().then(() => { void flushQueuedFollowUpRef.current(event.threadId); });
-      if (currentProject) void window.maximoDesktop.gitStatus(currentProject.id).then(setGit);
+      if (currentProject) void retryWithBackoff(() => window.maximoDesktop.gitStatus(currentProject.id), { retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((v) => { setTransientRetry(null); setGit(v); }).catch(() => setTransientRetry(null));
     }
     if (event.type === "finished") {
       const latestState = stateRef.current;
@@ -5759,35 +5774,37 @@ export default function App() {
   const openProject = useCallback(async () => {
     const project = await window.maximoDesktop.chooseProject();
     if (!project) return;
-     const loaded = await window.maximoDesktop.loadState(); setState(loaded);
-     const next = await window.maximoDesktop.createThread(project.id); setState(next); rememberThread(next.selectedThreadId); setActiveSurface("chat"); setSidebarOpen(false);
-  }, [rememberThread]);
+     const loaded = await withSmallRetry(() => window.maximoDesktop.loadState());
+     setState(loaded);
+     const next = await withSmallRetry(() => window.maximoDesktop.createThread(project.id));
+     setState(next); rememberThread(next.selectedThreadId); setActiveSurface("chat"); setSidebarOpen(false);
+  }, [rememberThread, withSmallRetry]);
   const createSpace = useCallback(async (name: string, icon: SpaceIconName): Promise<Space> => {
-    const next = await window.maximoDesktop.createSpace(name, icon);
+    const next = await withSmallRetry(() => window.maximoDesktop.createSpace(name, icon));
     setState(next);
     const normalizedName = name.trim().replace(/\s+/g, " ").slice(0, 32).toLowerCase();
     const created = next.spaces.find((space) => space.name.toLowerCase() === normalizedName);
     if (!created) throw new Error("The new space could not be selected.");
     return created;
-  }, []);
+  }, [withSmallRetry]);
   const createProject = useCallback(async (name: string, sourcePaths: string[], spaceId: string | null) => {
-    const next = await window.maximoDesktop.createProject(name, sourcePaths, spaceId);
+    const next = await withSmallRetry(() => window.maximoDesktop.createProject(name, sourcePaths, spaceId));
     setState(next);
     const project = next.projects.find((candidate) => candidate.id === next.selectedProjectId);
     if (project) {
-      const withThread = await window.maximoDesktop.createThread(project.id);
+      const withThread = await withSmallRetry(() => window.maximoDesktop.createThread(project.id));
       setState(withThread);
       rememberThread(withThread.selectedThreadId);
       setActiveSurface("chat");
     }
     setSidebarOpen(false);
-  }, [rememberThread]);
+  }, [rememberThread, withSmallRetry]);
   const newThread = useCallback(async (projectId?: string) => {
     let id = projectId;
     if (!id) { await openProject(); return; }
-    const next = await window.maximoDesktop.createThread(id);
+    const next = await withSmallRetry(() => window.maximoDesktop.createThread(id));
      setState(next); rememberThread(next.selectedThreadId); setActiveSurface("chat"); setSidebarOpen(false);
-  }, [openProject, rememberThread]);
+  }, [openProject, rememberThread, withSmallRetry]);
 
   const selectThread = useCallback((threadId: string, surface: WorkspaceSurface = "chat") => {
     // Guard against out-of-order IPC when the user scrubs quickly through the
@@ -5827,11 +5844,16 @@ export default function App() {
       // Persist selection in background without blocking UI; ignore if a newer
       // selectThread has already been issued. Reconcile directly — deferred
       // value will keep the old pane visible until the new transcript is ready.
-      void window.maximoDesktop.selectThread(threadId).then((next) => {
+      // Synara-style small retrying pill while auto-retrying transient failures 3×.
+      void retryWithBackoff(() => window.maximoDesktop.selectThread(threadId), {
+        retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+      }).then((next) => {
         if (seq !== selectThreadSeqRef.current) return;
+        setTransientRetry(null);
         setState(next);
       }).catch(() => {
         if (seq !== selectThreadSeqRef.current) return;
+        setTransientRetry(null);
         showToast("That chat is no longer available.");
       });
       return;
@@ -5839,28 +5861,32 @@ export default function App() {
     // Fallback (thread not in local state): await main process
     void (async () => {
       try {
-        const next = await window.maximoDesktop.selectThread(threadId);
+        const next = await retryWithBackoff(() => window.maximoDesktop.selectThread(threadId), {
+          retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+        });
         if (seq !== selectThreadSeqRef.current) return;
+        setTransientRetry(null);
         setState(next);
         rememberThread(next.selectedThreadId ?? threadId);
         setActiveSurface(surface);
         setSidebarOpen(false);
       } catch {
         if (seq !== selectThreadSeqRef.current) return;
+        setTransientRetry(null);
         showToast("That chat is no longer available.");
       }
     })();
-  }, [rememberThread]);
+  }, [rememberThread, showTransientRetry]);
 
   const markAllNotificationsRead = useCallback(async () => {
-    setState(await window.maximoDesktop.markAllNotificationsRead());
-  }, []);
+    setState(await withSmallRetry(() => window.maximoDesktop.markAllNotificationsRead()));
+  }, [withSmallRetry]);
 
   const selectProject = useCallback(async (projectId: string) => {
-    setState(await window.maximoDesktop.selectProject(projectId));
+    setState(await withSmallRetry(() => window.maximoDesktop.selectProject(projectId)));
     setActiveSurface("chat");
     setSidebarOpen(false);
-  }, []);
+  }, [withSmallRetry]);
   const navigateSurface = useCallback((surface: WorkspaceSurface) => {
     setActiveSurface(surface);
     setSidebarOpen(false);
@@ -5870,8 +5896,8 @@ export default function App() {
     }
   }, []);
   const markThreadRead = useCallback(async (threadId: string) => {
-    setState(await window.maximoDesktop.markThreadRead(threadId));
-  }, []);
+    setState(await withSmallRetry(() => window.maximoDesktop.markThreadRead(threadId)));
+  }, [withSmallRetry]);
 
   const requestDockPane = useCallback((kind: WorkspacePaneKind, filePath?: string, url?: string) => {
     setInspectorVisible(true);
@@ -5896,14 +5922,14 @@ export default function App() {
     if (!currentProject) return null;
     if (sideChatThreadId && state?.threads.some((thread) => thread.id === sideChatThreadId)) return sideChatThreadId;
     const hostThreadId = currentThread?.id;
-    const created = await window.maximoDesktop.createThread(currentProject.id);
+    const created = await withSmallRetry(() => window.maximoDesktop.createThread(currentProject.id));
     const createdId = created.selectedThreadId;
     if (!createdId) return null;
-    const restored = hostThreadId ? await window.maximoDesktop.selectThread(hostThreadId) : created;
+    const restored = hostThreadId ? await withSmallRetry(() => window.maximoDesktop.selectThread(hostThreadId)) : created;
     setState(restored);
     setSideChatThreadId(createdId);
     return createdId;
-  }, [currentProject, currentThread?.id, sideChatThreadId, state?.threads]);
+  }, [currentProject, currentThread?.id, sideChatThreadId, state?.threads, withSmallRetry]);
 
   const createSideChat = useCallback(() => { void ensureSideChat(); }, [ensureSideChat]);
 
@@ -5912,33 +5938,33 @@ export default function App() {
     if (!threadId || !state) return;
     const sideThread = state.threads.find((thread) => thread.id === threadId);
     if (sideThread?.status === "running") return;
-    const result = await window.maximoDesktop.startRun({
+    const result = await withSmallRetry(() => window.maximoDesktop.startRun({
       threadId,
       prompt,
       attachments: [],
       model: sideThread?.model ?? state.settings.defaultModel,
       effort: sideThread?.effort ?? state.settings.defaultEffort,
       permission: sideThread?.permission ?? state.settings.defaultPermission,
-    });
+    }));
     if (result.state) setState(result.state);
     if (!result.accepted) showToast(result.error ?? "Unable to start the side chat.");
-  }, [ensureSideChat, state]);
+  }, [ensureSideChat, state, withSmallRetry]);
 
   const goBack = useCallback(async () => {
     const nextIndex = navigation.index - 1;
     const threadId = navigation.ids[nextIndex];
     if (!threadId) return;
     setNavigation((current) => current.index === navigation.index ? { ...current, index: nextIndex } : current);
-    try { setState(await window.maximoDesktop.selectThread(threadId)); setSidebarOpen(false); } catch { showToast("That chat is no longer available."); }
-  }, [navigation]);
+    try { setState(await withSmallRetry(() => window.maximoDesktop.selectThread(threadId))); setSidebarOpen(false); } catch { showToast("That chat is no longer available."); }
+  }, [navigation, withSmallRetry]);
 
   const goForward = useCallback(async () => {
     const nextIndex = navigation.index + 1;
     const threadId = navigation.ids[nextIndex];
     if (!threadId) return;
     setNavigation((current) => current.index === navigation.index ? { ...current, index: nextIndex } : current);
-    try { setState(await window.maximoDesktop.selectThread(threadId)); setSidebarOpen(false); } catch { showToast("That chat is no longer available."); }
-  }, [navigation]);
+    try { setState(await withSmallRetry(() => window.maximoDesktop.selectThread(threadId))); setSidebarOpen(false); } catch { showToast("That chat is no longer available."); }
+  }, [navigation, withSmallRetry]);
 
   const openDiff = useCallback(async (path: string, knownDiff?: GitDiff) => {
     // Use refs so the callback never goes stale when the user clicks a file
@@ -6069,8 +6095,8 @@ export default function App() {
 
   useEffect(() => {
     if (!currentProject) { setGit(null); return; }
-    setGit(null); void window.maximoDesktop.gitStatus(currentProject.id).then(setGit);
-  }, [currentProject?.id]);
+    setGit(null); void retryWithBackoff(() => window.maximoDesktop.gitStatus(currentProject.id), { retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((v) => { setTransientRetry(null); setGit(v); }).catch(() => setTransientRetry(null));
+  }, [currentProject?.id, showTransientRetry]);
 
   useEffect(() => {
     setReviewFile(null);
@@ -6201,8 +6227,10 @@ export default function App() {
   const refreshAccount = async () => {
     setAccountBusy(true);
     try {
-      setAccount(await window.maximoDesktop.accountStatus());
+      setAccount(await withSmallRetry(() => window.maximoDesktop.accountStatus()));
       setAccountLoaded(true);
+    } catch (e) {
+      showToast(getRetryMessage(e) || "Unable to refresh account.");
     } finally {
       setAccountBusy(false);
     }
@@ -6210,7 +6238,7 @@ export default function App() {
   const openAccount = () => { setAccountOpen(true); void refreshAccount(); };
   const refreshUsage = async () => {
     setUsageBusy(true);
-    try { setUsage(await window.maximoDesktop.accountUsage()); } finally { setUsageBusy(false); }
+    try { setUsage(await withSmallRetry(() => window.maximoDesktop.accountUsage())); } catch (e) { showToast(getRetryMessage(e) || "Unable to refresh usage."); } finally { setUsageBusy(false); }
   };
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -6243,7 +6271,7 @@ export default function App() {
       if (command === "chat.newTerminal") {
         const projectId = state?.selectedProjectId;
         if (!projectId) return;
-        void window.maximoDesktop.createThread(projectId).then((next) => { setState(next); rememberThread(next.selectedThreadId); setActiveSurface("chat"); requestDockPane("terminal"); });
+        void withSmallRetry(() => window.maximoDesktop.createThread(projectId)).then((next) => { setState(next); rememberThread(next.selectedThreadId); setActiveSurface("chat"); requestDockPane("terminal"); }).catch((e) => showToast(getRetryMessage(e) || "Unable to create chat."));
         return;
       }
       if (command === "chat.split") { requestDockPane("sidechat"); return; }
@@ -6264,7 +6292,7 @@ export default function App() {
       if (command.startsWith("space.jump.")) {
         const index = Number(command.split(".").at(-1)) - 1;
         const spaceId = index === 0 ? null : state?.spaces[index - 1]?.id ?? null;
-        void window.maximoDesktop.selectSpace(spaceId).then(setState);
+        void withSmallRetry(() => window.maximoDesktop.selectSpace(spaceId)).then(setState).catch((e) => showToast(getRetryMessage(e)));
         return;
       }
       if (command === "space.previous" || command === "space.next") {
@@ -6272,7 +6300,7 @@ export default function App() {
         const current = spaces.indexOf(state?.selectedSpaceId ?? null);
         const offset = command === "space.next" ? 1 : -1;
         const next = spaces[(current + offset + spaces.length) % spaces.length] ?? null;
-        void window.maximoDesktop.selectSpace(next).then(setState);
+        void withSmallRetry(() => window.maximoDesktop.selectSpace(next)).then(setState).catch((e) => showToast(getRetryMessage(e)));
         return;
       }
       if (command.startsWith("thread.jump.")) {
@@ -6288,9 +6316,9 @@ export default function App() {
   const resetProviderState = async () => {
     invalidateProviderState();
     try {
-      setState(await window.maximoDesktop.resetProviderSelections());
-    } catch {
-      showToast("Provider settings could not be reset locally.");
+      setState(await withSmallRetry(() => window.maximoDesktop.resetProviderSelections()));
+    } catch (e) {
+      showToast(getRetryMessage(e) || "Provider settings could not be reset locally.");
     }
   };
   const loginAccount = async (method: LoginMethod, apiKey?: string, openCodePlan?: OpenCodePlan): Promise<boolean> => {
@@ -6298,8 +6326,8 @@ export default function App() {
     setAccountBusy(true);
     try {
       await resetProviderState();
-      if (account?.loggedIn) await window.maximoDesktop.accountLogout();
-      const result = await window.maximoDesktop.accountLogin(method, apiKey, openCodePlan);
+      if (account?.loggedIn) await withSmallRetry(() => window.maximoDesktop.accountLogout());
+      const result = await withSmallRetry(() => window.maximoDesktop.accountLogin(method, apiKey, openCodePlan));
       setAccount(result.status); setUsage(null); showToast(result.message);
       if (result.ok) {
         await refreshEngineModels(true);
@@ -6322,7 +6350,7 @@ export default function App() {
     setAccountBusy(true);
     try {
       await resetProviderState();
-      const result = await window.maximoDesktop.accountLogout();
+      const result = await withSmallRetry(() => window.maximoDesktop.accountLogout());
       setAccount(result.status);
       showToast(result.message);
     } finally { setAccountBusy(false); }
