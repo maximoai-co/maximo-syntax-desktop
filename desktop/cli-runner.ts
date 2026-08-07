@@ -1379,6 +1379,23 @@ export class CliRunner {
       })();
     };
     const queuedFollowUps: Array<{ prompt: string; attachments: Attachment[]; uuid?: string }> = [];
+    // Live text deltas are coalesced into bounded snapshots so the renderer is
+    // not flooded with a markdown re-parse per raw token chunk. Deltas append
+    // into turn.streamedText immediately (state stays exact); the renderer
+    // receives full-so-far text at most every TEXT_FLUSH_INTERVAL_MS.
+    let textFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingTextFlush: { text: string; at: number } | null = null;
+    const TEXT_FLUSH_INTERVAL_MS = 120;
+    const flushPendingText = () => {
+      if (textFlushTimer !== null) {
+        clearTimeout(textFlushTimer);
+        textFlushTimer = null;
+      }
+      const pending = pendingTextFlush;
+      pendingTextFlush = null;
+      if (!pending || turn.completed) return;
+      callbacks.onEvent({ type: "text", threadId: request.threadId, text: pending.text, mode: "replace", timestamp: pending.at });
+    };
     const flushQueued = (betweenToolRounds: boolean) => {
       if (betweenToolRounds) {
         while (queuedFollowUps.length > 0 && !child.stdin?.destroyed) {
@@ -1401,6 +1418,12 @@ export class CliRunner {
       beginTurn(next.prompt, next.attachments, next.uuid);
     };
     const beginTurn = (prompt: string, attachments: Attachment[], uuid?: string) => {
+      // Drop any pending coalesced text snapshot — a new turn resets the text.
+      if (pendingTextFlush) pendingTextFlush = null;
+      if (textFlushTimer !== null) {
+        clearTimeout(textFlushTimer);
+        textFlushTimer = null;
+      }
       turn = { startedAt: Date.now(), streamedText: "", finalResult: "", resultWasError: false, activity: [], timeline: [], agents: new Map(), fileSnapshots: new Map(), fileSnapshotBytes: 0, toolSnapshots: new Map(), completed: false };
       stderrBuffer = "";
       child.__pendingPrompt = true;
@@ -1467,7 +1490,17 @@ export class CliRunner {
           const last = turn.timeline.at(-1);
           if (last?.type === "text") last.text = update.textMode === "append" ? last.text + update.text : update.text;
           else appendBounded(turn.timeline, { type: "text", text: update.text, timestamp: at }, MAX_RUN_TIMELINE_ITEMS);
-          callbacks.onEvent({ type: "text", threadId: request.threadId, text: update.text, mode: update.textMode, timestamp: at });
+          // Coalesce live text deltas: buffer and emit a full-so-far snapshot at
+          // most every TEXT_FLUSH_INTERVAL_MS. turn.streamedText above is always
+          // exact, so the final result is unaffected — only the renderer's
+          // per-flush work (markdown re-parse, timeline diff) is reduced.
+          pendingTextFlush = { text: turn.streamedText, at };
+          if (textFlushTimer === null) {
+            textFlushTimer = setTimeout(() => {
+              textFlushTimer = null;
+              flushPendingText();
+            }, TEXT_FLUSH_INTERVAL_MS);
+          }
         }
         const parsedActivities = [
           ...(update.activity ? [{ activity: update.activity, detail: update.detail, data: update.data, todos: update.todos, toolUseId: update.toolUseId, toolName: update.toolName }] : []),
@@ -1670,6 +1703,9 @@ export class CliRunner {
         }
         if (update.toolResults?.length) flushQueued(true);
         if (update.result !== undefined) {
+          // Flush any pending live text before the final result so the renderer
+          // shows the last chunk of streamed text before the turn completes.
+          flushPendingText();
           turn.finalResult = update.result;
           if (update.isError) turn.resultWasError = true;
           const status: ThreadStatus = stopped ? "cancelled" : turn.resultWasError ? "error" : "complete";
@@ -1702,6 +1738,7 @@ export class CliRunner {
     child.on("error", (error) => {
       turn.resultWasError = true;
       turn.finalResult = error.message;
+      flushPendingText();
       callbacks.onEvent({ type: "log", threadId: request.threadId, level: "error", text: error.message, timestamp: timestamp() });
     });
 
@@ -1709,6 +1746,9 @@ export class CliRunner {
       child.__pendingPrompt = false;
       const pending = buffer.trim();
       if (pending) handleLine(pending);
+      // Drain any pending coalesced text snapshot so the final streamed text is
+      // not lost if the child exits without a final `result` message.
+      flushPendingText();
       if (stderrBuffer.trim()) callbacks.onEvent({ type: "log", threadId: request.threadId, level: "warning", text: stderrBuffer.trim().slice(0, 2_000), timestamp: timestamp() });
       const status: ThreadStatus = stopped ? "cancelled" : code === 0 && !turn.resultWasError ? "complete" : "error";
       void finishTurn(status, code, true).finally(() => {
@@ -1720,6 +1760,15 @@ export class CliRunner {
     });
 
     Object.defineProperty(child, "__markStopped", { value: () => { stopped = true; } });
+    // Clear any pending coalesced text timer when the child is torn down so the
+    // timer does not fire after the run ended.
+    child.once("exit", () => {
+      if (textFlushTimer !== null) {
+        clearTimeout(textFlushTimer);
+        textFlushTimer = null;
+      }
+      pendingTextFlush = null;
+    });
     return child.pid ?? -1;
   }
 

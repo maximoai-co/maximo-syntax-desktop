@@ -57,7 +57,7 @@ describe("StateStore", () => {
       percentage: 10,
       model: "kilo/test-model",
     });
-    await store.recordContextUsage(threadId, {
+    await store.flushContextUsage(threadId, {
       categories: [{ name: "Current context", tokens: 140 }],
       totalTokens: 140,
       totalProcessedTokens: 140,
@@ -90,7 +90,7 @@ describe("StateStore", () => {
     const threadId = state.selectedThreadId!;
     await store.beginRun(threadId, "Use the current provider", [], "old-model", "high", "auto");
     await store.finishRun(threadId, "Done", "complete", "old-session");
-    await store.recordContextUsage(threadId, {
+    await store.flushContextUsage(threadId, {
       categories: [{ name: "Current context", tokens: 1 }],
       totalTokens: 1,
       maxTokens: 100,
@@ -170,7 +170,20 @@ describe("StateStore", () => {
     const project = store.snapshot().projects[0]!;
     const state = await store.createThread(project.id);
     const threadId = state.selectedThreadId!;
+    // Usage is persisted throttled during a run; the final reading is flushed
+    // when the run finishes. Exercise both paths here.
     await store.recordContextUsage(threadId, {
+      categories: [{ name: "Current context", tokens: 2_500 }],
+      totalTokens: 2_500,
+      maxTokens: 100_000,
+      rawMaxTokens: 100_000,
+      percentage: 3,
+      model: "maximo-atlas",
+    });
+    // The throttled call is in-memory only (fresh store's throttle window not
+    // elapsed on first call).
+    expect(store.getThread(threadId)?.contextUsage).toBeUndefined();
+    await store.flushContextUsage(threadId, {
       categories: [{ name: "Current context", tokens: 2_500 }],
       totalTokens: 2_500,
       maxTokens: 100_000,

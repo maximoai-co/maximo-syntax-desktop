@@ -2,7 +2,7 @@ import { Component, memo, startTransition, useCallback, useDeferredValue, useEff
 import { createPortal } from "react-dom";
 import {
   Activity as ActivityIcon, AlertCircle, Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
-  File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, LogOut, Menu, SquarePen,
+  File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, Image, LogOut, Menu, SquarePen,
   GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
   Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Undo2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, X, Zap,
 } from "lucide-react";
@@ -1414,6 +1414,7 @@ function activityTitle(item: RunActivity): string {
   if (path && /edit|notebook|patch/.test(tool)) return `Edited ${shortPath(path)}`;
   if (path && tool === "read") return `Read ${shortPath(path)}`;
   if (tool === "bash") return "Ran command";
+  if (/image|img/.test(tool)) return "Generated image";
   if (/grep|glob|search/.test(tool)) return "Searched project";
   if (tool === "askuserquestion") return "Asked user";
   return activityVerb(item.label);
@@ -1425,6 +1426,7 @@ function ToolIcon({ toolName, label, size = 12 }: { toolName?: string; label?: s
 
   if (/ask.?user|question|elicitation/.test(tool)) return <CircleHelp {...iconProps} />;
   if (/mcp|plugin|connector/.test(tool)) return <Plug {...iconProps} />;
+  if (/image|img/.test(tool)) return <Image {...iconProps} />;
   if (/web.?search|web.?fetch|web.?browser|browser|url/.test(tool)) return <Globe2 {...iconProps} />;
   if (/grep|glob|search|find|tool.?search/.test(tool)) return <FileSearch {...iconProps} />;
   if (/write/.test(tool)) return <FilePlus2 {...iconProps} />;
@@ -3492,9 +3494,16 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   }, [editingMessageId, expandedUserMessagesById, git, latestEditableUserMessageId, models, onEditResend, onOpenFile, onPreviewAttachment, onRevert, onTogglePin, project, revertableUserMessageIds, skillNames, displayThread, timestampFormat, waiting]);
   // Live timeline is derived from streaming state; avoid re-sorting on every text char by memoizing.
   // Streaming only appends, so a simple length+last-timestamp key is sufficient for memo stability.
+  // The live text entry is memoized by reference so WorkDisclosure/WorkTimeline/
+  // MarkdownContent only re-render when the text actually changed — not on
+  // unrelated live updates (activity, status).
+  const liveTextEntry = useMemo(() => {
+    if (!streamingEnabled || !live?.text) return undefined;
+    return { type: "text" as const, text: live.text, timestamp: Date.now() };
+  }, [streamingEnabled, live?.text]);
   const liveTimeline = useMemo(() => {
     if (!streamingEnabled) return [] as RunTimelineItem[];
-    const base = live?.timeline ?? (live?.text ? [{ type: "text" as const, text: live.text, timestamp: Date.now() }] : []);
+    const base = live?.timeline ?? (liveTextEntry ? [liveTextEntry] : []);
     const follow = streamingFollowUps.map(followUpContextItem);
     if (base.length === 0 && follow.length === 0) return [] as RunTimelineItem[];
     // Merge is already sorted per timestamp; streaming appends are monotonic, so we can avoid full sort
@@ -3505,7 +3514,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
       merged.sort((a, b) => a.timestamp - b.timestamp);
     }
     return merged;
-  }, [live?.timeline, live?.text, streamingFollowUps, streamingEnabled]);
+  }, [live?.timeline, liveTextEntry, streamingFollowUps, streamingEnabled]);
   const hiddenMessageCount = Math.max(0, renderedMessages.length - visibleMessageCount);
   const displayedMessages = useMemo(() => hiddenMessageCount > 0 ? renderedMessages.slice(-visibleMessageCount) : renderedMessages, [renderedMessages, hiddenMessageCount, visibleMessageCount]);
   // Use displayThread for empty state so stale stays consistent with deferred lines above.

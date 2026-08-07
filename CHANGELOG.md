@@ -4,6 +4,11 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-08-08
+
+- Upgraded the bundled CLI engine to **v0.1.29**, which adds the **ImageGeneration** tool: Maximo can now generate images through the connected backend (Maximo AI → `/v1/api/image-generation`, MyTabulon → `/v1/image-generation`) and show the result inline.
+- Added an Image icon and "Generated image" activity label for image generation tool activity in the timeline.
+
 ## [0.1.8] - 2026-08-06
 
 - Fixed mid-turn model/effort changes: when the user switches model or effort while a warm session is still running, the desktop now restarts the session with `--resume` at the transcript anchor so the new flags take effect instead of reusing the stale live process; follow-up injections ride the same turn and intentionally do not restart.

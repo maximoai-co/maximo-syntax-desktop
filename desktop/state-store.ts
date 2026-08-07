@@ -187,11 +187,14 @@ function normalizeState(input: unknown, fallback: AppState): AppState {
   };
 }
 
+const USAGE_PERSIST_INTERVAL_MS = 2_000;
+
 export class StateStore {
   private readonly statePath: string;
   private state: AppState;
   private updateQueue: Promise<void> = Promise.resolve();
   private writeQueue: Promise<void> = Promise.resolve();
+  private lastUsagePersistAt: number | null = null;
 
   constructor(dataDirectory: string, initialState: AppState) {
     this.statePath = join(dataDirectory, "state.json");
@@ -242,6 +245,42 @@ export class StateStore {
   }
 
   async recordContextUsage(threadId: string, contextUsage: ContextUsage): Promise<AppState> {
+    // Usage telemetry streams at high frequency (per API message_delta during a
+    // run). Persisting a full state snapshot + disk write on every event stalls
+    // the shared write queue (which backs thread switching, message edits, etc.)
+    // and thrashes the main process. The renderer already receives usage live
+    // via run events, so persist throttled: at most every 2s, plus a final
+    // write when the run completes.
+    const now = Date.now();
+    if (this.lastUsagePersistAt === null) this.lastUsagePersistAt = now;
+    if (now - this.lastUsagePersistAt >= USAGE_PERSIST_INTERVAL_MS) {
+      this.lastUsagePersistAt = now;
+      return this.update((draft) => {
+        const thread = draft.threads.find((candidate) => candidate.id === threadId);
+        if (!thread) return;
+        thread.contextUsage = contextUsage;
+
+        const currentTokens = contextUsage.totalProcessedTokens
+          ?? (contextUsage.apiUsage
+            ? contextUsage.apiUsage.input_tokens + contextUsage.apiUsage.output_tokens + contextUsage.apiUsage.cache_creation_input_tokens + contextUsage.apiUsage.cache_read_input_tokens
+            : contextUsage.totalTokens);
+        const previousTokens = draft.profile.threadTokenTotals[threadId] ?? 0;
+        const delta = currentTokens >= previousTokens ? currentTokens - previousTokens : currentTokens;
+        draft.profile.threadTokenTotals[threadId] = Math.max(0, currentTokens);
+        if (delta <= 0) return;
+        const day = new Date().toISOString().slice(0, 10);
+        const model = contextUsage.model.trim() || thread.model?.trim() || "CLI default";
+        draft.profile.totalTokens += delta;
+        draft.profile.dailyTokens[day] = (draft.profile.dailyTokens[day] ?? 0) + delta;
+        draft.profile.modelTokens[model] = (draft.profile.modelTokens[model] ?? 0) + delta;
+      });
+    }
+    return this.snapshot();
+  }
+
+  /** Force a final usage persistence (e.g. when a run completes). */
+  async flushContextUsage(threadId: string, contextUsage: ContextUsage): Promise<AppState> {
+    this.lastUsagePersistAt = Date.now();
     return this.update((draft) => {
       const thread = draft.threads.find((candidate) => candidate.id === threadId);
       if (!thread) return;

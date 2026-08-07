@@ -33,7 +33,7 @@ import {
 } from "./whats-new.js";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
 import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
-import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
+import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, ContextUsage, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 
 let mainWindow: BrowserWindow | null = null;
 let store: StateStore;
@@ -52,6 +52,13 @@ const pendingRunEvents: RunEvent[] = [];
 // the old process with stale flags.
 const runningModel = new Map<string, { model: string; effort: string }>();
 let runEventFlushTimer: ReturnType<typeof setTimeout> | null = null;
+// Latest context usage per thread so the final reading can be persisted when a
+// run finishes (usage persistence is throttled during streaming).
+const latestRunContextByThread = new Map<string, ContextUsage>();
+
+function latestRunContext(threadId: string): ContextUsage | undefined {
+  return latestRunContextByThread.get(threadId);
+}
 
 // Local staging ceiling; the CLI applies its format-specific API limits when
 // it dereferences the @-mentioned path.
@@ -211,6 +218,10 @@ function flushRunEvents(): void {
 }
 
 function sendRunEvent(event: RunEvent): void {
+  // Keep the latest context per thread so the final reading can be persisted
+  // when the run finishes (usage persistence is throttled during streaming).
+  if (event.type === "context") latestRunContextByThread.set(event.threadId, event.context);
+  if (event.type === "finished") latestRunContextByThread.delete(event.threadId);
   const immediate = event.type === "started"
     || event.type === "question"
     || event.type === "permission"
@@ -933,7 +944,13 @@ function registerIpc(): void {
         onEvent: (event: RunEvent) => {
           sendRunEvent(event);
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);
-          if (event.type === "finished") runningModel.delete(threadId);
+          if (event.type === "finished") {
+            runningModel.delete(threadId);
+            // Persist the final usage reading so the throttled path above does
+            // not drop the last (largest) token totals when the run ends.
+            const context = latestRunContext(threadId);
+            if (context) void store.flushContextUsage(threadId, context);
+          }
         },
         onComplete: async (result) => {
           await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
@@ -1010,7 +1027,11 @@ function registerIpc(): void {
           onEvent: (event: RunEvent) => {
             sendRunEvent(event);
             if (event.type === "context") void store.recordContextUsage(threadId, event.context);
-            if (event.type === "finished") runningModel.delete(threadId);
+            if (event.type === "finished") {
+              runningModel.delete(threadId);
+              const context = latestRunContext(threadId);
+              if (context) void store.flushContextUsage(threadId, context);
+            }
           },
           onComplete: async (result) => {
             await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
@@ -1130,7 +1151,11 @@ function registerIpc(): void {
         onEvent: (event: RunEvent) => {
           sendRunEvent(event);
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);
-          if (event.type === "finished") runningModel.delete(threadId);
+          if (event.type === "finished") {
+            runningModel.delete(threadId);
+            const context = latestRunContext(threadId);
+            if (context) void store.flushContextUsage(threadId, context);
+          }
         },
         onComplete: async (result) => {
           await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
