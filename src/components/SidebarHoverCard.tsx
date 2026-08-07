@@ -12,6 +12,7 @@ import modelMistralUrl from "../assets/model-mistral.svg";
 import modelMetaUrl from "../assets/model-meta.svg";
 import modelPerplexityUrl from "../assets/model-perplexity.svg";
 import modelOllamaUrl from "../assets/model-ollama.svg";
+import { modelProvider } from "../utils/modelProvider.js";
 
 export interface SidebarHoverCardProps {
   kind: "project" | "thread";
@@ -59,10 +60,8 @@ function CardRow({ children, className = "" }: { children: ReactNode; className?
 
 /** Compact model logo for the hover card's model row (shared glyph with the main chat surfaces). */
 function ModelLogo({ model }: { model?: string }) {
-  const raw = (model ?? "").trim().toLowerCase();
-  const brand: "maximo" | "openai" | "openai-codex" | "claude" | "grok" | "google" | "deepseek" | "mistral" | "meta" | "perplexity" | "ollama" | "unknown" =
-    !raw || raw === "default" || raw === "cli default" || raw === "default (recommended)" ? "maximo" : /^maximo-/.test(raw) || /(^|[\s-_])maximo/.test(raw) || /^(maximo)$/.test(raw) ? "maximo" : /^gpt-?|^o[0-9](-|$)|chatgpt/.test(raw) || /(^|[\s-_])gpt-?[0-9]/.test(raw) ? "openai" : /codex/.test(raw) ? "openai-codex" : /^claude|^anthropic/.test(raw) || /(^|[\s-_])claude/.test(raw) || /(^|[\s-_])anthropic/.test(raw) ? "claude" : /^gemini|^google/.test(raw) || /(^|[\s-_])gemini/.test(raw) ? "google" : /^grok|^xai/.test(raw) || /(^|[\s-_])grok/.test(raw) ? "grok" : /^deepseek/.test(raw) || /(^|[\s-_])deepseek/.test(raw) ? "deepseek" : /^(mistral|mixtral|codestral)/.test(raw) || /(^|[\s-_])mistral/.test(raw) ? "mistral" : /^(llama|meta|muse)/.test(raw) || /(^|[\s-_])llama/.test(raw) || /(^|[\s-_])meta/.test(raw) || /(^|[\s-_])muse/.test(raw) ? "meta" : /^perplexity|^pplx/.test(raw) || /(^|[\s-_])perplexity/.test(raw) ? "perplexity" : /^ollama/.test(raw) || /(^|[\s-_])ollama/.test(raw) ? "ollama" : "unknown";
-  const src = brand === "maximo" ? modelLogoUrl : brand === "openai" ? modelOpenAiUrl : brand === "openai-codex" ? modelOpenAiCodexUrl : brand === "claude" ? modelClaudeUrl : brand === "grok" ? modelGrokUrl : brand === "google" ? modelGoogleUrl : brand === "deepseek" ? modelDeepSeekUrl : brand === "mistral" ? modelMistralUrl : brand === "meta" ? modelMetaUrl : brand === "perplexity" ? modelPerplexityUrl : brand === "ollama" ? modelOllamaUrl : undefined;
+  const brand = modelProvider(model);
+  const src = brand === "maximo" ? modelLogoUrl : brand === "openai" ? modelOpenAiUrl : brand === "openai-codex" ? modelOpenAiCodexUrl : brand === "claude" || brand === "anthropic" ? modelClaudeUrl : brand === "grok" ? modelGrokUrl : brand === "google" ? modelGoogleUrl : brand === "deepseek" ? modelDeepSeekUrl : brand === "mistral" ? modelMistralUrl : brand === "meta" ? modelMetaUrl : brand === "perplexity" ? modelPerplexityUrl : brand === "ollama" ? modelOllamaUrl : undefined;
   if (!src) return <Bot size={13} />;
   const isMaximo = brand === "maximo";
   return (

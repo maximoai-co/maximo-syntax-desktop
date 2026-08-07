@@ -545,6 +545,10 @@ export interface UsageSnapshot {
   planName?: string;
   concurrency?: number | null;
   balance?: number;
+  walletBalance?: number;
+  totalSpent?: number;
+  totalDeposited?: number;
+  currency?: string;
   limits: UsageLimit[];
   message?: string;
   fetchedAt: number;

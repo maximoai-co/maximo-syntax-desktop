@@ -2696,6 +2696,26 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .usage-limit > small { color: var(--faint); font-size: 8px; }
 .usage-details > p { margin: 0; color: var(--muted); font-size: 9px; }
 .usage-details > p.error { color: var(--danger); }
+.usage-billing { display: grid; gap: 8px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--surface-solid) 72%, var(--bg-soft)); }
+:root:has(.theme-dark) .usage-billing, .theme-dark .usage-billing { background: color-mix(in srgb, var(--bg-soft) 72%, var(--surface-solid)); }
+.usage-billing > strong { color: var(--text-strong); font-size: 10px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+.usage-billing-grid { display: grid; gap: 6px; }
+.usage-billing-grid > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--muted); }
+.usage-billing-grid > div strong { color: var(--text-strong); font-size: 11px; font-weight: 700; }
+.usage-billing-actions { display: flex; gap: 8px; margin-top: 2px; }
+.usage-billing-actions button { flex: 1; height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-solid); color: var(--text-strong); font-size: 11px; font-weight: 600; cursor: pointer; }
+.usage-billing-actions button:first-child { background: var(--accent); color: #fff; border-color: transparent; }
+.usage-billing-actions button:hover { filter: brightness(1.05); }
+.settings-billing { display: grid; gap: 8px; margin-top: 10px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--surface-solid) 72%, var(--bg-soft)); }
+:root:has(.theme-dark) .settings-billing, .theme-dark .settings-billing { background: color-mix(in srgb, var(--bg-soft) 72%, var(--surface-solid)); }
+.settings-billing > strong { color: var(--text-strong); font-size: 10px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+.settings-billing-grid { display: grid; gap: 6px; }
+.settings-billing-grid > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--muted); }
+.settings-billing-grid > div strong { color: var(--text-strong); font-size: 11px; font-weight: 700; }
+.settings-billing-actions { display: flex; gap: 8px; margin-top: 2px; }
+.settings-billing-actions button { flex: 1; height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-solid); color: var(--text-strong); font-size: 11px; font-weight: 600; cursor: pointer; }
+.settings-billing-actions button:first-child { background: var(--accent); color: #fff; border-color: transparent; }
+.settings-billing-actions button:hover { filter: brightness(1.05); }
 .account-hub-actions { display: grid; gap: 8px; margin-top: 2px; }
 .account-hub-actions .signin-submit { width: 100%; justify-content: center; min-height: 38px; font-size: 12px; }
 .hub-logout {

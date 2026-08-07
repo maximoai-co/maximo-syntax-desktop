@@ -55,6 +55,10 @@ import { TransientRetryNotice, type TransientRetryState } from "./components/Tra
 type LiveRun = { text: string; activity: RunActivity[]; timeline: RunTimelineItem[]; logs: Array<{ level: string; text: string; timestamp: number }> };
 type WorkspaceSurface = "chat" | "activity" | "kanban" | "pull-requests";
 
+// Stable empty reference for memoized components that default to `[]` — a fresh
+// [] each render would defeat shallow compare on every streaming flush.
+const EMPTY_QUEUED_FOLLOW_UPS: QueuedFollowUp[] = [];
+
 const MAX_LIVE_ACTIVITY_ITEMS = 500;
 const MAX_LIVE_TIMELINE_ITEMS = 800;
 const MAX_LIVE_LOG_ITEMS = 200;
@@ -389,6 +393,23 @@ function compactModelDescription(model: EngineModel): string | undefined {
 function formatUsagePercentage(utilization: number | null): string {
   if (utilization === null || !Number.isFinite(utilization)) return "—";
   return `${Math.round(Math.max(0, Math.min(100, utilization)))}% used`;
+}
+
+const MAXIMO_CREDITS_URL = "https://maximoai.co/platform/credits";
+const MAXIMO_SUBSCRIBE_URL = "https://maximoai.co/subscribe";
+
+function formatBillingAmount(value: number | undefined, currency: string | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  const fixed = value.toFixed(2);
+  const amount = `$${fixed}`;
+  return currency ? `${amount} ${currency}` : amount;
+}
+
+function isUsageLowBalance(usage: UsageSnapshot | null | undefined): boolean {
+  if (!usage || usage.provider !== "maximoai") return false;
+  const balance = usage.walletBalance ?? usage.balance;
+  if (typeof balance !== "number" || !Number.isFinite(balance)) return false;
+  return balance < 5;
 }
 
 function isNotificationDay(timestamp: number, offset: number): boolean {
@@ -3137,7 +3158,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   // at 60fps. React's useDeferredValue keeps the previous value visible while
   // the new value renders at lower priority — mirrors Synara's deferredChatMount.
   const deferredThread = useDeferredValue(thread);
-  const isStale = Boolean(deferredThread && deferredThread.id !== thread.id);
+  const isStale = Boolean(deferredThread?.id && deferredThread.id !== thread.id);
   // Per-thread UI state preservation: which user messages were expanded, so
   // hopping between threads doesn't collapse what the user opened.
   // Synara keeps expandedWorkGroups per thread; we keep a lighter version.
@@ -3158,13 +3179,13 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   // is not blocked by a 500-message history. Synara caps visible live entries at
   // 64 and virtualizes via LegendList; we progressively reveal here.
   useEffect(() => {
-    if (isStale) return;
+    if (isStale || !deferredThread) return;
     if (deferredThread.messages.length <= 40) return;
     const id = window.requestAnimationFrame(() => {
       startTransition(() => setVisibleMessageCount(80));
     });
     return () => window.cancelAnimationFrame(id);
-  }, [isStale, deferredThread.messages.length]);
+  }, [isStale, deferredThread?.messages.length]);
   useEffect(() => {
     if (previousThreadIdRef.current !== thread.id) {
       previousThreadIdRef.current = thread.id;
@@ -3268,17 +3289,17 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   // and resent (matches Synara's resolveLatestTailUserMessageEditTarget).
   const latestEditableUserMessageId = useMemo(() => {
     let latest: string | null = null;
-    const src = isStale ? deferredThread.messages : thread.messages;
+    const src = isStale && deferredThread ? deferredThread.messages : thread.messages;
     for (const message of src) {
       if (message.role === "user" && message.kind !== "follow-up") latest = message.id;
     }
     return latest;
-  }, [thread.messages, deferredThread.messages, isStale]);
+  }, [thread.messages, deferredThread?.messages, isStale]);
   // A user message is "revertable" when it is followed by at least one
   // assistant turn (there is something to discard by reverting to it).
   const revertableUserMessageIds = useMemo(() => {
     const ids = new Set<string>();
-    const src = isStale ? deferredThread.messages : thread.messages;
+    const src = isStale && deferredThread ? deferredThread.messages : thread.messages;
     for (let index = 0; index < src.length; index += 1) {
       const message = src[index];
       if (message?.role !== "user" || message.kind === "follow-up") continue;
@@ -3293,7 +3314,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
       }
     }
     return ids;
-  }, [thread.messages, deferredThread.messages, isStale]);
+  }, [thread.messages, deferredThread?.messages, isStale]);
   // Leave edit mode if the target message disappears (e.g. after a revert).
   useEffect(() => {
     if (editingMessageId && !thread.messages.some((message) => message.id === editingMessageId)) {
@@ -3304,7 +3325,8 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   // the incoming large transcript can be built at idle priority without blanking.
   // This mirrors Synara's deferredChatMount + LegendList virtualization: the
   // previous pane stays painted at 60fps while the new one hydrates.
-  const displayThread = isStale ? deferredThread : thread;
+  // Guard: deferredThread can be undefined on first mount — fall back to thread.
+  const displayThread = isStale && deferredThread ? deferredThread : thread;
   const { renderedMessages, streamingInteractions, streamingFollowUps } = useMemo(() => {
     const renderedMessages: ReactNode[] = [];
     const followUpsByAssistant = new Map<string, ChatMessage[]>();
@@ -3559,7 +3581,7 @@ function FullAccessConfirm({ onCancel, onConfirm }: { onCancel: () => void; onCo
   );
 }
 
-function Composer({ thread, project, git, live, settings, models, modelOptions, slashCommands, skillCommands = [], discoveredSkills = [], contextUsage, contextLoading = false, onRefreshContext, onSend, onStop, onOpenProject, onAccountUsage, onSettingsChanged, onGitChanged, onPreviewAttachment, pendingQuestion, pendingPermission, onSubmitAnswers, onSkipQuestion, onApprovePermission, onDenyPermission, queuedFollowUps = [], onRemoveQueuedFollowUp, onEditQueuedFollowUp, draft, onDraftChange }: {
+const Composer = memo(function Composer({ thread, project, git, live, settings, models, modelOptions, slashCommands, skillCommands = [], discoveredSkills = [], contextUsage, contextLoading = false, onRefreshContext, onSend, onStop, onOpenProject, onAccountUsage, onSettingsChanged, onGitChanged, onPreviewAttachment, pendingQuestion, pendingPermission, onSubmitAnswers, onSkipQuestion, onApprovePermission, onDenyPermission, queuedFollowUps = [], onRemoveQueuedFollowUp, onEditQueuedFollowUp, draft, onDraftChange }: {
   thread: Thread; project?: Project; git: GitStatus | null; live?: LiveRun; settings: AppState["settings"]; models: EngineModel[]; modelOptions: SelectOption<string>[]; slashCommands: SlashCommand[]; skillCommands?: SlashCommand[]; discoveredSkills?: SlashCommand[];
   contextUsage: ContextUsage | null; contextLoading?: boolean; onRefreshContext: () => Promise<void>;
   onSend: (prompt: string, attachments: Attachment[], model: string, effort: string, permission: PermissionMode, contextWindow?: number) => Promise<void>;
@@ -3571,8 +3593,8 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
   onApprovePermission: (remember: boolean) => void;
   onDenyPermission: () => void;
   queuedFollowUps?: QueuedFollowUp[];
-  onRemoveQueuedFollowUp?: (id: string) => void;
-  onEditQueuedFollowUp?: (item: QueuedFollowUp) => void;
+  onRemoveQueuedFollowUp?: (threadId: string, id: string) => void;
+  onEditQueuedFollowUp?: (threadId: string, item: QueuedFollowUp) => void;
   draft?: { prompt: string; attachments: Attachment[]; pastedTexts: PastedTextDraft[]; model: string; effort: string; permission: PermissionMode };
   onDraftChange?: (threadId: string, patch: Partial<{ prompt: string; attachments: Attachment[]; pastedTexts: PastedTextDraft[]; model: string; effort: string; permission: PermissionMode }>) => void;
 }) {
@@ -3836,7 +3858,7 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
     setModel(item.model);
     setEffort(item.effort);
     setPermission(item.permission);
-    onEditQueuedFollowUp?.(item);
+    onEditQueuedFollowUp?.(thread.id, item);
     requestAnimationFrame(() => {
       const editor = editorRef.current;
       if (editor) {
@@ -4129,7 +4151,7 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
               <p className="followup-chip-text" title={item.prompt}>{item.prompt}</p>
               {item.attachments.length > 0 && <span className="followup-chip-meta">{item.attachments.length}</span>}
               <button type="button" className="followup-chip-btn" title="Edit" onClick={() => applyQueuedEdit(item)}><FilePenLine size={12} /></button>
-              <button type="button" className="followup-chip-btn" title="Remove" onClick={() => onRemoveQueuedFollowUp?.(item.id)}><X size={12} /></button>
+              <button type="button" className="followup-chip-btn" title="Remove" onClick={() => onRemoveQueuedFollowUp?.(thread.id, item.id)}><X size={12} /></button>
             </div>
           ))}
         </div>
@@ -4207,7 +4229,34 @@ function Composer({ thread, project, git, live, settings, models, modelOptions, 
       {!waitingForResponse && <div className="composer-hint">{running ? "Added context is sent before the next tool or turn" : settings.sendWithEnter ? "Press Enter to send · press Shift+Enter for a new line" : `Press Enter for a new line · press ${sendShortcutLabel} to send`}</div>}
     </div>
   );
-}
+});
+
+// The composer holds the user's typing state; it must not re-render on every
+// streaming flush. During a stream the only props that change per flush are
+// `live` (feeds the LiveWorkStatus pill above the input) and inline callbacks
+// re-created by App's render — so we compare only the data props, which are
+// all reference-stable while a thread streams. The moment anything real
+// changes (thread switch, queued follow-up, permission/answer modal, draft
+// sync, settings) a compared prop changes identity and the composer re-renders
+// with fresh callbacks, so ignoring callback identity is safe: the callbacks
+// only matter when a compared prop already changed.
+const MemoizedComposer = memo(Composer, (prev, next) =>
+  prev.thread === next.thread &&
+  prev.project === next.project &&
+  prev.git === next.git &&
+  prev.settings === next.settings &&
+  prev.models === next.models &&
+  prev.modelOptions === next.modelOptions &&
+  prev.slashCommands === next.slashCommands &&
+  prev.skillCommands === next.skillCommands &&
+  prev.discoveredSkills === next.discoveredSkills &&
+  prev.contextUsage === next.contextUsage &&
+  prev.contextLoading === next.contextLoading &&
+  prev.pendingQuestion === next.pendingQuestion &&
+  prev.pendingPermission === next.pendingPermission &&
+  prev.queuedFollowUps === next.queuedFollowUps &&
+  prev.draft === next.draft
+);
 
 function Inspector({ project, thread, live, git, reviewFile, reviewDiff, onRefresh, onReveal, onEditor, onFileClick, onCloseReview, onResize }: {
   project?: Project; thread?: Thread; live?: LiveRun; git: GitStatus | null; reviewFile?: string | null; reviewDiff: GitDiff | null;
@@ -4318,7 +4367,7 @@ function SettingsModal({ state, engine, models, modelOptions, account, usage, ap
            </div>}
           {section === "appearance" && <div className="settings-panel-stack"><section className="settings-card"><h2>Theme</h2><p>Use your system appearance or keep Maximo Syntax in one mode.</p><div className="theme-choice-grid">{(["system", "light", "dark"] as ThemeMode[]).map((theme) => <button type="button" className={values.theme === theme ? "active" : ""} onClick={() => setValues({ ...values, theme })} key={theme}><span className={`theme-mini-preview ${theme}`}><i /><i /><i /></span><strong>{theme === "system" ? "System" : theme === "light" ? "Light" : "Dark"}</strong>{values.theme === theme && <Check size={13} />}</button>)}</div></section><section className="settings-card"><h2>Interface</h2><div className="settings-row"><span><strong>Typography</strong><small>Space Grotesk headings with Manrope throughout the interface.</small></span><span className="setting-value">Maximo default</span></div><div className="settings-row"><span><strong>Motion</strong><small>Automatically follows the operating system’s reduced-motion preference.</small></span><span className="setting-value">System</span></div></section></div>}
            {section === "defaults" && <div className="settings-panel-stack"><section className="settings-card"><h2>New chats</h2><div className="settings-row"><span><strong>Model</strong><small>Loaded from your active provider account.</small></span><CustomSelect value={values.defaultModel} options={modelOptions} onChange={(defaultModel) => setValues({ ...values, defaultModel, defaultEffort: "" })} ariaLabel="Default model" className="settings-select" /></div>{selectedModel?.supportsEffort && <div className="settings-row"><span><strong>Reasoning effort</strong><small>Used for new chats with the selected model.</small></span><CustomSelect value={values.defaultEffort} options={effortOptionsFor(selectedModel)} onChange={(defaultEffort) => setValues({ ...values, defaultEffort })} ariaLabel="Default reasoning effort" className="settings-select" /></div>}<div className="settings-row"><span><strong>Permissions</strong><small>Choose the default approval behavior for new chats.</small></span><CustomSelect value={values.defaultPermission} options={permissionOptions} onChange={(defaultPermission) => setValues({ ...values, defaultPermission })} ariaLabel="Default permissions" className="settings-select" /></div></section></div>}
-          {section === "account" && <div className="settings-panel-stack"><section className="settings-card"><h2>Signed in account</h2><div className="settings-account-row"><span className={`account-state ${account?.loggedIn ? "online" : ""}`}><UserRound size={16} /></span><span><strong>{account?.email || account?.displayName || "Not signed in"}</strong><small>{accountDetailText(account)}</small></span><button type="button" onClick={onAccount}>Manage account</button></div></section><section className="settings-card"><h2>Usage & billing</h2><div className="settings-row"><span><strong>{usage?.planName || "Current plan usage"}</strong><small>{usage ? usage.message || `${usage.limits.length} live usage limit${usage.limits.length === 1 ? "" : "s"}` : "View limits and reset times without leaving the app."}</small></span><button type="button" className="settings-action" onClick={onUsage}>{usage ? "Refresh usage" : "View usage"}</button></div>{usage?.limits.map((limit) => <div className="settings-usage-row" key={limit.id}><span>{limit.label}</span><div><i style={{ width: `${limit.utilization ?? 0}%` }} /></div><strong>{limit.utilization === null ? "—" : `${Math.round(limit.utilization)}%`}</strong></div>)}</section></div>}
+          {section === "account" && <div className="settings-panel-stack"><section className="settings-card"><h2>Signed in account</h2><div className="settings-account-row"><span className={`account-state ${account?.loggedIn ? "online" : ""}`}><UserRound size={16} /></span><span><strong>{account?.email || account?.displayName || "Not signed in"}</strong><small>{accountDetailText(account)}</small></span><button type="button" onClick={onAccount}>Manage account</button></div></section><section className="settings-card"><h2>Usage & billing</h2><div className="settings-row"><span><strong>{usage?.planName || "Current plan usage"}</strong><small>{usage ? usage.message || `${usage.limits.length} live usage limit${usage.limits.length === 1 ? "" : "s"}` : "View limits and reset times without leaving the app."}</small></span><button type="button" className="settings-action" onClick={onUsage}>{usage ? "Refresh usage" : "View usage"}</button></div>{usage?.limits.map((limit) => <div className="settings-usage-row" key={limit.id}><span>{limit.label}</span><div><i style={{ width: `${limit.utilization ?? 0}%` }} /></div><strong>{limit.utilization === null ? "—" : `${Math.round(limit.utilization)}%`}</strong></div>)}{usage?.provider === "maximoai" && (usage.walletBalance !== undefined || usage.totalSpent !== undefined || usage.totalDeposited !== undefined || usage.balance !== undefined) && <div className="settings-billing"><strong>Billing</strong><div className="settings-billing-grid"><div><span>Billing Wallet Balance:</span><strong>{formatBillingAmount(usage.walletBalance ?? usage.balance, usage.currency)}</strong></div><div><span>Total Spent:</span><strong>{formatBillingAmount(usage.totalSpent, usage.currency)}</strong></div><div><span>Total Deposited:</span><strong>{formatBillingAmount(usage.totalDeposited, usage.currency)}</strong></div></div>{isUsageLowBalance(usage) && <div className="settings-billing-actions"><button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_CREDITS_URL)}>Top up</button><button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_SUBSCRIBE_URL)}>Upgrade</button></div>}</div>}</section></div>}
            {section === "engine" && <div className="settings-panel-stack"><section className="settings-card"><h2>Maximo Syntax CLI</h2><div className="engine-settings"><div><span className={`engine-dot ${engine?.phase ?? "checking"}`} /><p><strong>{engine?.available ? `Ready · ${engine.version}` : "Needs attention"}</strong><small>{engine?.message}{engine?.available && engine?.latestVersion ? (engine?.version === engine?.latestVersion ? " Up to date with the latest CLI." : ` Latest available: ${engine.latestVersion}.`) : ""}</small></p></div><button type="button" onClick={() => void onRepair()}><RefreshCw size={13} />Repair / update</button></div><label className="settings-engine-path"><span><strong>Custom CLI path</strong><small>Optional. The securely bundled CLI is used automatically.</small></span><input value={values.cliPath} onChange={(event) => setValues({ ...values, cliPath: event.target.value })} placeholder="/path/to/maximo-syntax-cli" /></label></section></div>}
         </div>
         <footer className="settings-page-footer"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button compact" type="submit">Save changes</button></footer>
@@ -4855,7 +4904,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
 
     if (activeSection === "skills") return <div className="settings-panel-stack"><section className="settings-card"><h2>Discovered skills</h2><div className="settings-row"><span><strong>Local skill catalog</strong><small>Skills are read from user and project skill folders and remain available in the slash menu.</small></span><div className="settings-row-actions"><span className="setting-value">{allSkills.length} found</span><button type="button" className="settings-action" onClick={onRefreshSkills}><RefreshCw size={12} />Refresh</button></div></div>{allSkills.length > 0 ? <div className="settings-skill-list">{allSkills.map((skill) => <div className="settings-skill-row" key={skill.name}><span className="settings-skill-icon"><Sparkles size={13} /></span><span><strong>{skill.name}</strong><small>{skill.description || "Reusable workflow available from the composer."}</small></span></div>)}</div> : <div className="settings-empty-state">No skills found yet. Add a SKILL.md folder to a supported local skill directory.</div>}</section></div>;
 
-    if (activeSection === "account") return <div className="settings-panel-stack"><section className="settings-card"><h2>Signed in account</h2><div className="settings-account-row"><span className={`account-state ${account?.loggedIn ? "online" : ""}`}><UserRound size={16} /></span><span><strong>{account?.email || account?.displayName || "Not signed in"}</strong><small>{accountDetailText(account)}</small></span><button type="button" onClick={onAccount}>Manage account</button></div></section><section className="settings-card"><h2>Usage and billing</h2><div className="settings-row"><span><strong>{usage?.planName || "Current plan usage"}</strong><small>{usage ? usage.message || `${usage.limits.length} live usage limit${usage.limits.length === 1 ? "" : "s"}` : "View limits and reset times without leaving the app."}</small></span><button type="button" className="settings-action" onClick={onUsage}>{usage ? "Refresh usage" : "View usage"}</button></div>{usage?.limits.map((limit) => <div className="settings-usage-row" key={limit.id}><span>{limit.label}</span><div><i style={{ width: `${limit.utilization ?? 0}%` }} /></div><strong>{limit.utilization === null ? "-" : `${Math.round(limit.utilization)}%`}</strong></div>)}</section></div>;
+    if (activeSection === "account") return <div className="settings-panel-stack"><section className="settings-card"><h2>Signed in account</h2><div className="settings-account-row"><span className={`account-state ${account?.loggedIn ? "online" : ""}`}><UserRound size={16} /></span><span><strong>{account?.email || account?.displayName || "Not signed in"}</strong><small>{accountDetailText(account)}</small></span><button type="button" onClick={onAccount}>Manage account</button></div></section><section className="settings-card"><h2>Usage and billing</h2><div className="settings-row"><span><strong>{usage?.planName || "Current plan usage"}</strong><small>{usage ? usage.message || `${usage.limits.length} live usage limit${usage.limits.length === 1 ? "" : "s"}` : "View limits and reset times without leaving the app."}</small></span><button type="button" className="settings-action" onClick={onUsage}>{usage ? "Refresh usage" : "View usage"}</button></div>{usage?.limits.map((limit) => <div className="settings-usage-row" key={limit.id}><span>{limit.label}</span><div><i style={{ width: `${limit.utilization ?? 0}%` }} /></div><strong>{limit.utilization === null ? "-" : `${Math.round(limit.utilization)}%`}</strong></div>)}{usage?.provider === "maximoai" && (usage.walletBalance !== undefined || usage.totalSpent !== undefined || usage.totalDeposited !== undefined || usage.balance !== undefined) && <div className="settings-billing"><strong>Billing</strong><div className="settings-billing-grid"><div><span>Billing Wallet Balance:</span><strong>{formatBillingAmount(usage.walletBalance ?? usage.balance, usage.currency)}</strong></div><div><span>Total Spent:</span><strong>{formatBillingAmount(usage.totalSpent, usage.currency)}</strong></div><div><span>Total Deposited:</span><strong>{formatBillingAmount(usage.totalDeposited, usage.currency)}</strong></div></div>{isUsageLowBalance(usage) && <div className="settings-billing-actions"><button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_CREDITS_URL)}>Top up</button><button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_SUBSCRIBE_URL)}>Upgrade</button></div>}</div>}</section></div>;
 
     if (activeSection === "integrations") return <div className="settings-panel-stack"><section className="settings-card"><h2>Built-in workspace tools</h2><div className="settings-integration-row"><Globe2 size={15} /><span><strong>Browser</strong><small>Open web pages, search, and capture links inside a chat workspace.</small></span><span className="setting-value">Available</span></div><div className="settings-integration-row"><TerminalSquare size={15} /><span><strong>Terminal</strong><small>Run commands in the selected project with a managed PTY session.</small></span><span className="setting-value">Available</span></div><div className="settings-integration-row"><GitBranch size={15} /><span><strong>Git</strong><small>Review changes, stage files, commit, push, and inspect branches.</small></span><span className="setting-value">Available</span></div><div className="settings-integration-row"><Code2 size={15} /><span><strong>External editor</strong><small>Open project files through the system editor integration.</small></span><span className="setting-value">Available</span></div></section><section className="settings-card"><h2>Local-first access</h2><div className="settings-row"><span><strong>Permission model</strong><small>Tool access remains controlled by each chat's approval mode and Full Access confirmation.</small></span><span className="setting-value">Per chat</span></div><div className="settings-row"><span><strong>Credentials</strong><small>Provider credentials stay in the Maximo Syntax CLI's secure local auth storage.</small></span><span className="setting-value">On device</span></div></section></div>;
 
@@ -5011,6 +5060,22 @@ function AccountModal({ account, usage, usageBusy, busy, onClose, onRefresh, onL
               <div className="usage-meter"><i style={{ width: `${item.utilization ?? 0}%` }} /></div>
               {item.resetsAt && <small>Resets {new Date(item.resetsAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</small>}
             </div>)}
+            {usage.provider === "maximoai" && (usage.walletBalance !== undefined || usage.totalSpent !== undefined || usage.totalDeposited !== undefined || usage.balance !== undefined) && (
+              <div className="usage-billing">
+                <strong>Billing</strong>
+                <div className="usage-billing-grid">
+                  <div><span>Billing Wallet Balance:</span><strong>{formatBillingAmount(usage.walletBalance ?? usage.balance, usage.currency)}</strong></div>
+                  <div><span>Total Spent:</span><strong>{formatBillingAmount(usage.totalSpent, usage.currency)}</strong></div>
+                  <div><span>Total Deposited:</span><strong>{formatBillingAmount(usage.totalDeposited, usage.currency)}</strong></div>
+                </div>
+                {isUsageLowBalance(usage) && (
+                  <div className="usage-billing-actions">
+                    <button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_CREDITS_URL)}>Top up</button>
+                    <button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_SUBSCRIBE_URL)}>Upgrade</button>
+                  </div>
+                )}
+              </div>
+            )}
             {usage.message && <p className={usage.available ? "" : "error"}>{usage.message}</p>}
           </div>}
 
@@ -5236,6 +5301,11 @@ export default function App() {
   const [navigation, setNavigation] = useState<NavigationState>({ ids: [], index: -1 });
   const stateRef = useRef<AppState | null>(null);
   stateRef.current = state;
+  // Mirror of currentThread/liveSessions for stable callbacks (sendPrompt etc.)
+  // that must keep a constant reference across streaming renders.
+  const currentThreadRef = useRef<Thread | undefined>(undefined);
+  const liveSessionsRef = useRef<Set<string>>(new Set());
+  liveSessionsRef.current = liveSessions;
   // Monotonic id so out-of-order selectThread IPC replies never overwrite a
   // newer optimistic selection when the user is scrubbing quickly through the
   // sidebar. Mirrors Synara's navigation guards.
@@ -5256,6 +5326,13 @@ export default function App() {
   const [composerDrafts, setComposerDrafts] = useState<Record<string, { prompt: string; attachments: Attachment[]; pastedTexts: PastedTextDraft[]; model: string; effort: string; permission: PermissionMode }>>({});
   const composerDraftsRef = useRef(composerDrafts);
   composerDraftsRef.current = composerDrafts;
+  // Stable updater so <MemoizedComposer> sees a constant onDraftChange reference.
+  const updateComposerDraft = useCallback((threadId: string, patch: Partial<{ prompt: string; attachments: Attachment[]; pastedTexts: PastedTextDraft[]; model: string; effort: string; permission: PermissionMode }>) => {
+    setComposerDrafts((prev) => {
+      const base = prev[threadId] ?? { prompt: "", attachments: [], pastedTexts: [], model: "", effort: "", permission: "auto" as PermissionMode };
+      return { ...prev, [threadId]: { ...base, ...patch } };
+    });
+  }, []);
   // Session-only: prune drafts whose thread no longer exists to avoid leaks when
   // the user deletes threads while switching quickly.
   useEffect(() => {
@@ -5313,16 +5390,23 @@ export default function App() {
     setFollowUpQueues({});
   }, []);
   const currentThread = useMemo(() => state ? state.threads.find((thread) => thread.id === state.selectedThreadId) : undefined, [state?.threads, state?.selectedThreadId]);
+  currentThreadRef.current = currentThread;
   const currentProject = useMemo(() => state ? state.projects.find((project) => project.id === (currentThread?.projectId ?? state.selectedProjectId)) : undefined, [state?.projects, state?.selectedProjectId, currentThread?.projectId]);
   // Synara-style concurrent switch: keep the previous thread's DOM visible at 60fps while the
   // next thread's heavy transcript (markdown, code blocks, work timelines) renders at
   // lower priority. This replaces the old blank-frame flash when a large thread was
   // synchronously mounted. deferredThread lags behind currentThread during a transition;
   // isThreadSwitchStale lets us dim the outgoing pane instead of unmounting it.
+  // Fix for rapid scrubbing blank: useDeferredValue alone is sufficient — coupling it
+  // with isThreadSwitchPending caused the renderThread to flip between stale and
+  // current on every transition start, leaving a blank frame when React batched
+  // multiple `startTransition` calls. We now render deferredThread directly and
+  // derive staleness from object identity, so frequent switches never unmount the
+  // visible pane.
   const [isThreadSwitchPending, startThreadSwitch] = useTransition();
   const deferredThread = useDeferredValue(currentThread);
-  const renderThread: Thread | undefined = (isThreadSwitchPending ? deferredThread : currentThread) ?? currentThread;
-  const isThreadSwitchStale = isThreadSwitchPending && deferredThread?.id !== currentThread?.id;
+  const renderThread: Thread | undefined = deferredThread ?? currentThread;
+  const isThreadSwitchStale = Boolean(deferredThread && currentThread && deferredThread.id !== currentThread.id);
   const currentContextUsage = useMemo(() => {
     if (!currentThread) return null;
     return contextUsageByThread[currentThread.id]
@@ -5713,34 +5797,39 @@ export default function App() {
     // Synara uses startTransition + optimisticActiveThreadId + prewarm; we mirror
     // that here so the sidebar highlight moves instantly at 60fps while the heavy
     // transcript (markdown, code blocks, work timeline) streams in at idle priority.
+    // FIX: optimistic update is now synchronous (no transition) so the sidebar
+    // highlight is instant and `useDeferredValue` handles the heavy transcript.
+    // Multiple stacked `startTransition` calls previously left isThreadSwitchPending
+    // true and flipped `renderThread` between stale/current, producing a blank
+    // frame when the user scrubbed quickly.
     const seq = ++selectThreadSeqRef.current;
     const optimistic = stateRef.current;
     const target = optimistic?.threads.find((t) => t.id === threadId);
     if (target) {
-      // Urgent: optimistic id + surface switch so the UI never blanks.
-      // Use the transition hook's pending flag to keep the previous thread's DOM
-      // visible (via deferredThread) while React re-renders the large new thread.
-      startThreadSwitch(() => {
-        setState((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            selectedThreadId: threadId,
-            selectedProjectId: target.projectId,
-            selectedSpaceId: prev.projects.find((p) => p.id === target.projectId)?.spaceId ?? prev.selectedSpaceId,
-            threads: prev.threads.map((t) => t.id === threadId && t.unread ? { ...t, unread: false } : t),
-          };
-        });
+      // Urgent: synchronous optimistic update + deferred transcript (no blank).
+      setState((prev) => {
+        if (!prev) return prev;
+        // If a newer selection already landed while this closure was queued,
+        // don't overwrite it — the seq guard below handles the IPC reply, but
+        // the optimistic state must also respect ordering.
+        if (selectThreadSeqRef.current !== seq) return prev;
+        return {
+          ...prev,
+          selectedThreadId: threadId,
+          selectedProjectId: target.projectId,
+          selectedSpaceId: prev.projects.find((p) => p.id === target.projectId)?.spaceId ?? prev.selectedSpaceId,
+          threads: prev.threads.map((t) => t.id === threadId && t.unread ? { ...t, unread: false } : t),
+        };
       });
       rememberThread(threadId);
       setActiveSurface(surface);
       setSidebarOpen(false);
       // Persist selection in background without blocking UI; ignore if a newer
-      // selectThread has already been issued. Reconcile inside a transition so
-      // the authoritative reply doesn't jank a mid-transition paint.
+      // selectThread has already been issued. Reconcile directly — deferred
+      // value will keep the old pane visible until the new transcript is ready.
       void window.maximoDesktop.selectThread(threadId).then((next) => {
         if (seq !== selectThreadSeqRef.current) return;
-        startThreadSwitch(() => setState(next));
+        setState(next);
       }).catch(() => {
         if (seq !== selectThreadSeqRef.current) return;
         showToast("That chat is no longer available.");
@@ -5752,7 +5841,7 @@ export default function App() {
       try {
         const next = await window.maximoDesktop.selectThread(threadId);
         if (seq !== selectThreadSeqRef.current) return;
-        startThreadSwitch(() => setState(next));
+        setState(next);
         rememberThread(next.selectedThreadId ?? threadId);
         setActiveSurface(surface);
         setSidebarOpen(false);
@@ -5761,7 +5850,7 @@ export default function App() {
         showToast("That chat is no longer available.");
       }
     })();
-  }, [rememberThread, startThreadSwitch]);
+  }, [rememberThread]);
 
   const markAllNotificationsRead = useCallback(async () => {
     setState(await window.maximoDesktop.markAllNotificationsRead());
@@ -6286,9 +6375,12 @@ export default function App() {
   }, [refreshState]);
   flushQueuedFollowUpRef.current = flushQueuedFollowUp;
 
-  const sendPrompt = async (prompt: string, attachments: Attachment[], model: string, effort: string, permission: PermissionMode, contextWindow?: number) => {
-    if (!currentThread) return;
-    const midTurn = currentThread.status === "running";
+  // Stable reference so <Composer> (memoized) keeps its props constant across
+  // streaming flushes — sendPrompt only reads the live thread via refs below.
+  const sendPrompt = useCallback(async (prompt: string, attachments: Attachment[], model: string, effort: string, permission: PermissionMode, contextWindow?: number) => {
+    const thread = currentThreadRef.current;
+    if (!thread) return;
+    const midTurn = thread.status === "running";
     // Mid-turn: queue in the composer, then hand it to the CLI immediately.
     // The runner writes it at the next tool-result boundary so the Maximo
     // Syntax CLI can inject it into the current task before its next request.
@@ -6303,18 +6395,18 @@ export default function App() {
       };
       setFollowUpQueues((current) => ({
         ...current,
-        [currentThread.id]: [...(current[currentThread.id] ?? []), item],
+        [thread.id]: [...(current[thread.id] ?? []), item],
       }));
-      if (state?.settings.followUpBehavior === "steer") {
-        void flushQueuedFollowUpRef.current(currentThread.id, item);
+      if (stateRef.current?.settings.followUpBehavior === "steer") {
+        void flushQueuedFollowUpRef.current(thread.id, item);
       }
       return;
     }
-    const sessionAlive = liveSessions.has(currentThread.id);
+    const sessionAlive = liveSessionsRef.current.has(thread.id);
     try {
       const result = await retryWithBackoff(() => sessionAlive
-        ? window.maximoDesktop.sendToRun({ threadId: currentThread.id, prompt, attachments, model, effort, permission, contextWindow })
-        : window.maximoDesktop.startRun({ threadId: currentThread.id, prompt, attachments, model, effort, permission, contextWindow }), {
+        ? window.maximoDesktop.sendToRun({ threadId: thread.id, prompt, attachments, model, effort, permission, contextWindow })
+        : window.maximoDesktop.startRun({ threadId: thread.id, prompt, attachments, model, effort, permission, contextWindow }), {
         retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
       });
       setTransientRetry(null);
@@ -6325,14 +6417,14 @@ export default function App() {
       showToast(error instanceof Error ? error.message : "Unable to start the task.");
       await refreshState().catch(() => undefined);
     }
-  };
+  }, [refreshState]);
 
-  const editAndResendMessage = async (messageId: string, text: string) => {
-    const thread = currentThread;
+  const editAndResendMessage = useCallback(async (messageId: string, text: string) => {
+    const thread = currentThreadRef.current;
     if (!thread) return;
-    const model = thread.model ?? state?.settings.defaultModel ?? "";
-    const effort = thread.effort ?? state?.settings.defaultEffort ?? "";
-    const permission = thread.permission ?? state?.settings.defaultPermission ?? "auto";
+    const model = thread.model ?? stateRef.current?.settings.defaultModel ?? "";
+    const effort = thread.effort ?? stateRef.current?.settings.defaultEffort ?? "";
+    const permission = thread.permission ?? stateRef.current?.settings.defaultPermission ?? "auto";
     const result = await window.maximoDesktop.editAndResendMessage({
       threadId: thread.id,
       prompt: text,
@@ -6345,10 +6437,10 @@ export default function App() {
     if (result.state) setState(result.state);
     if (!result.accepted) showToast(result.error ?? "Unable to edit and resend the message.");
     else showToast("Message edited and resent.");
-  };
+  }, [refreshState]);
 
-  const revertToMessage = async (messageId: string, revertFiles: boolean) => {
-    const thread = currentThread;
+  const revertToMessage = useCallback(async (messageId: string, revertFiles: boolean) => {
+    const thread = currentThreadRef.current;
     if (!thread) return;
     // Try the full revert (transcript + files) first; if the file checkpoint is
     // unavailable, fall back to transcript-only so the conversation can still
@@ -6375,18 +6467,18 @@ export default function App() {
     const restored = typeof result.restoredFiles === "number" ? result.restoredFiles : 0;
     if (revertFiles) showToast(`Reverted to this message · ${removed} message${removed === 1 ? "" : "s"} discarded, ${restored} file${restored === 1 ? "" : "s"} restored.`);
     else showToast(`Reverted to this message · ${removed} message${removed === 1 ? "" : "s"} discarded.`);
-  };
+  }, [refreshState]);
 
-  const removeQueuedFollowUp = (threadId: string, id: string) => {
+  const removeQueuedFollowUp = useCallback((threadId: string, id: string) => {
     setFollowUpQueues((current) => ({
       ...current,
       [threadId]: (current[threadId] ?? []).filter((item) => item.id !== id),
     }));
-  };
+  }, []);
 
-  const editQueuedFollowUp = (threadId: string, item: QueuedFollowUp) => {
+  const editQueuedFollowUp = useCallback((threadId: string, item: QueuedFollowUp) => {
     removeQueuedFollowUp(threadId, item.id);
-  };
+  }, [removeQueuedFollowUp]);
 
   const submitAnswers = async (answers: Record<string, string>) => {
     const target = pendingQuestion;
@@ -6543,13 +6635,13 @@ export default function App() {
              <button type="button" onClick={() => requestDockPane("git")} title="Open source control"><GitBranch size={14} /></button>
              <button type="button" onClick={() => requestDockPane("terminal")} title="Open terminal"><TerminalSquare size={14} /></button>
            </div>}
-           {!currentThread ? <EmptyWorkspace project={currentProject} onOpenProject={openProject} onNewThread={() => void newThread(currentProject?.id)} /> : <>
-                 <ThreadErrorBoundary key={`thread-${renderThread!.id}`} threadId={renderThread!.id}><MemoizedMessageView thread={renderThread!} project={currentProject} git={git} models={engineModels} live={liveRuns[renderThread!.id]} waiting={pendingQuestion?.threadId === renderThread!.id || pendingPermission?.threadId === renderThread!.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} onEditResend={(messageId, text) => void editAndResendMessage(messageId, text)} onRevert={(messageId, revertFiles) => void revertToMessage(messageId, revertFiles)} /></ThreadErrorBoundary>
-              <MessageTrail thread={renderThread!} onSelect={jumpToMessage} />
-             <Composer key={currentThread.id} thread={currentThread} project={currentProject} git={git} live={liveRuns[currentThread.id]} settings={state.settings} models={engineModels} modelOptions={modelOptions} slashCommands={slashCommands} skillCommands={skillCommands} discoveredSkills={discoveredSkills} contextUsage={currentContextUsage} contextLoading={Boolean(contextLoadingByThread[currentThread.id])} onRefreshContext={() => refreshContextUsage(currentThread.id)} onSend={sendPrompt} onPreviewAttachment={openAttachmentPreview} draft={composerDrafts[currentThread.id]} onDraftChange={(threadId, patch) => setComposerDrafts((prev) => {
-               const base = prev[threadId] ?? { prompt: "", attachments: [], pastedTexts: [], model: "", effort: "", permission: "auto" as PermissionMode };
-               return { ...prev, [threadId]: { ...base, ...patch } };
-             })}
+           {!currentThread ? <EmptyWorkspace project={currentProject} onOpenProject={openProject} onNewThread={() => void newThread(currentProject?.id)} /> : (() => {
+                const safeRenderThread = renderThread ?? currentThread;
+                if (!safeRenderThread) return <EmptyWorkspace project={currentProject} onOpenProject={openProject} onNewThread={() => void newThread(currentProject?.id)} />;
+                return <>
+                 <ThreadErrorBoundary key={`thread-${safeRenderThread.id}`} threadId={safeRenderThread.id}><MemoizedMessageView thread={safeRenderThread} project={currentProject} git={git} models={engineModels} live={liveRuns[safeRenderThread.id]} waiting={pendingQuestion?.threadId === safeRenderThread.id || pendingPermission?.threadId === safeRenderThread.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} onEditResend={editAndResendMessage} onRevert={revertToMessage} /></ThreadErrorBoundary>
+              <ThreadErrorBoundary key={`trail-${safeRenderThread.id}`} threadId={safeRenderThread.id}><MessageTrail thread={safeRenderThread} onSelect={jumpToMessage} /></ThreadErrorBoundary>
+             <ThreadErrorBoundary key={`composer-${currentThread.id}`} threadId={currentThread.id}><MemoizedComposer key={currentThread.id} thread={currentThread} project={currentProject} git={git} live={liveRuns[currentThread.id]} settings={state.settings} models={engineModels} modelOptions={modelOptions} slashCommands={slashCommands} skillCommands={skillCommands} discoveredSkills={discoveredSkills} contextUsage={currentContextUsage} contextLoading={Boolean(contextLoadingByThread[currentThread.id])} onRefreshContext={() => refreshContextUsage(currentThread.id)} onSend={sendPrompt} onPreviewAttachment={openAttachmentPreview} draft={composerDrafts[currentThread.id]} onDraftChange={updateComposerDraft}
               onStop={() => {
                 setFollowUpQueues((current) => {
                   if (!current[currentThread.id]?.length) return current;
@@ -6565,11 +6657,11 @@ export default function App() {
               pendingPermission={pendingPermission?.threadId === currentThread.id ? pendingPermission : undefined}
               onSubmitAnswers={(answers) => void submitAnswers(answers)} onSkipQuestion={() => void skipQuestion()}
               onApprovePermission={(remember) => void respondToPermission("approve", remember)} onDenyPermission={() => void respondToPermission("deny", false)}
-              queuedFollowUps={followUpQueues[currentThread.id] ?? []}
-              onRemoveQueuedFollowUp={(id) => removeQueuedFollowUp(currentThread.id, id)}
-              onEditQueuedFollowUp={(item) => editQueuedFollowUp(currentThread.id, item)}
-            />
-           </>}
+              queuedFollowUps={followUpQueues[currentThread.id] ?? EMPTY_QUEUED_FOLLOW_UPS}
+              onRemoveQueuedFollowUp={removeQueuedFollowUp}
+              onEditQueuedFollowUp={editQueuedFollowUp}
+            /></ThreadErrorBoundary>
+           </>; })()}
            </>}
         </main>
       </section>

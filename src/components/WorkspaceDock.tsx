@@ -1,4 +1,5 @@
 import {
+  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -214,7 +215,7 @@ function fileLanguage(path: string): string {
   return names[extension] ?? (extension ? extension.toUpperCase() : "Text");
 }
 
-function WorkspaceFileViewer({
+const WorkspaceFileViewer = memo(function WorkspaceFileViewer({
   project,
   filePath,
   onOpenEditor,
@@ -308,9 +309,9 @@ function WorkspaceFileViewer({
                 : <div className="workspace-source-scroll"><div className="workspace-source-code">{sourceLines}</div></div>}
     </div>
   );
-}
+});
 
-function WorkspaceExplorerPane({ project, onOpenFile, onOpenEditor, active = true }: { project: Project; onOpenFile: (path: string) => void; onOpenEditor: (path: string) => void; active?: boolean }) {
+const WorkspaceExplorerPane = memo(function WorkspaceExplorerPane({ project, onOpenFile, onOpenEditor, active = true }: { project: Project; onOpenFile: (path: string) => void; onOpenEditor: (path: string) => void; active?: boolean }) {
   const [query, setQuery] = useState("");
   const [entries, setEntries] = useState<Record<string, WorkspaceFileEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -416,7 +417,7 @@ function WorkspaceExplorerPane({ project, onOpenFile, onOpenEditor, active = tru
       </div>
     </div>
   );
-}
+});
 
 function ChangedFileRow({ file, onOpenDiff, onStage, onUnstage }: { file: GitFile; onOpenDiff: () => void; onStage?: () => void; onUnstage?: () => void }) {
   return (
@@ -427,7 +428,7 @@ function ChangedFileRow({ file, onOpenDiff, onStage, onUnstage }: { file: GitFil
   );
 }
 
-function WorkspaceGitPane({ project, git, onOpenDiff, onRefresh, onGitChanged, active = true }: { project: Project; git: GitStatus | null; onOpenDiff: (path: string) => void; onRefresh: () => void; onGitChanged: (status: GitStatus) => void; active?: boolean }) {
+const WorkspaceGitPane = memo(function WorkspaceGitPane({ project, git, onOpenDiff, onRefresh, onGitChanged, active = true }: { project: Project; git: GitStatus | null; onOpenDiff: (path: string) => void; onRefresh: () => void; onGitChanged: (status: GitStatus) => void; active?: boolean }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedDiff, setSelectedDiff] = useState<GitDiff | null>(null);
   const [message, setMessage] = useState("");
@@ -490,7 +491,7 @@ function WorkspaceGitPane({ project, git, onOpenDiff, onRefresh, onGitChanged, a
      <div className="workspace-git-diff">{selectedDiff ? <div className="workspace-selected-diff"><div className="workspace-selected-diff-header"><span>{selectedDiff.path}</span><span><b>+{patchStats(selectedDiff.patch).additions}</b> <i>-{patchStats(selectedDiff.patch).deletions}</i></span></div><DiffCode patch={selectedDiff.patch} language={diffLanguageForPath(selectedDiff.path)} showMetadata={false} /></div> : <div className="workspace-empty-state compact"><FileCode2 size={17} /><span>Select a file to view its diff.</span></div>}</div>
     </div>
   );
-}
+});
 
 interface ManagedTerminalView {
   session: TerminalSession;
@@ -582,7 +583,7 @@ function TerminalViewport({ session, active, terminalFontSizePx = 12, terminalFo
   return <div ref={mountRef} className={`workspace-terminal-viewport ${active ? "active" : "inactive"}`} onMouseDown={() => terminalRef.current?.focus()} aria-hidden={!active} />;
 }
 
-function WorkspaceTerminalPane({ project, paneActive = true, settings }: { project: Project; paneActive?: boolean; settings?: Pick<Settings, "terminalFontSizePx" | "terminalFontFamily" | "confirmTerminalTabClose"> }) {
+const WorkspaceTerminalPane = memo(function WorkspaceTerminalPane({ project, paneActive = true, settings }: { project: Project; paneActive?: boolean; settings?: Pick<Settings, "terminalFontSizePx" | "terminalFontFamily" | "confirmTerminalTabClose"> }) {
   const [sessions, setSessions] = useState<ManagedTerminalView[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -677,7 +678,7 @@ function WorkspaceTerminalPane({ project, paneActive = true, settings }: { proje
      <div className="workspace-terminal-surface">{sessions.map((item) => <TerminalViewport key={item.session.sessionId} session={item.session} active={item.session.sessionId === activeId} terminalFontSizePx={settings?.terminalFontSizePx} terminalFontFamily={settings?.terminalFontFamily} onInput={(value) => { if (item.session.sessionId !== "error") void window.maximoDesktop.terminalInput(item.session.sessionId, value); }} onResize={(columns, rows) => { if (item.session.sessionId !== "error") void window.maximoDesktop.terminalResize(item.session.sessionId, columns, rows); }} onReady={(terminal) => { if (terminal) { terminalsRef.current.set(item.session.sessionId, terminal); const buffered = outputBySessionRef.current[item.session.sessionId]; if (buffered) terminal.write(buffered); } else terminalsRef.current.delete(item.session.sessionId); }} />)}</div>
     <div className="workspace-terminal-input"><span className="workspace-terminal-prompt">›</span><input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void send(); } }} placeholder="Run a command…" spellCheck={false} autoCapitalize="off" autoCorrect="off" /><button type="button" onClick={() => void send()} disabled={!input || !active || active.session.sessionId === "error"} title="Send command"><Send size={14} /></button></div>
   </div>;
-}
+});
 
 function normalizeBrowserUrl(value: string): string {
   const trimmed = collapseDuplicateBrowserScheme(value);
@@ -697,7 +698,7 @@ function normalizeBrowserUrl(value: string): string {
   }
 }
 
-function WorkspaceBrowserPane({
+const WorkspaceBrowserPane = memo(function WorkspaceBrowserPane({
   initialUrl,
   threadId,
   paneActive = true,
@@ -871,9 +872,9 @@ function WorkspaceBrowserPane({
       </div>
     </div>
   );
-}
+});
 
-function WorkspaceSideChatPane({ sideChat, active = true }: { sideChat: WorkspaceSideChat; active?: boolean }) {
+const WorkspaceSideChatPane = memo(function WorkspaceSideChatPane({ sideChat, active = true }: { sideChat: WorkspaceSideChat; active?: boolean }) {
   const [prompt, setPrompt] = useState("");
   const messages = sideChat.thread?.messages.filter((message) => message.role !== "system") ?? [];
   const send = () => {
@@ -891,7 +892,7 @@ function WorkspaceSideChatPane({ sideChat, active = true }: { sideChat: Workspac
       </>}
     </div>
   );
-}
+});
 
 type DiffScope = "working-tree" | "unstaged" | "staged" | "branch" | "all-turns" | "last-turn";
 
@@ -920,7 +921,7 @@ function DiffScopeSelect({ value, onChange }: { value: DiffScope; onChange: (val
   </div>;
 }
 
-function WorkspaceDiffPane({ project, git, reviewFile, reviewDiff, onOpenDiff, onCloseReview, onOpenEditor, onOpenGit, defaultWrapped = false, active = true }: { project: Project; git: GitStatus | null; reviewFile?: string | null; reviewDiff: GitDiff | null; onOpenDiff: (path: string) => void; onCloseReview: () => void; onOpenEditor: (path: string) => void; onOpenGit: () => void; defaultWrapped?: boolean; active?: boolean }) {
+const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, git, reviewFile, reviewDiff, onOpenDiff, onCloseReview, onOpenEditor, onOpenGit, defaultWrapped = false, active = true }: { project: Project; git: GitStatus | null; reviewFile?: string | null; reviewDiff: GitDiff | null; onOpenDiff: (path: string) => void; onCloseReview: () => void; onOpenEditor: (path: string) => void; onOpenGit: () => void; defaultWrapped?: boolean; active?: boolean }) {
   const [scope, setScope] = useState<DiffScope>("working-tree");
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"stacked" | "split">("stacked");
@@ -1081,13 +1082,13 @@ function WorkspaceDiffPane({ project, git, reviewFile, reviewDiff, onOpenDiff, o
     </div>
     {toast && <div className="diff-toast">{toast}</div>}
   </div>;
-}
+});
 
 function renderLauncherButton(kind: WorkspacePaneKind, label: string, onClick: () => void, disabled = false) {
   return <button key={kind} type="button" className="workspace-launcher-button" onClick={onClick} disabled={disabled}><PaneIcon kind={kind} size={16} /><span>{label}</span><ChevronRight size={13} /></button>;
 }
 
-export default function WorkspaceDock(props: WorkspaceDockProps) {
+function WorkspaceDockUnmemoized(props: WorkspaceDockProps) {
   const storageKey = dockStorageKey(props.project, props.thread);
   const [dock, setDock] = useState<DockState>(() => readDockState(storageKey));
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1193,4 +1194,25 @@ export default function WorkspaceDock(props: WorkspaceDockProps) {
   );
 }
 
+// The dock chrome (tabs, launcher, pane shells) must not re-render on every
+// streaming flush. Only the panes that actually display live content subscribe
+// to it, so we memoize the dock shell and treat high-frequency streaming props
+// (activity, sideChat.liveText) as non-render-affecting here. The panes receive
+// fresh activity/sideChat when the shell itself re-renders for real changes
+// (thread switch, git change, dock open/close).
+const WorkspaceDock = memo(WorkspaceDockUnmemoized, (prev, next) =>
+  prev.open === next.open &&
+  prev.suspendNativeSurfaces === next.suspendNativeSurfaces &&
+  prev.project === next.project &&
+  prev.thread === next.thread &&
+  prev.state === next.state &&
+  prev.git === next.git &&
+  prev.reviewFile === next.reviewFile &&
+  prev.reviewDiff === next.reviewDiff &&
+  prev.request === next.request &&
+  prev.sideChat?.thread === next.sideChat?.thread &&
+  prev.sideChat?.running === next.sideChat?.running
+);
+
+export default WorkspaceDock;
 export { PaneIcon, WorkspaceFileViewer, projectFilePath };

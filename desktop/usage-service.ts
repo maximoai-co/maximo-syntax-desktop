@@ -127,12 +127,69 @@ export async function fetchAccountUsage(): Promise<UsageSnapshot> {
     const codingPlan = data.coding_plan as JsonObject | undefined;
     const rawPlan = typeof data.plan === "string" ? data.plan : undefined;
     const fairUsage = data.fairUsageStatus as JsonObject | undefined;
+
+    // Billing details (wallet balance etc.) may be in the same envelope or require the dedicated detailed-usage endpoint.
+    // The CLI shows billing via /cli/usage/detailed-usage, and the desktop should mirror it so the Usage panel shows:
+    // Billing Wallet Balance / Total Spent / Total Deposited even when limits are zero.
+    let walletBalance: number | undefined = typeof data.walletBalance === "number" ? data.walletBalance : typeof (data as JsonObject).wallet_balance === "number" ? (data as JsonObject).wallet_balance as number : undefined;
+    let totalSpent: number | undefined = typeof data.totalSpent === "number" ? data.totalSpent : typeof (data as JsonObject).total_spent === "number" ? (data as JsonObject).total_spent as number : undefined;
+    let totalDeposited: number | undefined = typeof data.totalDeposited === "number" ? data.totalDeposited : typeof (data as JsonObject).total_deposited === "number" ? (data as JsonObject).total_deposited as number : undefined;
+    let currency: string | undefined = typeof data.currency === "string" ? data.currency as string : undefined;
+    // Also check nested billing object if present directly in the utilization payload.
+    const billingInline = (data.billing as JsonObject | undefined) ?? (data.wallet as JsonObject | undefined);
+    if (billingInline) {
+      if (walletBalance === undefined && typeof billingInline.walletBalance === "number") walletBalance = billingInline.walletBalance;
+      if (walletBalance === undefined && typeof (billingInline as JsonObject).wallet_balance === "number") walletBalance = (billingInline as JsonObject).wallet_balance as number;
+      if (totalSpent === undefined && typeof billingInline.totalSpent === "number") totalSpent = billingInline.totalSpent;
+      if (totalSpent === undefined && typeof (billingInline as JsonObject).total_spent === "number") totalSpent = (billingInline as JsonObject).total_spent as number;
+      if (totalDeposited === undefined && typeof billingInline.totalDeposited === "number") totalDeposited = billingInline.totalDeposited;
+      if (totalDeposited === undefined && typeof (billingInline as JsonObject).total_deposited === "number") totalDeposited = (billingInline as JsonObject).total_deposited as number;
+      if (!currency && typeof billingInline.currency === "string") currency = billingInline.currency as string;
+    }
+
+    // If billing still missing, try the dedicated detailed-usage endpoint (best-effort, non-fatal).
+    if (headers && (walletBalance === undefined || totalSpent === undefined || totalDeposited === undefined)) {
+      try {
+        const detailedEnvelope = await requestJson("https://api.maximoai.co/cli/usage/detailed-usage", headers);
+        const detailedData = detailedEnvelope.success === true && detailedEnvelope.data && typeof detailedEnvelope.data === "object" ? detailedEnvelope.data as JsonObject : detailedEnvelope;
+        const billing = (detailedData.billing as JsonObject | undefined) ?? (detailedData.wallet as JsonObject | undefined) ?? detailedData;
+        if (billing) {
+          if (walletBalance === undefined) {
+            const wb = typeof billing.walletBalance === "number" ? billing.walletBalance : typeof (billing as JsonObject).wallet_balance === "number" ? (billing as JsonObject).wallet_balance as number : undefined;
+            if (typeof wb === "number") walletBalance = wb;
+            else if (typeof detailedData.walletBalance === "number") walletBalance = detailedData.walletBalance as number;
+          }
+          if (totalSpent === undefined) {
+            const ts = typeof billing.totalSpent === "number" ? billing.totalSpent : typeof (billing as JsonObject).total_spent === "number" ? (billing as JsonObject).total_spent as number : undefined;
+            if (typeof ts === "number") totalSpent = ts;
+            else if (typeof detailedData.totalSpent === "number") totalSpent = detailedData.totalSpent as number;
+          }
+          if (totalDeposited === undefined) {
+            const td = typeof billing.totalDeposited === "number" ? billing.totalDeposited : typeof (billing as JsonObject).total_deposited === "number" ? (billing as JsonObject).total_deposited as number : undefined;
+            if (typeof td === "number") totalDeposited = td;
+            else if (typeof detailedData.totalDeposited === "number") totalDeposited = detailedData.totalDeposited as number;
+          }
+          if (!currency && typeof billing.currency === "string") currency = billing.currency as string;
+          else if (!currency && typeof detailedData.currency === "string") currency = detailedData.currency as string;
+        }
+      } catch {
+        // Billing is optional - ignore failures and return limits only.
+      }
+    }
+
+    // Currency fallback
+    if (!currency) currency = "USD";
+
     return {
       available: true,
       provider: "maximoai",
       planName: typeof codingPlan?.name === "string" ? codingPlan.name : rawPlan ? `Maximo AI ${rawPlan.charAt(0).toUpperCase()}${rawPlan.slice(1)}` : "Maximo AI plan",
       concurrency: typeof codingPlan?.concurrency === "number" ? codingPlan.concurrency : null,
-      balance: typeof data.balance === "number" ? data.balance : undefined,
+      balance: typeof data.balance === "number" ? data.balance : walletBalance,
+      walletBalance,
+      totalSpent,
+      totalDeposited,
+      currency,
       limits,
       message: typeof fairUsage?.message === "string" ? fairUsage.message : limits.length === 0 ? "Your plan is active. No rate-limit windows were reported." : undefined,
       fetchedAt: Date.now(),

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import {
   Check,
   ChevronDown,
@@ -113,7 +113,7 @@ function EnvironmentNotes({ thread, onUpdate }: { thread?: Thread; onUpdate: (no
   return <div className="workspace-environment-notes"><textarea value={value} onChange={(event) => setValue(event.target.value)} placeholder="Type here" maxLength={10_000} aria-label="Chat notes" /><small>{value.length.toLocaleString()} / 10,000</small></div>;
 }
 
-export default function WorkspaceEnvironment({ open, project, thread, git, activity, onJumpToMessage, onTogglePinDone, onRemovePin, onRenamePin, onToggleMarkerDone, onRemoveMarker, onRenameMarker, onUpdateNotes, onOpenDock, onOpenBrowser, onReveal, onOpenEditor, onRefresh, onSettings, onUsage, settings }: WorkspaceEnvironmentProps) {
+function WorkspaceEnvironmentUnmemoized({ open, project, thread, git, activity, onJumpToMessage, onTogglePinDone, onRemovePin, onRenamePin, onToggleMarkerDone, onRemoveMarker, onRenameMarker, onUpdateNotes, onOpenDock, onOpenBrowser, onReveal, onOpenEditor, onRefresh, onSettings, onUsage, settings }: WorkspaceEnvironmentProps) {
   const [localOpen, setLocalOpen] = useState(false);
   const [serversOpen, setServersOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -162,3 +162,17 @@ export default function WorkspaceEnvironment({ open, project, thread, git, activ
     <footer className="workspace-environment-footer"><button type="button" onClick={onRefresh}><RefreshCw size={12} />Refresh status</button><button type="button" onClick={() => onOpenDock("terminal")}><TerminalSquare size={12} />Terminal</button></footer>
   </aside>;
 }
+
+// The environment rail is chrome — it must not re-render on every streaming
+// flush. `activity` is the only high-frequency prop and only feeds the collapsible
+// Activity section, so it's excluded from the comparison; the section shows
+// fresh activity whenever the rail re-renders for real changes.
+const WorkspaceEnvironment = memo(WorkspaceEnvironmentUnmemoized, (prev, next) =>
+  prev.open === next.open &&
+  prev.project === next.project &&
+  prev.thread === next.thread &&
+  prev.git === next.git &&
+  prev.settings === next.settings
+);
+
+export default WorkspaceEnvironment;

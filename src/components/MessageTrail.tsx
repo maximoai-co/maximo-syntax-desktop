@@ -83,10 +83,18 @@ function MessageTrail({ thread, onSelect }: MessageTrailProps) {
       const scrollRect = scroll.getBoundingClientRect();
       const threshold = Math.min(180, scroll.clientHeight * 0.24);
       let next = 0;
-      items.forEach((item, index) => {
+      // Reverse scan with an early exit: the active trail tick is the LAST message
+      // whose top crossed the threshold, so walk from the bottom up and stop at
+      // the first hit. This avoids getBoundingClientRect on every message on every
+      // scroll frame while a long thread streams (layout thrash was freezing scroll).
+      for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index];
         const element = document.getElementById(`message-${item.id}`);
-        if (element && scroll.contains(element) && element.getBoundingClientRect().top - scrollRect.top <= threshold) next = index;
-      });
+        if (element && scroll.contains(element) && element.getBoundingClientRect().top - scrollRect.top <= threshold) {
+          next = index;
+          break;
+        }
+      }
       if (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 80) next = items.length - 1;
       setActiveIndex((current) => current === next ? current : next);
     };
