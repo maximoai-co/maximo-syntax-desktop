@@ -811,6 +811,7 @@ export type RunEvent =
   | { type: "permission"; threadId: string; requestId: string; toolUseId?: string; toolName: string; data: string; timestamp: number }
   | { type: "log"; threadId: string; level: "info" | "warning" | "error"; text: string; timestamp: number }
   | { type: "status"; threadId: string; status: string | null; timestamp: number }
+  | { type: "retrying"; threadId: string; attempt: number; max: number; delayMs: number; message: string; timestamp: number }
   | { type: "turn-started"; threadId: string; timestamp: number }
   | { type: "turn-complete"; threadId: string; status: ThreadStatus; timestamp: number }
   | { type: "finished"; threadId: string; status: ThreadStatus; exitCode: number | null; timestamp: number };

@@ -46,6 +46,11 @@ let isQuitting = false;
 const activeDesktopNotifications = new Set<ElectronNotification>();
 const runner = new CliRunner();
 const pendingRunEvents: RunEvent[] = [];
+// Tool/status events are presentation updates, not animation frames. Synara's
+// domain stream uses a 100 ms trailing flush; 80 ms keeps this UI feeling live
+// while preventing IPC/React churn during tool bursts. Approval and lifecycle
+// events still bypass the queue below.
+const RUN_EVENT_FLUSH_INTERVAL_MS = 80;
 // Tracks the model/effort that the live CLI process was started with.
 // Needed because thread.model diverges from process args when the user
 // changes model while a warm session is alive — send would otherwise reuse
@@ -223,8 +228,12 @@ function sendRunEvent(event: RunEvent): void {
   if (event.type === "context") latestRunContextByThread.set(event.threadId, event.context);
   if (event.type === "finished") latestRunContextByThread.delete(event.threadId);
   const immediate = event.type === "started"
+    // Text is already coalesced to 120 ms by CliRunner; do not put it through a
+    // second trailing timer or make the visible stream feel ~200 ms behind.
+    || event.type === "text"
     || event.type === "question"
     || event.type === "permission"
+    || event.type === "retrying"
     || event.type === "turn-complete"
     || event.type === "finished";
   if (immediate) {
@@ -233,7 +242,7 @@ function sendRunEvent(event: RunEvent): void {
     return;
   }
   pendingRunEvents.push(event);
-  if (runEventFlushTimer === null) runEventFlushTimer = setTimeout(flushRunEvents, 16);
+  if (runEventFlushTimer === null) runEventFlushTimer = setTimeout(flushRunEvents, RUN_EVENT_FLUSH_INTERVAL_MS);
 }
 
 function safeText(value: unknown, maxLength = 4_000): string {

@@ -256,6 +256,33 @@ describe("parseCliMessage", () => {
       .toMatchObject({ result: "No credentials", isError: true });
   });
 
+  it("surfaces provider retry notices without treating them as final failures", () => {
+    expect(parseCliMessage({
+      type: "system",
+      subtype: "api_retry",
+      session_id: "session-retry",
+      attempt: 2,
+      max_retries: 3,
+      retry_delay_ms: 1_600,
+      error_status: null,
+      error: "unknown",
+    })).toEqual({
+      sessionId: "session-retry",
+      retrying: { attempt: 2, max: 3, delayMs: 1_600, message: "Connection issue" },
+    });
+  });
+
+  it("summarizes retry errors from the older nested API error shape", () => {
+    expect(parseCliMessage({
+      type: "system",
+      subtype: "api_error",
+      retryAttempt: 1,
+      maxRetries: 3,
+      retryInMs: 800,
+      error: { status: 503, error: { type: "server_error", message: "Service unavailable" } },
+    }).retrying).toEqual({ attempt: 1, max: 3, delayMs: 800, message: "Service unavailable" });
+  });
+
   it("reads the CLI context usage control response", () => {
     const parsed = parseCliMessage({
       type: "control_response",
@@ -565,6 +592,56 @@ describe("unified patches", () => {
 });
 
 describe("CliRunner completion lifecycle", () => {
+  it("coalesces streamed append deltas without resending the full answer", async () => {
+    const runner = new CliRunner();
+    const textEvents: Array<{ text: string; mode: "append" | "replace" }> = [];
+    let resolveDone: (() => void) | undefined;
+    const done = new Promise<void>((resolve) => { resolveDone = resolve; });
+    const messages = [
+      { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hello" } }, session_id: "session-stream" },
+      { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: " world" } }, session_id: "session-stream" },
+      { type: "result", subtype: "success", result: "Hello world", is_error: false, session_id: "session-stream" },
+    ];
+    const script = `process.stdin.resume();process.stdin.on("end",()=>process.exit(0));for(const item of ${JSON.stringify(messages)})process.stdout.write(JSON.stringify(item)+"\\n");`;
+    runner.start({ source: "development", entryPath: "", command: process.execPath, argsPrefix: ["-e", script, "--"], environment: process.env }, {
+      threadId: "thread-stream", prompt: "test", attachments: [], model: "", effort: "", permission: "default",
+    }, process.cwd(), undefined, {
+      onEvent: (event) => {
+        if (event.type === "text") textEvents.push({ text: event.text, mode: event.mode });
+        if (event.type === "turn-complete") resolveDone?.();
+      },
+      onComplete: async () => undefined,
+    });
+    await Promise.race([done, new Promise((_, reject) => setTimeout(() => reject(new Error("Stream never completed")), 3_000))]);
+    expect(textEvents).toEqual([{ text: "Hello world", mode: "append" }]);
+    runner.stop("thread-stream");
+  });
+
+  it("keeps replace-plus-append stream batches exact", async () => {
+    const runner = new CliRunner();
+    const textEvents: Array<{ text: string; mode: "append" | "replace" }> = [];
+    let resolveDone: (() => void) | undefined;
+    const done = new Promise<void>((resolve) => { resolveDone = resolve; });
+    const messages = [
+      { type: "assistant", message: { content: [{ type: "text", text: "Hello" }] }, session_id: "session-replace-stream" },
+      { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: " world" } }, session_id: "session-replace-stream" },
+      { type: "result", subtype: "success", result: "Hello world", is_error: false, session_id: "session-replace-stream" },
+    ];
+    const script = `process.stdin.resume();process.stdin.on("end",()=>process.exit(0));for(const item of ${JSON.stringify(messages)})process.stdout.write(JSON.stringify(item)+"\\n");`;
+    runner.start({ source: "development", entryPath: "", command: process.execPath, argsPrefix: ["-e", script, "--"], environment: process.env }, {
+      threadId: "thread-replace-stream", prompt: "test", attachments: [], model: "", effort: "", permission: "default",
+    }, process.cwd(), undefined, {
+      onEvent: (event) => {
+        if (event.type === "text") textEvents.push({ text: event.text, mode: event.mode });
+        if (event.type === "turn-complete") resolveDone?.();
+      },
+      onComplete: async () => undefined,
+    });
+    await Promise.race([done, new Promise((_, reject) => setTimeout(() => reject(new Error("Replace stream never completed")), 3_000))]);
+    expect(textEvents).toEqual([{ text: "Hello world", mode: "replace" }]);
+    runner.stop("thread-replace-stream");
+  });
+
   it("finishes a turn on the result event, keeps the process alive, and finalizes on close", async () => {
     const runner = new CliRunner();
     const sequence: string[] = [];

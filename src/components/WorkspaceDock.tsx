@@ -70,6 +70,7 @@ import { collapseDuplicateBrowserScheme } from "../../desktop/browser-url";
 import { DiffCode, diffLanguageForPath, patchStats } from "./DiffReview";
 import MarkdownContent from "./MarkdownContent";
 import { highlightCode } from "./MarkdownCodeBlock";
+import { useLiveRun } from "../liveRunStore";
 
 export type WorkspacePaneKind = "diff" | "terminal" | "browser" | "explorer" | "file" | "sidechat" | "git";
 
@@ -82,7 +83,6 @@ export interface WorkspaceDockRequest {
 
 export interface WorkspaceSideChat {
   thread?: Thread;
-  liveText?: string;
   running: boolean;
   onCreate: () => void;
   onSend: (prompt: string) => void;
@@ -877,6 +877,7 @@ const WorkspaceBrowserPane = memo(function WorkspaceBrowserPane({
 const WorkspaceSideChatPane = memo(function WorkspaceSideChatPane({ sideChat, active = true }: { sideChat: WorkspaceSideChat; active?: boolean }) {
   const [prompt, setPrompt] = useState("");
   const messages = sideChat.thread?.messages.filter((message) => message.role !== "system") ?? [];
+  const liveText = useLiveRun(active ? sideChat.thread?.id : undefined)?.text;
   const send = () => {
     if (!prompt.trim() || sideChat.running) return;
     sideChat.onSend(prompt.trim());
@@ -887,7 +888,7 @@ const WorkspaceSideChatPane = memo(function WorkspaceSideChatPane({ sideChat, ac
     <div className="workspace-sidechat-pane">
       <header className="workspace-pane-titlebar"><div><MessageCircle size={15} /><strong>Side chat</strong><span>Companion thread</span></div></header>
       {!sideChat.thread ? <div className="workspace-empty-state"><MessageCircle size={22} /><span>Open a companion chat</span><small>Keep a second Maximo conversation beside the current task.</small><button type="button" className="primary-button compact" onClick={sideChat.onCreate}><Plus size={13} />New side chat</button></div> : <>
-        <div className="workspace-sidechat-messages">{messages.length === 0 && !sideChat.liveText && <div className="workspace-sidechat-empty">Ask a focused question without leaving this task.</div>}{messages.map((message) => <div className={`workspace-sidechat-message ${message.role}`} key={message.id}><span>{message.role === "user" ? "You" : "Maximo"}</span>{message.content && <MarkdownContent>{message.content}</MarkdownContent>}</div>)}{sideChat.liveText && <div className="workspace-sidechat-message assistant"><span>Maximo</span><MarkdownContent>{sideChat.liveText}</MarkdownContent></div>}</div>
+        <div className="workspace-sidechat-messages">{messages.length === 0 && !liveText && <div className="workspace-sidechat-empty">Ask a focused question without leaving this task.</div>}{messages.map((message) => <div className={`workspace-sidechat-message ${message.role}`} key={message.id}><span>{message.role === "user" ? "You" : "Maximo"}</span>{message.content && <MarkdownContent>{message.content}</MarkdownContent>}</div>)}{liveText && <div className="workspace-sidechat-message assistant"><span>Maximo</span><MarkdownContent streaming>{liveText}</MarkdownContent></div>}</div>
         <div className="workspace-sidechat-input"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); send(); } }} placeholder={sideChat.running ? "Maximo is working…" : "Ask a side question…"} disabled={sideChat.running} /><button type="button" onClick={send} disabled={!prompt.trim() || sideChat.running} title="Send"><Send size={14} /></button></div>
       </>}
     </div>
@@ -1194,12 +1195,9 @@ function WorkspaceDockUnmemoized(props: WorkspaceDockProps) {
   );
 }
 
-// The dock chrome (tabs, launcher, pane shells) must not re-render on every
-// streaming flush. Only the panes that actually display live content subscribe
-// to it, so we memoize the dock shell and treat high-frequency streaming props
-// (activity, sideChat.liveText) as non-render-affecting here. The panes receive
-// fresh activity/sideChat when the shell itself re-renders for real changes
-// (thread switch, git change, dock open/close).
+// The dock chrome (tabs, launcher, pane shells) ignores main-task activity
+// churn. The side-chat pane subscribes directly to its keyed live snapshot, so
+// text chunks never repaint the dock chrome or the main app shell.
 const WorkspaceDock = memo(WorkspaceDockUnmemoized, (prev, next) =>
   prev.open === next.open &&
   prev.suspendNativeSurfaces === next.suspendNativeSurfaces &&

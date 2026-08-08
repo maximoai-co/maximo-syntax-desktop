@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, X } from "lucide-react";
+import {
+  activateOtherQuestion,
+  isQuestionOptionSelected,
+  toggleQuestionSelection,
+  updateOtherQuestionAnswer,
+} from "../utils/questionSelection.js";
 
 export interface QuestionOption {
   label: string;
@@ -18,21 +24,6 @@ interface QuestionModalProps {
   questions: Question[];
   onSubmit: (answers: Record<string, string>) => void;
   onSkip: () => void;
-}
-
-function isOptionSelected(current: string | undefined, optionLabel: string, multi: boolean): boolean {
-  if (!current) return false;
-  if (!multi) return current === optionLabel;
-  return current.split("||").includes(optionLabel);
-}
-
-function toggleSelection(current: string | undefined, optionLabel: string, multi: boolean): string {
-  if (!multi) return optionLabel;
-  const list = current ? current.split("||").filter(Boolean) : [];
-  const idx = list.indexOf(optionLabel);
-  if (idx >= 0) list.splice(idx, 1);
-  else list.push(optionLabel);
-  return list.join("||");
 }
 
 export default function QuestionModal({ questions, onSubmit, onSkip }: QuestionModalProps) {
@@ -66,7 +57,34 @@ export default function QuestionModal({ questions, onSubmit, onSkip }: QuestionM
   });
 
   const choose = (label: string) => {
-    setAnswers((prev) => ({ ...prev, [active.question]: toggleSelection(prev[active.question], label, multi) }));
+    const current = {
+      selected: answers[active.question] ?? "",
+      custom: customAnswers[active.question] ?? "",
+    };
+    const next = toggleQuestionSelection(current, label, multi);
+    setAnswers((prev) => ({ ...prev, [active.question]: next.selected }));
+    setCustomAnswers((prev) => ({ ...prev, [active.question]: next.custom }));
+  };
+
+  const chooseOther = () => {
+    const current = {
+      selected: answers[active.question] ?? "",
+      custom: customAnswers[active.question] ?? "",
+    };
+    const next = activateOtherQuestion(current);
+    setAnswers((prev) => ({ ...prev, [active.question]: next.selected }));
+    setCustomAnswers((prev) => ({ ...prev, [active.question]: next.custom }));
+    customInputRef.current?.focus();
+  };
+
+  const changeCustomAnswer = (custom: string) => {
+    const current = {
+      selected: answers[active.question] ?? "",
+      custom: customAnswers[active.question] ?? "",
+    };
+    const next = updateOtherQuestionAnswer(current, custom);
+    setAnswers((prev) => ({ ...prev, [active.question]: next.selected }));
+    setCustomAnswers((prev) => ({ ...prev, [active.question]: next.custom }));
   };
 
   const submit = () => {
@@ -75,10 +93,7 @@ export default function QuestionModal({ questions, onSubmit, onSkip }: QuestionM
       const custom = customAnswers[q.question]?.trim();
       const value = answers[q.question] ?? "";
       if (custom) {
-        const selectedOptions = value.split("||").filter(Boolean);
-        cleaned[q.question] = q.multiSelect && selectedOptions.length
-          ? [...selectedOptions, custom].join(", ")
-          : custom;
+        cleaned[q.question] = custom;
       } else if (value) {
         if (q.multiSelect) {
           const list = value.split("||").filter(Boolean);
@@ -127,7 +142,7 @@ export default function QuestionModal({ questions, onSubmit, onSkip }: QuestionM
           </div>
           <div className="question-options">
             {listedOptions.map((option) => {
-              const selected = isOptionSelected(answers[active.question], option.label, multi);
+              const selected = isQuestionOptionSelected(answers[active.question], option.label, multi);
               return (
                 <button
                   key={option.label}
@@ -150,7 +165,7 @@ export default function QuestionModal({ questions, onSubmit, onSkip }: QuestionM
             <button
               type="button"
               className={`question-option question-other-option ${custom.trim() ? "selected" : ""}`}
-              onClick={() => customInputRef.current?.focus()}
+              onClick={chooseOther}
               aria-pressed={Boolean(custom.trim())}
             >
               <span className="question-option-mark">{custom.trim() ? <Check size={13} /> : null}</span>
@@ -164,7 +179,7 @@ export default function QuestionModal({ questions, onSubmit, onSkip }: QuestionM
               <input
                 ref={customInputRef}
                 value={custom}
-                onChange={(event) => setCustomAnswers((prev) => ({ ...prev, [active.question]: event.target.value }))}
+                onChange={(event) => changeCustomAnswer(event.target.value)}
                 aria-label={`Other answer for ${active.question}`}
                 placeholder="Type your own answer"
               />

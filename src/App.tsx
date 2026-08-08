@@ -49,10 +49,11 @@ import { composerKeyAction, composerSendShortcutLabel } from "./composerKeyboard
 import { MAXIMO_SHORTCUTS, matchesShortcut, shortcutLabel } from "./shortcuts";
 import { modelProvider, type ModelProvider } from "./utils/modelProvider.js";
 import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollElementNearBottom } from "./utils/chatScroll.js";
+import { resolveComposerRunSelection } from "./utils/composerSelection.js";
 import { retryWithBackoff, isRetryableError, DEFAULT_MAX_RETRIES, getRetryMessage } from "./utils/retry.js";
 import { TransientRetryNotice, type TransientRetryState } from "./components/TransientRetryNotice";
+import { getLiveRun, getLiveRunsSnapshot, markLiveInteraction, publishLiveRuns, scheduleAfterLiveInteraction, useLiveRun, type LiveRun } from "./liveRunStore";
 
-type LiveRun = { text: string; activity: RunActivity[]; timeline: RunTimelineItem[]; logs: Array<{ level: string; text: string; timestamp: number }> };
 type WorkspaceSurface = "chat" | "activity" | "kanban" | "pull-requests";
 
 // Stable empty reference for memoized components that default to `[]` — a fresh
@@ -1083,7 +1084,7 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
   };
 
   for (const event of events) {
-    if (event.type === "finished") continue;
+    if (event.type === "finished" || event.type === "retrying") continue;
     if (event.type === "turn-complete") {
       runs.delete(event.threadId);
       delete next[event.threadId];
@@ -1108,8 +1109,16 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
     }
     if (event.type === "text") {
       run.text = event.mode === "append" ? run.text + event.text : event.text;
-      const last = run.timeline.at(-1);
-      if (last?.type === "text") last.text = event.mode === "append" ? last.text + event.text : event.text;
+      const lastIndex = run.timeline.length - 1;
+      const last = run.timeline[lastIndex];
+      if (last?.type === "text") {
+        // Preserve the previous snapshot while React may still be rendering it
+        // concurrently; mutating the shared timeline item causes visual tearing.
+        run.timeline[lastIndex] = {
+          ...last,
+          text: event.mode === "append" ? last.text + event.text : event.text,
+        };
+      }
       else run.timeline.push({ type: "text", text: event.text, timestamp: event.timestamp });
       continue;
     }
@@ -1697,7 +1706,7 @@ function ActivityTimelineEvent({ entry, path, created, reviewable, change, proje
 
 const MemoizedActivityTimelineEvent = memo(ActivityTimelineEvent);
 
-const MemoizedWorkTimeline = memo(function WorkTimeline({ entries, onOpenFile, fileChanges, project, onPreviewAttachment }: { entries: WorkTimelineEntry[]; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; onPreviewAttachment?: (attachment: Attachment) => void }) {
+const MemoizedWorkTimeline = memo(function WorkTimeline({ entries, onOpenFile, fileChanges, project, onPreviewAttachment, streaming = false }: { entries: WorkTimelineEntry[]; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; onPreviewAttachment?: (attachment: Attachment) => void; streaming?: boolean }) {
   const agentRows = useMemo(() => agentTimelineRows(entries), [entries]);
   const rowsBySource = useMemo(() => {
     const map = new Map<number, AgentTimelineRow[]>();
@@ -1714,7 +1723,7 @@ const MemoizedWorkTimeline = memo(function WorkTimeline({ entries, onOpenFile, f
   const renderEntry = useCallback((entry: WorkTimelineEntry, index: number): ReactNode => {
     const assignedAgents = rowsBySource.get(index);
     if (assignedAgents?.length) return <>{assignedAgents.map((row) => <MemoizedAgentTimelineEvent agent={row.agent} key={`agent-${row.agent.taskId}`} />)}</>;
-    if (entry.type === "text") return <MarkdownContent className="work-partial" key={`text-${entry.timestamp}-${index}`}>{entry.text}</MarkdownContent>;
+    if (entry.type === "text") return <MarkdownContent className="work-partial" streaming={streaming} key={`text-${entry.timestamp}-${index}`}>{entry.text}</MarkdownContent>;
     if (entry.type === "interaction") return <MemoizedInteractionTimelineEvent interaction={entry.interaction} key={`interaction-${entry.timestamp}-${index}`} />;
     if (entry.type === "agent" || (entry.type === "activity" && isAgentActivity(entry))) return null;
     if (entry.type === "user-context") return <MemoizedUserContextTimelineEvent entry={entry} onPreviewAttachment={onPreviewAttachment} key={`context-${entry.timestamp}-${index}`} />;
@@ -1728,7 +1737,7 @@ const MemoizedWorkTimeline = memo(function WorkTimeline({ entries, onOpenFile, f
     }
     if (entry.todos?.length) return <MemoizedTodoTimelineEvent todos={entry.todos} data={entry.data} key={`todo-${entry.timestamp}-${index}`} />;
     return <MemoizedActivityTimelineEvent entry={entry} path={path} created={created} reviewable={reviewable} change={change} project={project} onOpenFile={onOpenFile} key={`activity-${entry.timestamp}-${index}`} />;
-  }, [rowsBySource, fileChanges, fileChangeMap, project, onOpenFile, onPreviewAttachment]);
+  }, [rowsBySource, fileChanges, fileChangeMap, project, onOpenFile, onPreviewAttachment, streaming]);
   return <div className="work-timeline">{entries.map(renderEntry)}</div>;
 });
 // Keep old name as alias for historic imports inside this file
@@ -1738,6 +1747,41 @@ const WorkTimeline = MemoizedWorkTimeline;
 const INITIAL_WORK_ENTRIES = 12;
 const WORK_ENTRIES_PER_FRAME = 24;
 const MAX_VISIBLE_LIVE_WORK_ENTRIES = 64;
+const MAX_MERGED_LIVE_WORK_ENTRIES = 96;
+const MAX_VISIBLE_LIVE_TEXT_CHARS = 32_000;
+
+function boundedLiveTimelineText(entries: RunTimelineItem[]): RunTimelineItem[] {
+  let remaining = MAX_VISIBLE_LIVE_TEXT_CHARS;
+  let truncated = false;
+  const bounded: RunTimelineItem[] = [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.type !== "text") {
+      bounded.push(entry);
+      continue;
+    }
+    if (remaining <= 0) {
+      truncated = true;
+      continue;
+    }
+    if (entry.text.length <= remaining) {
+      remaining -= entry.text.length;
+      bounded.push(entry);
+      continue;
+    }
+    bounded.push({
+      ...entry,
+      text: `Earlier output is hidden while streaming and will appear when the response finishes.\n\n${entry.text.slice(-remaining)}`,
+    });
+    remaining = 0;
+    truncated = true;
+  }
+  bounded.reverse();
+  if (truncated && bounded[0]?.type === "text" && !bounded[0].text.startsWith("Earlier output is hidden")) {
+    bounded[0] = { ...bounded[0], text: `Earlier output is hidden while streaming and will appear when the response finishes.\n\n${bounded[0].text}` };
+  }
+  return bounded;
+}
 
 function WorkDisclosure({ timeline, interactions = [], durationMs, live = false, finalContent, onOpenFile, fileChanges, project, onPreviewAttachment }: { timeline?: RunTimelineItem[]; interactions?: TimedInteraction[]; durationMs?: number; live?: boolean; finalContent?: string; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; onPreviewAttachment?: (attachment: Attachment) => void }) {
   const [open, setOpen] = useState(false);
@@ -1748,7 +1792,14 @@ function WorkDisclosure({ timeline, interactions = [], durationMs, live = false,
   // The disclosure header ("Worked for…") still renders, but the heavy merge + sort is deferred until open.
   const shouldMerge = live || open || Boolean(durationMs);
   const entries = useMemo(() => {
-    const tl = timeline ?? [];
+    // Live runs can retain hundreds of events for recovery, but only the tail is
+    // ever painted. Bound the input before merge/dedupe so an old, long-running
+    // task does not repeatedly scan its entire history on every stream flush.
+    const sourceTimeline = timeline ?? [];
+    const limitedTimeline = live && sourceTimeline.length > MAX_MERGED_LIVE_WORK_ENTRIES
+      ? sourceTimeline.slice(-MAX_MERGED_LIVE_WORK_ENTRIES)
+      : sourceTimeline;
+    const tl = live ? boundedLiveTimelineText(limitedTimeline) : limitedTimeline;
     const inter = interactions ?? [];
     if (!shouldMerge && tl.length === 0 && inter.length === 0) return [] as WorkTimelineEntry[];
     // Fast path: empty inputs
@@ -1806,7 +1857,7 @@ function WorkDisclosure({ timeline, interactions = [], durationMs, live = false,
     }, [entries]);
     if (visibleLiveEntries.length === 0) return null;
     // Memoize live WorkTimeline props to avoid re-creating timeline nodes when parent re-renders for unrelated state
-    return <div className="agent-flow live-agent-flow"><WorkTimeline entries={visibleLiveEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} /></div>;
+    return <div className="agent-flow live-agent-flow"><WorkTimeline entries={visibleLiveEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} streaming /></div>;
   }
   if (!durationMs && workEntries.length === 0) return null;
   const visibleWorkEntries = useMemo(() => workEntries.slice(0, renderedEntryCount), [workEntries, renderedEntryCount]);
@@ -3040,21 +3091,25 @@ function extractTrailingPastedTexts(prompt: string): { promptText: string; paste
 // editing — mirrors Synara's UserMessagePastedTextCard.
 function UserMessagePastedTextCard({ text, metrics }: { text: string; metrics: { lineCount: number; charCount: number } }) {
   const [expanded, setExpanded] = useState(false);
+  const title = pastedTextTitle(text);
+  const countLabel = formatPastedTextCountLabel(metrics);
+
   return (
-    <div className="pasted-text-card pasted-text-card-transcript">
-      <span className="pasted-text-card-icon"><File size={13} /></span>
-      <span className="pasted-text-card-copy">
-        <strong title={pastedTextTitle(text)}>{pastedTextTitle(text)}</strong>
-        <small>{formatPastedTextCountLabel(metrics)}</small>
-      </span>
-      <button
-        type="button"
-        className="pasted-text-card-action"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
-      >
-        {expanded ? "Hide text" : "Show text"}<span className="pasted-text-card-count">· {formatPastedTextCountLabel(metrics)}</span>
-      </button>
+    <div className="pasted-text-card-transcript">
+      <div className="pasted-text-card pasted-text-card-transcript-shell">
+        <span className="pasted-text-card-icon"><File size={13} /></span>
+        <span className="pasted-text-card-copy">
+          <strong title={title}>{title}</strong>
+          <button
+            type="button"
+            className="pasted-text-card-action"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? "Hide text" : "Show text"}<span className="pasted-text-card-count">· {countLabel}</span>
+          </button>
+        </span>
+      </div>
       {expanded && (
         <pre className="pasted-text-card-expanded">{text}</pre>
       )}
@@ -3136,7 +3191,71 @@ function UserMessageCollapsibleText({ text, expanded, chatFontSizePx, onToggle, 
   );
 }
 
-function MessageView({ thread, project, git, models, live, waiting, skillNames, timestampFormat, streamingEnabled, queuedFollowUps = [], onPreviewAttachment, onOpenFile, onTogglePin, onEditResend, onRevert }: { thread: Thread; project?: Project; git?: GitStatus | null; models: EngineModel[]; live?: LiveRun; waiting?: boolean; skillNames?: Set<string>; timestampFormat: TimestampFormat; streamingEnabled: boolean; queuedFollowUps?: QueuedFollowUp[]; onPreviewAttachment: (attachment: Attachment) => void; onOpenFile: (path: string, diff?: GitDiff) => void; onTogglePin: (messageId: string) => void; onEditResend?: (messageId: string, text: string) => void; onRevert?: (messageId: string, revertFiles: boolean) => void }) {
+const LiveTurn = memo(function LiveTurn({ threadId, running, waiting, streamingEnabled, streamingInteractions, streamingFollowUps, queuedFollowUps, onPreviewAttachment, onOpenFile, onContentChange }: {
+  threadId: string;
+  running: boolean;
+  waiting: boolean;
+  streamingEnabled: boolean;
+  streamingInteractions: TimedInteraction[];
+  streamingFollowUps: ChatMessage[];
+  queuedFollowUps: QueuedFollowUp[];
+  onPreviewAttachment: (attachment: Attachment) => void;
+  onOpenFile: (path: string, diff?: GitDiff) => void;
+  onContentChange: () => void;
+}) {
+  const live = useLiveRun(threadId);
+  const liveTextEntry = useMemo(() => {
+    if (!streamingEnabled || !live?.text) return undefined;
+    return { type: "text" as const, text: live.text, timestamp: 0 };
+  }, [streamingEnabled, live?.text]);
+  const optimisticQueuedItems = useMemo(() => {
+    if (!queuedFollowUps.length) return [] as RunTimelineItem[];
+    const persistedPrompts = new Set(streamingFollowUps.map((message) => message.content.trim()));
+    const seen = new Set<string>();
+    return queuedFollowUps
+      .filter((item) => {
+        const key = item.prompt.trim();
+        if (persistedPrompts.has(key) || seen.has(item.id)) return false;
+        seen.add(item.id);
+        return true;
+      })
+      .map((item) => ({
+        type: "user-context" as const,
+        text: item.prompt,
+        ...(item.attachments.length ? { attachments: item.attachments } : {}),
+        timestamp: item.createdAt,
+      }));
+  }, [queuedFollowUps, streamingFollowUps]);
+  const liveTimeline = useMemo(() => {
+    if (!streamingEnabled) return [] as RunTimelineItem[];
+    const base = live?.timeline ?? (liveTextEntry ? [liveTextEntry] : []);
+    const follow = [...streamingFollowUps.map(followUpContextItem), ...optimisticQueuedItems];
+    if (base.length === 0 && follow.length === 0) return [] as RunTimelineItem[];
+    const merged = [...base, ...follow];
+    if (follow.length > 0 && base.length > 0 && follow[0]!.timestamp < base[base.length - 1]!.timestamp) {
+      merged.sort((left, right) => left.timestamp - right.timestamp);
+    }
+    return merged;
+  }, [live?.timeline, liveTextEntry, optimisticQueuedItems, streamingEnabled, streamingFollowUps]);
+
+  // Notify the scroll owner after this tiny subtree commits. The settled
+  // transcript and composer never participate in this update.
+  useEffect(() => {
+    if (running) onContentChange();
+  }, [live, onContentChange, running]);
+
+  if (!running) return null;
+  return (
+    <article className="message assistant streaming">
+      <div className="message-meta"><span className="message-avatar"><Logo compact /></span><span>Maximo Syntax</span></div>
+      <MemoizedWorkDisclosure timeline={liveTimeline} interactions={streamingInteractions} live onOpenFile={onOpenFile} onPreviewAttachment={onPreviewAttachment} />
+      <LiveWorkStatus running waiting={waiting} live={live} inline />
+      {streamingEnabled && live?.text && <div className="message-actions assistant-actions"><CopyMessageButton content={live.text} /></div>}
+    </article>
+  );
+});
+
+function MessageView({ thread, project, git, models, waiting, skillNames, timestampFormat, streamingEnabled, queuedFollowUps = [], onPreviewAttachment, onOpenFile, onTogglePin, onEditResend, onRevert }: { thread: Thread; project?: Project; git?: GitStatus | null; models: EngineModel[]; waiting?: boolean; skillNames?: Set<string>; timestampFormat: TimestampFormat; streamingEnabled: boolean; queuedFollowUps?: QueuedFollowUp[]; onPreviewAttachment: (attachment: Attachment) => void; onOpenFile: (path: string, diff?: GitDiff) => void; onTogglePin: (messageId: string) => void; onEditResend?: (messageId: string, text: string) => void; onRevert?: (messageId: string, revertFiles: boolean) => void }) {
   if (!thread) {
     return (
       <div className="chat-transcript-pane">
@@ -3147,6 +3266,8 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   const scrollRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
+  const scrollFrameRef = useRef<number | null>(null);
+  const liveFollowFrameRef = useRef<number | null>(null);
   const previousThreadIdRef = useRef(thread.id);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [expandedUserMessagesById, setExpandedUserMessagesById] = useState<Record<string, boolean>>({});
@@ -3206,7 +3327,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
        // This preserves the Synara contract: a thread remembers whether you were
        // scrolled up or at the live edge, so returning to it doesn't jump.
        if (shouldStickToBottomRef.current) {
-         scroll.scrollTo({ top: scroll.scrollHeight, behavior: live ? "auto" : "smooth" });
+         scroll.scrollTop = scroll.scrollHeight;
          setShowScrollButton(false);
        } else {
          // Sync button visibility after thread switch if not auto-sticking
@@ -3215,7 +3336,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
        }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [thread.id, thread.messages.length, live?.text, waiting]);
+  }, [thread.id, thread.messages.length, waiting]);
   const updateScrollButtonVisibility = useCallback((scroll: HTMLElement) => {
     const nearBottom = isScrollElementNearBottom(scroll, AUTO_SCROLL_BOTTOM_THRESHOLD_PX);
     shouldStickToBottomRef.current = nearBottom;
@@ -3236,10 +3357,35 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   const handleScroll = useCallback(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
-    // Use rAF to avoid scroll jank: don't read layout synchronously on every scroll event
-    // while AI is streaming — batch through rAF like synara's scroll handler.
-    window.requestAnimationFrame(() => updateScrollButtonVisibility(scroll));
+    // One layout read per frame. Previously every native scroll event queued a
+    // separate rAF, so a trackpad gesture built a callback backlog while output
+    // was streaming and the UI kept feeling behind the user's hand.
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      updateScrollButtonVisibility(scroll);
+    });
   }, [updateScrollButtonVisibility]);
+  const takeScrollOwnership = useCallback(() => {
+    // Wheel/touch arrives before `scroll`; release auto-follow synchronously so
+    // an already-scheduled live-output frame cannot pull the viewport back down.
+    markLiveInteraction();
+    shouldStickToBottomRef.current = false;
+    if (liveFollowFrameRef.current !== null) {
+      window.cancelAnimationFrame(liveFollowFrameRef.current);
+      liveFollowFrameRef.current = null;
+    }
+  }, []);
+  const followLiveContent = useCallback(() => {
+    // Do no layout work at all once the user has taken scroll ownership.
+    if (!shouldStickToBottomRef.current || liveFollowFrameRef.current !== null) return;
+    liveFollowFrameRef.current = window.requestAnimationFrame(() => {
+      liveFollowFrameRef.current = null;
+      if (!shouldStickToBottomRef.current) return;
+      const scroll = scrollRef.current;
+      if (scroll) scroll.scrollTop = scroll.scrollHeight;
+    });
+  }, []);
   const scrollToBottom = useCallback((animated = true) => {
     const scroll = scrollRef.current;
     if (!scroll) return;
@@ -3255,6 +3401,14 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
     return () => {
       if (showScrollButtonDebounceRef.current !== null) {
         window.clearTimeout(showScrollButtonDebounceRef.current);
+      }
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+      if (liveFollowFrameRef.current !== null) {
+        window.cancelAnimationFrame(liveFollowFrameRef.current);
+        liveFollowFrameRef.current = null;
       }
     };
   }, []);
@@ -3493,48 +3647,6 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
       streamingFollowUps,
     };
   }, [editingMessageId, expandedUserMessagesById, git, latestEditableUserMessageId, models, onEditResend, onOpenFile, onPreviewAttachment, onRevert, onTogglePin, project, queuedFollowUps, revertableUserMessageIds, skillNames, displayThread, timestampFormat, waiting]);
-  // Live timeline is derived from streaming state; avoid re-sorting on every text char by memoizing.
-  // Streaming only appends, so a simple length+last-timestamp key is sufficient for memo stability.
-  // The live text entry is memoized by reference so WorkDisclosure/WorkTimeline/
-  // MarkdownContent only re-render when the text actually changed — not on
-  // unrelated live updates (activity, status).
-  const liveTextEntry = useMemo(() => {
-    if (!streamingEnabled || !live?.text) return undefined;
-    return { type: "text" as const, text: live.text, timestamp: Date.now() };
-  }, [streamingEnabled, live?.text]);
-  const optimisticQueuedItems = useMemo(() => {
-    if (!queuedFollowUps.length) return [] as RunTimelineItem[];
-    // Dedupe: if a queued prompt already exists as a persisted follow-up, don't show it twice.
-    const persistedPrompts = new Set(streamingFollowUps.map((m) => m.content.trim()));
-    const seen = new Set<string>();
-    return queuedFollowUps
-      .filter((item) => {
-        const key = item.prompt.trim();
-        if (persistedPrompts.has(key) || seen.has(item.id)) return false;
-        seen.add(item.id);
-        return true;
-      })
-      .map((item) => ({
-        type: "user-context" as const,
-        text: item.prompt,
-        ...(item.attachments.length ? { attachments: item.attachments } : {}),
-        timestamp: item.createdAt,
-      }));
-  }, [queuedFollowUps, streamingFollowUps]);
-  const liveTimeline = useMemo(() => {
-    if (!streamingEnabled) return [] as RunTimelineItem[];
-    const base = live?.timeline ?? (liveTextEntry ? [liveTextEntry] : []);
-    const follow = [...streamingFollowUps.map(followUpContextItem), ...optimisticQueuedItems];
-    if (base.length === 0 && follow.length === 0) return [] as RunTimelineItem[];
-    // Merge is already sorted per timestamp; streaming appends are monotonic, so we can avoid full sort
-    // when the appended follow-ups are newer than all base entries.
-    const merged = [...base, ...follow];
-    // Only sort if follow-ups could interleave (rare); otherwise keep base order.
-    if (follow.length > 0 && base.length > 0 && follow[0]!.timestamp < base[base.length - 1]!.timestamp) {
-      merged.sort((a, b) => a.timestamp - b.timestamp);
-    }
-    return merged;
-  }, [live?.timeline, liveTextEntry, streamingFollowUps, optimisticQueuedItems, streamingEnabled]);
   const hiddenMessageCount = Math.max(0, renderedMessages.length - visibleMessageCount);
   const displayedMessages = useMemo(() => hiddenMessageCount > 0 ? renderedMessages.slice(-visibleMessageCount) : renderedMessages, [renderedMessages, hiddenMessageCount, visibleMessageCount]);
   // Use displayThread for empty state so stale stays consistent with deferred lines above.
@@ -3564,7 +3676,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
   }, [queuedFollowUps, displayThread.messages, timestampFormat, onPreviewAttachment]);
   return (
     <div className={`chat-transcript-pane ${isStale ? "stale" : ""}`} ref={paneRef} style={isStale ? { opacity: 0.97 } as CSSProperties : undefined}>
-      <div className={`conversation-scroll ${waiting ? "waiting" : ""}`} ref={scrollRef} onScroll={handleScroll}>
+      <div className={`conversation-scroll ${waiting ? "waiting" : ""}`} ref={scrollRef} onScroll={handleScroll} onWheelCapture={takeScrollOwnership} onTouchStartCapture={takeScrollOwnership}>
         <div className={`conversation ${waiting ? "waiting" : ""}`}>
           {emptyCheckThread.messages.length === 0 && emptyCheckThread.status !== "running" && queuedFollowUps.length === 0 && (
             <div className="thread-empty">
@@ -3576,14 +3688,18 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
           {hiddenMessageCount > 0 && <button type="button" className="conversation-show-older" onClick={() => setVisibleMessageCount((c) => c + 80)}>Show {Math.min(80, hiddenMessageCount)} earlier messages · {hiddenMessageCount} hidden</button>}
           {displayedMessages}
           {optimisticQueuedMessages}
-          {runningCheckThread.status === "running" && (
-            <article className="message assistant streaming">
-              <div className="message-meta"><span className="message-avatar"><Logo compact /></span><span>Maximo Syntax</span></div>
-              <MemoizedWorkDisclosure timeline={liveTimeline} interactions={streamingInteractions} live onOpenFile={onOpenFile} onPreviewAttachment={onPreviewAttachment} />
-              <LiveWorkStatus running={runningCheckThread.status === "running"} waiting={Boolean(waiting)} live={live} inline />
-               {streamingEnabled && live?.text && <div className="message-actions assistant-actions"><CopyMessageButton content={live.text} /></div>}
-            </article>
-          )}
+          <LiveTurn
+            threadId={thread.id}
+            running={runningCheckThread.status === "running"}
+            waiting={Boolean(waiting)}
+            streamingEnabled={streamingEnabled}
+            streamingInteractions={streamingInteractions}
+            streamingFollowUps={streamingFollowUps}
+            queuedFollowUps={queuedFollowUps}
+            onOpenFile={onOpenFile}
+            onPreviewAttachment={onPreviewAttachment}
+            onContentChange={followLiveContent}
+          />
         </div>
       </div>
       <div className={`scroll-to-bottom-wrapper ${showScrollButton ? "visible" : ""}`} aria-hidden={!showScrollButton}>
@@ -3608,7 +3724,6 @@ const MemoizedMessageView = memo(MessageView, (prev, next) =>
   prev.project === next.project &&
   prev.git === next.git &&
   prev.models === next.models &&
-  prev.live === next.live &&
   prev.waiting === next.waiting &&
   prev.skillNames === next.skillNames &&
   prev.timestampFormat === next.timestampFormat &&
@@ -3634,8 +3749,8 @@ function FullAccessConfirm({ onCancel, onConfirm }: { onCancel: () => void; onCo
   );
 }
 
-const Composer = memo(function Composer({ thread, project, git, live, settings, models, modelOptions, slashCommands, skillCommands = [], discoveredSkills = [], contextUsage, contextLoading = false, onRefreshContext, onSend, onStop, onOpenProject, onAccountUsage, onSettingsChanged, onGitChanged, onPreviewAttachment, pendingQuestion, pendingPermission, onSubmitAnswers, onSkipQuestion, onApprovePermission, onDenyPermission, queuedFollowUps = [], onRemoveQueuedFollowUp, onEditQueuedFollowUp, draft, onDraftChange }: {
-  thread: Thread; project?: Project; git: GitStatus | null; live?: LiveRun; settings: AppState["settings"]; models: EngineModel[]; modelOptions: SelectOption<string>[]; slashCommands: SlashCommand[]; skillCommands?: SlashCommand[]; discoveredSkills?: SlashCommand[];
+const Composer = memo(function Composer({ thread, project, git, settings, models, modelOptions, slashCommands, skillCommands = [], discoveredSkills = [], contextUsage, contextLoading = false, onRefreshContext, onSend, onStop, onOpenProject, onAccountUsage, onSettingsChanged, onGitChanged, onPreviewAttachment, pendingQuestion, pendingPermission, onSubmitAnswers, onSkipQuestion, onApprovePermission, onDenyPermission, queuedFollowUps = [], onRemoveQueuedFollowUp, onEditQueuedFollowUp, draft, onDraftChange }: {
+  thread: Thread; project?: Project; git: GitStatus | null; settings: AppState["settings"]; models: EngineModel[]; modelOptions: SelectOption<string>[]; slashCommands: SlashCommand[]; skillCommands?: SlashCommand[]; discoveredSkills?: SlashCommand[];
   contextUsage: ContextUsage | null; contextLoading?: boolean; onRefreshContext: () => Promise<void>;
   onSend: (prompt: string, attachments: Attachment[], model: string, effort: string, permission: PermissionMode, contextWindow?: number) => Promise<void>;
   onStop: () => void; onOpenProject: () => void; onAccountUsage: () => void; onSettingsChanged: (patch: Partial<AppState["settings"]>) => Promise<void>; onGitChanged: (status: GitStatus) => void; onPreviewAttachment: (attachment: Attachment) => void;
@@ -4067,10 +4182,18 @@ const Composer = memo(function Composer({ thread, project, git, live, settings, 
   };
   const choosePermission = (next: PermissionMode) => {
     if (next === "full" && permission !== "full") setConfirmFullAccess(true);
-    else setPermission(next);
+    else {
+      setPermission(next);
+      onDraftChange?.(thread.id, { permission: next });
+    }
+  };
+  const chooseEffort = (next: string) => {
+    setEffort(next);
+    onDraftChange?.(thread.id, { effort: next });
   };
   const chooseModel = (next: string) => {
     setModel(next);
+    onDraftChange?.(thread.id, { model: next });
     const nextModel = models.find((item) => (item.value === "default" ? "" : item.value) === next);
     // Custom slugs or loading state: keep the user's explicit effort (the CLI
     // shim will forward it and the provider validates). Only clear when the
@@ -4080,13 +4203,17 @@ const Composer = memo(function Composer({ thread, project, git, live, settings, 
     const supportsEffort = nextModel.supportsEffort ?? supported.length > 0;
     if (!supportsEffort) {
       setEffort("");
+      onDraftChange?.(thread.id, { effort: "" });
       return;
     }
-    setEffort((current) => {
-      const normalized = current ? normalizeEffortValue(current) : "";
-      if (normalized && (supported.length === 0 || supported.includes(normalized))) return normalized;
-      return nextModel.defaultEffort ? normalizeEffortValue(nextModel.defaultEffort) : normalized;
-    });
+    const normalized = effort ? normalizeEffortValue(effort) : "";
+    const nextEffort = normalized && (supported.length === 0 || supported.includes(normalized))
+      ? normalized
+      : nextModel.defaultEffort
+        ? normalizeEffortValue(nextModel.defaultEffort)
+        : normalized;
+    setEffort(nextEffort);
+    onDraftChange?.(thread.id, { effort: nextEffort });
   };
   const [branchRetry, setBranchRetry] = useState<TransientRetryState>(null);
   const refreshBranches = async () => {
@@ -4195,7 +4322,7 @@ const Composer = memo(function Composer({ thread, project, git, live, settings, 
           <small className="goal-banner-hint">/goal status · pause · resume · clear</small>
         </div>
       )}
-      <LiveWorkStatus running={running} waiting={waitingForResponse} live={live} shimmer={false} />
+      <LiveWorkStatus running={running} waiting={waitingForResponse} shimmer={false} />
       {queuedFollowUps.length > 0 && (
         <div className="followup-queue" aria-label="Queued follow-ups">
           {queuedFollowUps.map((item) => (
@@ -4252,6 +4379,7 @@ const Composer = memo(function Composer({ thread, project, git, live, settings, 
            {!prompt && <span className="composer-placeholder" aria-hidden="true">{composerPlaceholder}</span>}
            <div ref={editorRef} className="composer-input" contentEditable={!waitingForResponse} spellCheck={false} suppressContentEditableWarning role="textbox" aria-multiline="true" data-empty={prompt.length === 0 ? "true" : "false"} data-placeholder={composerPlaceholder}
              onInput={(event) => {
+               markLiveInteraction();
                const text = event.currentTarget.textContent ?? "";
                const meaningfulText = /[^\s\u200B\uFEFF]/.test(text) ? text : "";
                setPrompt(meaningfulText);
@@ -4273,7 +4401,7 @@ const Composer = memo(function Composer({ thread, project, git, live, settings, 
           </div>
           <div className="composer-right">
             <ContextUsageControl usage={contextUsage} loading={contextLoading} onRefresh={onRefreshContext} />
-            <ModelControl model={model} effort={effort} models={models} modelOptions={modelOptions} disabled={waitingForResponse} onModel={chooseModel} onEffort={setEffort} />
+            <ModelControl model={model} effort={effort} models={models} modelOptions={modelOptions} disabled={waitingForResponse} onModel={chooseModel} onEffort={chooseEffort} />
             {running && !prompt.trim() && pastedTexts.length === 0 ? <button className="send-button stop" onClick={onStop} title="Stop run"><CircleStop size={16} /></button> : <button className="send-button" onClick={() => void submit()} disabled={!prompt.trim() && attachments.length === 0 && pastedTexts.length === 0} title={running ? "Add context to current task" : "Send"}><ArrowUp size={17} /></button>}
            </div>
          </div>
@@ -4285,9 +4413,8 @@ const Composer = memo(function Composer({ thread, project, git, live, settings, 
 });
 
 // The composer holds the user's typing state; it must not re-render on every
-// streaming flush. During a stream the only props that change per flush are
-// `live` (feeds the LiveWorkStatus pill above the input) and inline callbacks
-// re-created by App's render — so we compare only the data props, which are
+// streaming flush. Live-run snapshots are not props here at all; inline callbacks
+// re-created by ordinary App renders are ignored, so we compare only data props, which are
 // all reference-stable while a thread streams. The moment anything real
 // changes (thread switch, queued follow-up, permission/answer modal, draft
 // sync, settings) a compared prop changes identity and the composer re-renders
@@ -5272,8 +5399,11 @@ export default function App() {
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
   const [skillCommands, setSkillCommands] = useState<SlashCommand[]>([]);
   const [discoveredSkills, setDiscoveredSkills] = useState<SlashCommand[]>([]);
-  const [liveRuns, setLiveRuns] = useState<Record<string, LiveRun>>({});
-  const [contextUsageByThread, setContextUsageByThread] = useState<Record<string, ContextUsage>>({});
+  // Live output lives in a keyed external store. Only the mounted live-tail for
+  // the affected thread subscribes; the app shell, composer, and settled
+  // transcript never render for text chunks.
+  const contextUsageByThreadRef = useRef<Record<string, ContextUsage>>({});
+  const [visibleContextUsageVersion, setVisibleContextUsageVersion] = useState(0);
   const [contextLoadingByThread, setContextLoadingByThread] = useState<Record<string, boolean>>({});
   const [liveSessions, setLiveSessions] = useState<Set<string>>(() => new Set());
   const [followUpQueues, setFollowUpQueues] = useState<Record<string, QueuedFollowUp[]>>({});
@@ -5286,6 +5416,34 @@ export default function App() {
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [reviewFile, setReviewFile] = useState<string | null>(null);
   const [reviewDiff, setReviewDiff] = useState<GitDiff | null>(null);
+  useEffect(() => {
+    // Capture physical input before React or IPC callbacks run. While the user
+    // is interacting, live transcript paints are held and coalesced; the latest
+    // snapshot catches up only after the interaction has gone idle.
+    const mark = () => markLiveInteraction();
+    const markPointerMove = (event: PointerEvent) => { if (event.buttons !== 0) markLiveInteraction(); };
+    const passiveCapture: AddEventListenerOptions = { capture: true, passive: true };
+    window.addEventListener("beforeinput", mark, true);
+    window.addEventListener("keydown", mark, true);
+    window.addEventListener("compositionstart", mark, true);
+    window.addEventListener("compositionupdate", mark, true);
+    window.addEventListener("pointerdown", mark, passiveCapture);
+    window.addEventListener("pointermove", markPointerMove, passiveCapture);
+    window.addEventListener("touchstart", mark, passiveCapture);
+    window.addEventListener("touchmove", mark, passiveCapture);
+    window.addEventListener("wheel", mark, passiveCapture);
+    return () => {
+      window.removeEventListener("beforeinput", mark, true);
+      window.removeEventListener("keydown", mark, true);
+      window.removeEventListener("compositionstart", mark, true);
+      window.removeEventListener("compositionupdate", mark, true);
+      window.removeEventListener("pointerdown", mark, passiveCapture);
+      window.removeEventListener("pointermove", markPointerMove, passiveCapture);
+      window.removeEventListener("touchstart", mark, passiveCapture);
+      window.removeEventListener("touchmove", mark, passiveCapture);
+      window.removeEventListener("wheel", mark, passiveCapture);
+    };
+  }, []);
   // Keep review selection per thread so navigating away and back restores it,
   // matching Synara's per-route diff state. Session-only (resets on app close).
   // We sync to the map on every change and restore on thread switch.
@@ -5338,6 +5496,11 @@ export default function App() {
   const [usageBusy, setUsageBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [transientRetry, setTransientRetry] = useState<TransientRetryState>(null);
+  // Provider retries belong to the active AI turn. Keep them separate from
+  // background IPC retries so an unrelated success cannot hide this notice
+  // while the model request is still alive.
+  const [providerRetry, setProviderRetry] = useState<(NonNullable<TransientRetryState> & { threadId: string }) | null>(null);
+  const visibleTransientRetry = providerRetry ?? transientRetry;
   const transientRetryTimerRef = useRef<number | null>(null);
   const clearTransientRetrySoon = useCallback((delayMs = 1500) => {
     if (transientRetryTimerRef.current !== null) window.clearTimeout(transientRetryTimerRef.current);
@@ -5353,6 +5516,7 @@ export default function App() {
   const [pendingPermission, setPendingPermission] = useState<{ threadId: string; requestId: string; toolUseId?: string; data: string; payload: PermissionRequestPayload } | null>(null);
   const [navigation, setNavigation] = useState<NavigationState>({ ids: [], index: -1 });
   const stateRef = useRef<AppState | null>(null);
+  const refreshStateRevisionRef = useRef(0);
   stateRef.current = state;
   // Mirror of currentThread/liveSessions for stable callbacks (sendPrompt etc.)
   // that must keep a constant reference across streaming renders.
@@ -5376,29 +5540,33 @@ export default function App() {
   // session-scoped (memory only) — closing and reopening the app resets it,
   // matching Synara's behavior for transient UI state. For true chat history
   // use the persisted thread messages, not the draft.
-  const [composerDrafts, setComposerDrafts] = useState<Record<string, { prompt: string; attachments: Attachment[]; pastedTexts: PastedTextDraft[]; model: string; effort: string; permission: PermissionMode }>>({});
-  const composerDraftsRef = useRef(composerDrafts);
-  composerDraftsRef.current = composerDrafts;
-  // Stable updater so <MemoizedComposer> sees a constant onDraftChange reference.
+  type ComposerDraft = { prompt: string; attachments: Attachment[]; pastedTexts: PastedTextDraft[]; model: string; effort: string; permission: PermissionMode };
+  const composerDraftsRef = useRef<Record<string, ComposerDraft>>({});
+  // Drafts are transient UI state already owned by each keyed Composer. Mirror
+  // them in a ref for thread hops instead of parent state: typing must never
+  // trigger a second Composer render plus a whole-App render per keystroke.
   const updateComposerDraft = useCallback((threadId: string, patch: Partial<{ prompt: string; attachments: Attachment[]; pastedTexts: PastedTextDraft[]; model: string; effort: string; permission: PermissionMode }>) => {
-    setComposerDrafts((prev) => {
-      const base = prev[threadId] ?? { prompt: "", attachments: [], pastedTexts: [], model: "", effort: "", permission: "auto" as PermissionMode };
-      return { ...prev, [threadId]: { ...base, ...patch } };
-    });
+    const base = composerDraftsRef.current[threadId] ?? {
+      prompt: "",
+      attachments: [],
+      pastedTexts: [],
+      model: "",
+      effort: "",
+      permission: "auto" as PermissionMode,
+    };
+    // Preserve object identity so an unrelated live-output render cannot pierce
+    // MemoizedComposer's prop comparison after the user typed or changed a picker.
+    Object.assign(base, patch);
+    composerDraftsRef.current[threadId] = base;
   }, []);
   // Session-only: prune drafts whose thread no longer exists to avoid leaks when
   // the user deletes threads while switching quickly.
   useEffect(() => {
     if (!state) return;
     const validIds = new Set(state.threads.map((t) => t.id));
-    let mutated = false;
-    for (const k of Object.keys(composerDrafts)) if (!validIds.has(k)) mutated = true;
-    if (!mutated) return;
-    setComposerDrafts((prev) => {
-      const next: typeof prev = {};
-      for (const [k, v] of Object.entries(prev)) if (validIds.has(k)) next[k] = v;
-      return next;
-    });
+    for (const k of Object.keys(composerDraftsRef.current)) {
+      if (!validIds.has(k)) delete composerDraftsRef.current[k];
+    }
   }, [state?.threads]);
 
   useEffect(() => {
@@ -5437,7 +5605,8 @@ export default function App() {
     setModelsLoading(false);
     setEngineModels([]);
     setUsage(null);
-    setContextUsageByThread({});
+    contextUsageByThreadRef.current = {};
+    setVisibleContextUsageVersion((version) => version + 1);
     setContextLoadingByThread({});
     setFollowUpQueues({});
   }, []);
@@ -5461,10 +5630,10 @@ export default function App() {
   const isThreadSwitchStale = Boolean(deferredThread && currentThread && deferredThread.id !== currentThread.id);
   const currentContextUsage = useMemo(() => {
     if (!currentThread) return null;
-    return contextUsageByThread[currentThread.id]
+    return contextUsageByThreadRef.current[currentThread.id]
       ?? currentThread.contextUsage
       ?? estimateThreadContextUsage(currentThread, engineModels, state?.settings.defaultModel ?? "");
-  }, [contextUsageByThread, currentThread, engineModels, state?.settings.defaultModel]);
+  }, [visibleContextUsageVersion, currentThread, engineModels, state?.settings.defaultModel]);
   const sideChatThread = useMemo(() => sideChatThreadId ? state?.threads.find((thread) => thread.id === sideChatThreadId) : undefined, [sideChatThreadId, state]);
   const modelOptions = useMemo(() => {
     const base = modelsLoading && engineModels.length === 0
@@ -5530,9 +5699,18 @@ export default function App() {
       onRetry: (attempt, max, error) => showTransientRetry(attempt, max, error),
     }).then((v) => { setTransientRetry(null); onSuccess?.(v); }).catch((e) => { setTransientRetry(null); onFinalError?.(e); });
   }, [showTransientRetry]);
-  const refreshState = useCallback(async () => setState(await retryWithBackoff(() => window.maximoDesktop.loadState(), {
-    retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
-  }).finally(() => setTransientRetry(null))), [showTransientRetry]);
+  const refreshState = useCallback(async (deferForInteraction = false) => {
+    const revision = ++refreshStateRevisionRef.current;
+    const next = await retryWithBackoff(() => window.maximoDesktop.loadState(), {
+      retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
+    }).finally(() => setTransientRetry(null));
+    const apply = () => {
+      if (revision !== refreshStateRevisionRef.current) return;
+      startTransition(() => setState(next));
+    };
+    if (deferForInteraction) scheduleAfterLiveInteraction("app-state-refresh", apply);
+    else apply();
+  }, [showTransientRetry]);
   const toggleEnvironment = useCallback(() => {
     setEnvironmentOpen((current) => {
       const next = !current;
@@ -5568,19 +5746,34 @@ export default function App() {
       return { ids: next, index: next.length - 1 };
     });
   }, []);
-  const refreshContextUsage = useCallback(async (threadId: string) => {
-    setContextLoadingByThread((current) => ({ ...current, [threadId]: true }));
+  const refreshContextUsage = useCallback(async (threadId: string, deferForInteraction = false) => {
+    if (stateRef.current?.selectedThreadId === threadId) {
+      const showLoading = () => startTransition(() => setContextLoadingByThread((current) => ({ ...current, [threadId]: true })));
+      if (deferForInteraction) scheduleAfterLiveInteraction(`context-loading:${threadId}`, showLoading);
+      else showLoading();
+    }
     try {
       const next = await retryWithBackoff(() => window.maximoDesktop.contextUsage(threadId), {
         retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
       });
-      if (next) setContextUsageByThread((current) => ({ ...current, [threadId]: next }));
+      if (next) {
+        contextUsageByThreadRef.current[threadId] = next;
+        if (stateRef.current?.selectedThreadId === threadId) {
+          scheduleAfterLiveInteraction(`context-usage:${threadId}`, () => {
+            startTransition(() => setVisibleContextUsageVersion((version) => version + 1));
+          });
+        }
+      }
       setTransientRetry(null);
     } catch {
       setTransientRetry(null);
       // Context telemetry is supplemental; keep the last successful reading.
     } finally {
-      setContextLoadingByThread((current) => ({ ...current, [threadId]: false }));
+      if (stateRef.current?.selectedThreadId === threadId) {
+        scheduleAfterLiveInteraction(`context-loading:${threadId}`, () => {
+          startTransition(() => setContextLoadingByThread((current) => ({ ...current, [threadId]: false })));
+        });
+      }
     }
   }, [showTransientRetry]);
 
@@ -5661,33 +5854,45 @@ export default function App() {
         }).catch(() => false);
       }
     };
+    if (event.type === "retrying") {
+      setProviderRetry({ threadId: event.threadId, attempt: event.attempt, max: event.max, message: event.message });
+    }
     if (event.type === "commands") {
       setSlashCommands(event.commands);
       setSkillCommands(event.skills?.length ? event.skills : []);
     }
     if (event.type === "finished") {
-      setFollowUpQueues((current) => {
-        if (!current[event.threadId]?.length) return current;
-        const next = { ...current };
-        delete next[event.threadId];
-        return next;
+      scheduleAfterLiveInteraction(`follow-up-finish:${event.threadId}`, () => {
+        startTransition(() => setFollowUpQueues((current) => {
+          if (!current[event.threadId]?.length) return current;
+          const next = { ...current };
+          delete next[event.threadId];
+          return next;
+        }));
       });
     }
     if (event.type === "context") {
-      setContextUsageByThread((current) => ({ ...current, [event.threadId]: event.context }));
+      contextUsageByThreadRef.current[event.threadId] = event.context;
+      if (stateRef.current?.selectedThreadId === event.threadId) {
+        scheduleAfterLiveInteraction(`context-event:${event.threadId}`, () => {
+          startTransition(() => setVisibleContextUsageVersion((version) => version + 1));
+        });
+      }
     }
     // Goal mode status lines surface as activity labels from the CLI
     // (e.g. "Goal continuing — …", "Goal complete.", "Goal paused — …").
     if (event.type === "activity" && /^goal\b/i.test(event.label.trim())) {
       const goal = goalStateFromText(event.label.trim(), event.timestamp);
-      setState((current) => {
-        if (!current) return current;
-        return {
-          ...current,
-          threads: current.threads.map((thread) =>
-            thread.id === event.threadId ? { ...thread, goal } : thread,
-          ),
-        };
+      scheduleAfterLiveInteraction(`goal:${event.threadId}`, () => {
+        startTransition(() => setState((current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            threads: current.threads.map((thread) =>
+              thread.id === event.threadId ? { ...thread, goal } : thread,
+            ),
+          };
+        }));
       });
     }
     if (event.type === "question") {
@@ -5716,106 +5921,96 @@ export default function App() {
       notifyBackground("Approval needed", `${event.toolName} is waiting for permission.`, event.threadId);
     }
     if (event.type === "turn-complete") {
+      setProviderRetry((current) => current?.threadId === event.threadId ? null : current);
       setPendingQuestion((current) => current?.threadId === event.threadId ? null : current);
       setPendingPermission((current) => current?.threadId === event.threadId ? null : current);
-      void refreshContextUsage(event.threadId);
-      void refreshState().then(() => { void flushQueuedFollowUpRef.current(event.threadId); });
-      if (currentProject) void retryWithBackoff(() => window.maximoDesktop.gitStatus(currentProject.id), { retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((v) => { setTransientRetry(null); setGit(v); }).catch(() => setTransientRetry(null));
+      void refreshContextUsage(event.threadId, true);
+      void refreshState(true).then(() => { void flushQueuedFollowUpRef.current(event.threadId); });
+      if (currentProject) void retryWithBackoff(() => window.maximoDesktop.gitStatus(currentProject.id), { retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((v) => {
+        setTransientRetry(null);
+        scheduleAfterLiveInteraction(`git-status:${currentProject.id}`, () => startTransition(() => setGit(v)));
+      }).catch(() => setTransientRetry(null));
     }
     if (event.type === "finished") {
+      setProviderRetry((current) => current?.threadId === event.threadId ? null : current);
       const latestState = stateRef.current;
       const finishedThread = latestState?.threads.find((thread) => thread.id === event.threadId);
       const inBackground = event.threadId !== latestState?.selectedThreadId;
       if (inBackground) {
         notifyBackground(finishedThread?.title ?? "Chat", event.status === "complete" ? "Finished successfully." : `Ended with status ${event.status}.`, event.threadId);
       }
-      setState((current) => current ? { ...current, threads: current.threads.map((thread) => thread.id === event.threadId ? { ...thread, status: event.status } : thread) } : current);
-      void refreshState();
+      scheduleAfterLiveInteraction(`thread-finished:${event.threadId}`, () => {
+        startTransition(() => setState((current) => current ? { ...current, threads: current.threads.map((thread) => thread.id === event.threadId ? { ...thread, status: event.status } : thread) } : current));
+      });
+      void refreshState(true);
     }
+    };
+    let inputDeferrals = 0;
+    const flushPendingEvents = () => {
+      frame = null;
+      if (pendingEvents.length === 0) return;
+      // Let a newly queued wheel/key/pointer interaction run first, but cap the
+      // delay so lifecycle and approval events can never be starved.
+      const nav = navigator as unknown as { scheduling?: { isInputPending?: () => boolean } };
+      if (inputDeferrals < 2 && nav.scheduling?.isInputPending?.()) {
+        inputDeferrals += 1;
+        frame = window.requestAnimationFrame(flushPendingEvents);
+        return;
+      }
+      inputDeferrals = 0;
+      const events = pendingEvents.splice(0);
+
+      if (events.some((event) => event.type === "started" || event.type === "finished")) {
+        setLiveSessions((current) => {
+          const next = new Set(current);
+          for (const event of events) {
+            if (event.type === "started") next.add(event.threadId);
+            if (event.type === "finished") next.delete(event.threadId);
+          }
+          return next;
+        });
+      }
+
+      if (events.some((event) => event.type !== "finished")) {
+        // Coalesce adjacent append chunks once, outside React's render phase.
+        // Reducers inside a transition updater may be replayed when React
+        // interrupts/restarts background work, multiplying stream CPU cost.
+        const coalesced: RunEvent[] = [];
+        const textBuffer = new Map<string, { text: string; timestamp: number }>();
+        for (const event of events) {
+          if (event.type === "text" && event.mode === "append") {
+            const buffered = textBuffer.get(event.threadId);
+            if (buffered) buffered.text += event.text;
+            else textBuffer.set(event.threadId, { text: event.text, timestamp: event.timestamp });
+            continue;
+          }
+          const buffered = textBuffer.get(event.threadId);
+          if (buffered) {
+            coalesced.push({ type: "text", threadId: event.threadId, text: buffered.text, mode: "append", timestamp: buffered.timestamp });
+            textBuffer.delete(event.threadId);
+          }
+          coalesced.push(event);
+        }
+        for (const [threadId, buffered] of textBuffer) {
+          coalesced.push({ type: "text", threadId, text: buffered.text, mode: "append", timestamp: buffered.timestamp });
+        }
+        const reducedEvents = coalesced.length ? coalesced : events;
+        const nextLiveRuns = reduceLiveRunEvents(getLiveRunsSnapshot(), reducedEvents);
+        publishLiveRuns(nextLiveRuns, reducedEvents.map((event) => event.threadId));
+      }
+
+      // Permission/question/lifecycle state is interaction-critical. Keep it
+      // outside the transition so React does not deprioritize the modal or
+      // completion state together with transcript paint work.
+      for (const event of events) {
+        try { processRunEvent(event); } catch (error) { console.error("[processRunEvent] isolated error", error); }
+      }
     };
     const unsubscribe = window.maximoDesktop.onRunEvent((event: RunEvent) => {
       if (!event || typeof (event as RunEvent).type !== "string" || typeof (event as RunEvent).threadId !== "string") return;
       pendingEvents.push(event);
       if (frame !== null) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = null;
-        // 2026 scheduler yield: if user is actively scrolling/typing, defer this flush one frame
-        const nav = navigator as unknown as { scheduling?: { isInputPending?: () => boolean } };
-        if (nav.scheduling?.isInputPending?.()) {
-          frame = window.requestAnimationFrame(() => {
-            frame = null;
-            const retryEvents = pendingEvents.splice(0);
-            if (retryEvents.length === 0) return;
-            try {
-              startTransition(() => {
-                setLiveRuns((current) => reduceLiveRunEvents(current, retryEvents));
-              });
-            } catch { /* keep UI alive */ }
-            for (const next of retryEvents) {
-              try { processRunEvent(next); } catch { /* isolated */ }
-            }
-          });
-          return;
-        }
-        const events = pendingEvents.splice(0);
-        // Defer live streaming work as a transition so user interactions
-        // (timeline expand, scroll, typing) remain urgent and don't hang.
-        const flush = () => {
-          if (events.some((event) => event.type === "started" || event.type === "finished")) {
-            setLiveSessions((current) => {
-              const next = new Set(current);
-              for (const event of events) {
-                if (event.type === "started") next.add(event.threadId);
-                if (event.type === "finished") next.delete(event.threadId);
-              }
-              return next;
-            });
-          }
-          if (events.some((event) => event.type !== "finished")) {
-            // Coalesce text appends within the same frame to avoid
-            // per-char React churn when the model streams rapidly.
-            const coalesced: RunEvent[] = [];
-            const textBuffer = new Map<string, { text: string; timestamp: number }>();
-            for (const ev of events) {
-              if (ev.type === "text" && ev.mode === "append") {
-                const buf = textBuffer.get(ev.threadId);
-                if (buf) buf.text += ev.text;
-                else textBuffer.set(ev.threadId, { text: ev.text, timestamp: ev.timestamp });
-              } else {
-                // flush any buffered text for this thread before non-text event
-                const buf = textBuffer.get(ev.threadId);
-                if (buf) {
-                  coalesced.push({ type: "text", threadId: ev.threadId, text: buf.text, mode: "append", timestamp: buf.timestamp });
-                  textBuffer.delete(ev.threadId);
-                }
-                coalesced.push(ev);
-              }
-            }
-            for (const [threadId, buf] of textBuffer) {
-              coalesced.push({ type: "text", threadId, text: buf.text, mode: "append", timestamp: buf.timestamp });
-            }
-            const toReduce = coalesced.length ? coalesced : events;
-            try {
-              startTransition(() => {
-                setLiveRuns((current) => reduceLiveRunEvents(current, toReduce));
-              });
-            } catch {
-              setLiveRuns((current) => reduceLiveRunEvents(current, toReduce));
-            }
-          }
-          // processRunEvent contains high-priority UI like permission prompts;
-          // keep those urgent, but run them after the transition so the frame can paint.
-          for (const next of events) {
-            try { processRunEvent(next); } catch (e) { console.error("[processRunEvent] isolated error", e); }
-          }
-        };
-        // Use startTransition if available to keep the flush low-priority
-        try {
-          startTransition(flush);
-        } catch {
-          try { flush(); } catch (e) { console.error("[flush] isolated", e); }
-        }
-      });
+      frame = window.requestAnimationFrame(flushPendingEvents);
     });
     return () => {
       unsubscribe();
@@ -6072,35 +6267,35 @@ export default function App() {
     });
   }, []);
 
-  const updateThreadEnvironment = useCallback((operation: Promise<AppState>) => {
-    void retryWithBackoff(() => operation, {
+  const updateThreadEnvironment = useCallback((operation: () => Promise<AppState>) => {
+    void retryWithBackoff(operation, {
       retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
     }).then((next) => { setTransientRetry(null); setState(next); }).catch((error) => { setTransientRetry(null); showToast(error instanceof Error ? error.message : "Unable to update chat environment."); });
   }, [showToast, showTransientRetry]);
   const toggleMessagePin = useCallback((messageId: string) => {
-    if (currentThread) updateThreadEnvironment(window.maximoDesktop.toggleMessagePinned(currentThread.id, messageId));
+    if (currentThread) updateThreadEnvironment(() => window.maximoDesktop.toggleMessagePinned(currentThread.id, messageId));
   }, [currentThread, updateThreadEnvironment]);
   const setMessagePinDone = (messageId: string, done: boolean) => {
-    if (currentThread) updateThreadEnvironment(window.maximoDesktop.setMessagePinDone(currentThread.id, messageId, done));
+    if (currentThread) updateThreadEnvironment(() => window.maximoDesktop.setMessagePinDone(currentThread.id, messageId, done));
   };
   const removeMessagePin = (messageId: string) => {
-    if (currentThread) updateThreadEnvironment(window.maximoDesktop.removeMessagePin(currentThread.id, messageId));
+    if (currentThread) updateThreadEnvironment(() => window.maximoDesktop.removeMessagePin(currentThread.id, messageId));
   };
   const renameMessagePin = (messageId: string, label: string | null) => {
-    if (currentThread) updateThreadEnvironment(window.maximoDesktop.setMessagePinLabel(currentThread.id, messageId, label));
+    if (currentThread) updateThreadEnvironment(() => window.maximoDesktop.setMessagePinLabel(currentThread.id, messageId, label));
   };
   const setThreadMarkerDone = (markerId: string, done: boolean) => {
-    if (currentThread) updateThreadEnvironment(window.maximoDesktop.setThreadMarkerDone(currentThread.id, markerId, done));
+    if (currentThread) updateThreadEnvironment(() => window.maximoDesktop.setThreadMarkerDone(currentThread.id, markerId, done));
   };
   const removeThreadMarker = (markerId: string) => {
-    if (currentThread) updateThreadEnvironment(window.maximoDesktop.removeThreadMarker(currentThread.id, markerId));
+    if (currentThread) updateThreadEnvironment(() => window.maximoDesktop.removeThreadMarker(currentThread.id, markerId));
   };
   const renameThreadMarker = (markerId: string, label: string | null) => {
-    if (currentThread) updateThreadEnvironment(window.maximoDesktop.setThreadMarkerLabel(currentThread.id, markerId, label));
+    if (currentThread) updateThreadEnvironment(() => window.maximoDesktop.setThreadMarkerLabel(currentThread.id, markerId, label));
   };
   const updateThreadNotes = useCallback((notes: string) => {
-    if (currentThread) updateThreadEnvironment(window.maximoDesktop.updateThreadNotes(currentThread.id, notes));
-  }, [currentThread]);
+    if (currentThread) updateThreadEnvironment(() => window.maximoDesktop.updateThreadNotes(currentThread.id, notes));
+  }, [currentThread, updateThreadEnvironment]);
 
   const resizeSidebar = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -6504,9 +6699,15 @@ export default function App() {
   const editAndResendMessage = useCallback(async (messageId: string, text: string) => {
     const thread = currentThreadRef.current;
     if (!thread) return;
-    const model = thread.model ?? stateRef.current?.settings.defaultModel ?? "";
-    const effort = thread.effort ?? stateRef.current?.settings.defaultEffort ?? "";
-    const permission = thread.permission ?? stateRef.current?.settings.defaultPermission ?? "auto";
+    // Resend is a new request, so it must use the pickers the user can see now,
+    // not the model/effort persisted on the previous turn.
+    const draft = composerDraftsRef.current[thread.id];
+    const settings = stateRef.current?.settings;
+    const { model, effort, permission } = resolveComposerRunSelection(draft, thread, {
+      model: settings?.defaultModel ?? "",
+      effort: settings?.defaultEffort ?? "",
+      permission: settings?.defaultPermission ?? "auto",
+    });
     const result = await window.maximoDesktop.editAndResendMessage({
       threadId: thread.id,
       prompt: text,
@@ -6519,7 +6720,7 @@ export default function App() {
     if (result.state) setState(result.state);
     if (!result.accepted) showToast(result.error ?? "Unable to edit and resend the message.");
     else showToast("Message edited and resent.");
-  }, [refreshState]);
+  }, []);
 
   const revertToMessage = useCallback(async (messageId: string, revertFiles: boolean) => {
     const thread = currentThreadRef.current;
@@ -6633,7 +6834,7 @@ export default function App() {
     return (
       <AppErrorBoundary>
         <AccountLoadingGate theme={state.settings.theme} />
-        {transientRetry && <TransientRetryNotice state={transientRetry} onDismiss={() => setTransientRetry(null)} />}
+        {visibleTransientRetry && <TransientRetryNotice state={visibleTransientRetry} onDismiss={() => { setProviderRetry(null); setTransientRetry(null); }} />}
         {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
       </AppErrorBoundary>
     );
@@ -6648,7 +6849,7 @@ export default function App() {
           onCancelLogin={() => void cancelLoginAccount()}
           onRefresh={() => void refreshAccount()}
         />
-        {transientRetry && <TransientRetryNotice state={transientRetry} onDismiss={() => setTransientRetry(null)} />}
+        {visibleTransientRetry && <TransientRetryNotice state={visibleTransientRetry} onDismiss={() => { setProviderRetry(null); setTransientRetry(null); }} />}
         {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
       </AppErrorBoundary>
     );
@@ -6693,7 +6894,7 @@ export default function App() {
                project={currentProject}
                thread={currentThread}
                git={git}
-               activity={currentThread ? liveRuns[currentThread.id]?.activity : undefined}
+               activity={getLiveRun(currentThread?.id)?.activity}
                onJumpToMessage={jumpToMessage}
               onTogglePinDone={setMessagePinDone}
               onRemovePin={removeMessagePin}
@@ -6721,9 +6922,9 @@ export default function App() {
                 const safeRenderThread = renderThread ?? currentThread;
                 if (!safeRenderThread) return <EmptyWorkspace project={currentProject} onOpenProject={openProject} onNewThread={() => void newThread(currentProject?.id)} />;
                 return <>
-                 <ThreadErrorBoundary key={`thread-${safeRenderThread.id}`} threadId={safeRenderThread.id}><MemoizedMessageView thread={safeRenderThread} project={currentProject} git={git} models={engineModels} live={liveRuns[safeRenderThread.id]} waiting={pendingQuestion?.threadId === safeRenderThread.id || pendingPermission?.threadId === safeRenderThread.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} queuedFollowUps={followUpQueues[safeRenderThread.id] ?? EMPTY_QUEUED_FOLLOW_UPS} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} onEditResend={editAndResendMessage} onRevert={revertToMessage} /></ThreadErrorBoundary>
+                 <ThreadErrorBoundary key={`thread-${safeRenderThread.id}`} threadId={safeRenderThread.id}><MemoizedMessageView thread={safeRenderThread} project={currentProject} git={git} models={engineModels} waiting={pendingQuestion?.threadId === safeRenderThread.id || pendingPermission?.threadId === safeRenderThread.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} queuedFollowUps={followUpQueues[safeRenderThread.id] ?? EMPTY_QUEUED_FOLLOW_UPS} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} onEditResend={editAndResendMessage} onRevert={revertToMessage} /></ThreadErrorBoundary>
               <ThreadErrorBoundary key={`trail-${safeRenderThread.id}`} threadId={safeRenderThread.id}><MessageTrail thread={safeRenderThread} onSelect={jumpToMessage} /></ThreadErrorBoundary>
-             <ThreadErrorBoundary key={`composer-${currentThread.id}`} threadId={currentThread.id}><MemoizedComposer key={currentThread.id} thread={currentThread} project={currentProject} git={git} live={liveRuns[currentThread.id]} settings={state.settings} models={engineModels} modelOptions={modelOptions} slashCommands={slashCommands} skillCommands={skillCommands} discoveredSkills={discoveredSkills} contextUsage={currentContextUsage} contextLoading={Boolean(contextLoadingByThread[currentThread.id])} onRefreshContext={() => refreshContextUsage(currentThread.id)} onSend={sendPrompt} onPreviewAttachment={openAttachmentPreview} draft={composerDrafts[currentThread.id]} onDraftChange={updateComposerDraft}
+             <ThreadErrorBoundary key={`composer-${currentThread.id}`} threadId={currentThread.id}><MemoizedComposer key={currentThread.id} thread={currentThread} project={currentProject} git={git} settings={state.settings} models={engineModels} modelOptions={modelOptions} slashCommands={slashCommands} skillCommands={skillCommands} discoveredSkills={discoveredSkills} contextUsage={currentContextUsage} contextLoading={Boolean(contextLoadingByThread[currentThread.id])} onRefreshContext={() => refreshContextUsage(currentThread.id)} onSend={sendPrompt} onPreviewAttachment={openAttachmentPreview} draft={composerDraftsRef.current[currentThread.id]} onDraftChange={updateComposerDraft}
               onStop={() => {
                 setFollowUpQueues((current) => {
                   if (!current[currentThread.id]?.length) return current;
@@ -6756,9 +6957,9 @@ export default function App() {
         git={git}
         reviewFile={reviewFile}
         reviewDiff={reviewDiff}
-        activity={currentThread ? liveRuns[currentThread.id]?.activity : undefined}
+        activity={getLiveRun(currentThread?.id)?.activity}
         request={dockRequest}
-        sideChat={{ thread: sideChatThread, liveText: sideChatThreadId ? liveRuns[sideChatThreadId]?.text : undefined, running: sideChatThread?.status === "running" || Boolean(sideChatThreadId && liveSessions.has(sideChatThreadId)), onCreate: createSideChat, onSend: (prompt) => void sendSideChat(prompt) }}
+        sideChat={{ thread: sideChatThread, running: sideChatThread?.status === "running" || Boolean(sideChatThreadId && liveSessions.has(sideChatThreadId)), onCreate: createSideChat, onSend: (prompt) => void sendSideChat(prompt) }}
         onRequestHandled={() => setDockRequest(null)}
         onOpenChange={setInspectorVisible}
         onOpenDiff={(path, diff) => void openDiff(path, diff)}
@@ -6802,7 +7003,7 @@ export default function App() {
         onClose={closeWhatsNewDialog}
         onOpenReleaseUrl={(url) => { void window.maximoDesktop.openPath(url); }}
       />
-      {transientRetry && <TransientRetryNotice state={transientRetry} onDismiss={() => setTransientRetry(null)} />}
+      {visibleTransientRetry && <TransientRetryNotice state={visibleTransientRetry} onDismiss={() => { setProviderRetry(null); setTransientRetry(null); }} />}
       {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
     </div>
     </AppErrorBoundary>

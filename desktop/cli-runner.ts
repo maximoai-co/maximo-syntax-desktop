@@ -45,6 +45,7 @@ interface ParsedUpdate {
   apiUsageReset?: boolean;
   model?: string;
   modelUsage?: Record<string, { contextWindow?: number; maxOutputTokens?: number }>;
+  retrying?: { attempt: number; max: number; delayMs: number; message: string };
 }
 
 export function parseClassifierDenial(result?: string): ClassifierDecision | undefined {
@@ -76,6 +77,42 @@ function parseAgentTerminalStatus(value: unknown): Exclude<AgentStatus, "running
 
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function summarizeRetryError(value: unknown, seen = new Set<unknown>()): string {
+  if (value == null || seen.has(value)) return "";
+  seen.add(value);
+  if (typeof value === "string") {
+    const message = value.trim();
+    const categoryLabels: Record<string, string> = {
+      unknown: "Connection issue",
+      server_error: "Server error",
+      rate_limit: "Rate limit reached",
+      authentication_failed: "Authentication issue",
+    };
+    return (categoryLabels[message] ?? message).slice(0, 240);
+  }
+  if (value instanceof Error) return value.message.trim().slice(0, 240);
+  if (typeof value !== "object") return "";
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["message", "detail", "reason", "description"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim().slice(0, 240);
+  }
+  for (const key of ["error", "cause"]) {
+    const nested = summarizeRetryError(record[key], seen);
+    if (nested) return nested;
+  }
+  const status = finiteNumber(record.status) ?? (typeof record.status === "string" ? record.status : undefined);
+  const type = typeof record.type === "string" ? record.type : undefined;
+  if (status !== undefined || type) return [status, type].filter(Boolean).join(" ").slice(0, 240);
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized && serialized !== "{}" ? serialized.slice(0, 240) : "";
+  } catch {
+    return "";
+  }
 }
 
 function parseContextApiUsage(value: unknown): ContextApiUsage | undefined {
@@ -383,6 +420,25 @@ export function parseCliMessage(value: unknown): ParsedUpdate {
         ? message.skills.flatMap((value): SlashCommand[] => typeof value === "string" && value.trim() ? [{ name: value.trim().replace(/^\//, "") }] : [])
         : [];
       return { sessionId, commands, ...(skills.length > 0 ? { skills } : {}) };
+    }
+    if (subtype === "api_retry" || subtype === "api_error") {
+      const attemptValue = finiteNumber(message.attempt ?? message.retryAttempt);
+      const maxRetriesValue = finiteNumber(message.max_retries ?? message.maxRetries);
+      if (attemptValue !== undefined && maxRetriesValue !== undefined && attemptValue > 0 && maxRetriesValue > 0) {
+        const attempt = Math.max(1, Math.round(attemptValue));
+        const max = Math.max(attempt, Math.round(maxRetriesValue));
+        const delayMsValue = finiteNumber(message.retry_delay_ms ?? message.retryInMs) ?? 0;
+        const status = finiteNumber(message.error_status);
+        return {
+          sessionId,
+          retrying: {
+            attempt,
+            max,
+            delayMs: Math.max(0, Math.round(delayMsValue)),
+            message: summarizeRetryError(message.error) || (status === undefined ? "Connection issue" : `Request failed (${status})`),
+          },
+        };
+      }
     }
     if (subtype === "classifier_decision") {
       const toolUseId = typeof message.tool_use_id === "string" ? message.tool_use_id : undefined;
@@ -1261,6 +1317,8 @@ export class CliRunner {
       ...(browserBridge ? { ENABLE_TOOL_SEARCH: "false" } : {}),
       MAXIMO_SYNTAX_DESKTOP: "1",
       MAXIMO_SYNTAX_ENVIRONMENT_KIND: "bridge",
+      // Keep provider retries bounded while the active turn remains alive.
+      MAXIMO_SYNTAX_MAX_RETRIES: engine.environment.MAXIMO_SYNTAX_MAX_RETRIES ?? "3",
       FORCE_COLOR: "0",
       // Enables the CLI's file-history snapshots so "revert to this message"
       // can restore tracked files. Snapshot creation is cheap and only runs
@@ -1379,12 +1437,13 @@ export class CliRunner {
       })();
     };
     const queuedFollowUps: Array<{ prompt: string; attachments: Attachment[]; uuid?: string }> = [];
-    // Live text deltas are coalesced into bounded snapshots so the renderer is
+    // Live text deltas are coalesced into bounded batches so the renderer is
     // not flooded with a markdown re-parse per raw token chunk. Deltas append
     // into turn.streamedText immediately (state stays exact); the renderer
-    // receives full-so-far text at most every TEXT_FLUSH_INTERVAL_MS.
+    // receives at most one incremental batch per TEXT_FLUSH_INTERVAL_MS.
     let textFlushTimer: ReturnType<typeof setTimeout> | null = null;
-    let pendingTextFlush: { text: string; at: number } | null = null;
+    let pendingTextFlush: { chunks: string[]; mode: "append" | "replace"; at: number } | null = null;
+    const pendingAgentTextFlushes = new Map<string, { chunks: string[]; mode: "append" | "replace"; at: number }>();
     const TEXT_FLUSH_INTERVAL_MS = 120;
     const flushPendingText = () => {
       if (textFlushTimer !== null) {
@@ -1393,8 +1452,24 @@ export class CliRunner {
       }
       const pending = pendingTextFlush;
       pendingTextFlush = null;
-      if (!pending || turn.completed) return;
-      callbacks.onEvent({ type: "text", threadId: request.threadId, text: pending.text, mode: "replace", timestamp: pending.at });
+      if (turn.completed) {
+        pendingAgentTextFlushes.clear();
+        return;
+      }
+      if (pending) {
+        const text = pending.chunks.length === 1 ? pending.chunks[0]! : pending.chunks.join("");
+        const last = turn.timeline.at(-1);
+        if (last?.type === "text") last.text = pending.mode === "append" ? last.text + text : text;
+        else appendBounded(turn.timeline, { type: "text", text, timestamp: pending.at }, MAX_RUN_TIMELINE_ITEMS);
+        callbacks.onEvent({ type: "text", threadId: request.threadId, text, mode: pending.mode, timestamp: pending.at });
+      }
+      for (const [taskId, agentPending] of pendingAgentTextFlushes) {
+        const text = agentPending.chunks.length === 1 ? agentPending.chunks[0]! : agentPending.chunks.join("");
+        const work: AgentWorkItem = { type: "text", text, mode: agentPending.mode, timestamp: agentPending.at };
+        appendAgentWork(turn, taskId, work);
+        callbacks.onEvent({ type: "agent-work", threadId: request.threadId, taskId, work, timestamp: work.timestamp });
+      }
+      pendingAgentTextFlushes.clear();
     };
     const flushQueued = (betweenToolRounds: boolean) => {
       if (betweenToolRounds) {
@@ -1420,6 +1495,7 @@ export class CliRunner {
     const beginTurn = (prompt: string, attachments: Attachment[], uuid?: string) => {
       // Drop any pending coalesced text snapshot — a new turn resets the text.
       if (pendingTextFlush) pendingTextFlush = null;
+      pendingAgentTextFlushes.clear();
       if (textFlushTimer !== null) {
         clearTimeout(textFlushTimer);
         textFlushTimer = null;
@@ -1456,6 +1532,9 @@ export class CliRunner {
           sessionId = update.sessionId;
           callbacks.onEvent({ type: "session", threadId: request.threadId, sessionId, timestamp: timestamp() });
         }
+        if (update.retrying) {
+          callbacks.onEvent({ type: "retrying", threadId: request.threadId, ...update.retrying, timestamp: timestamp() });
+        }
         if (update.model && !update.parentToolUseId) turn.lastModel = update.model;
         if (update.apiUsage && !update.parentToolUseId) {
           turn.lastApiUsage = update.apiUsage;
@@ -1487,14 +1566,19 @@ export class CliRunner {
         if (update.text !== undefined && update.textMode) {
           turn.streamedText = update.textMode === "append" ? turn.streamedText + update.text : update.text;
           const at = timestamp();
-          const last = turn.timeline.at(-1);
-          if (last?.type === "text") last.text = update.textMode === "append" ? last.text + update.text : update.text;
-          else appendBounded(turn.timeline, { type: "text", text: update.text, timestamp: at }, MAX_RUN_TIMELINE_ITEMS);
-          // Coalesce live text deltas: buffer and emit a full-so-far snapshot at
-          // most every TEXT_FLUSH_INTERVAL_MS. turn.streamedText above is always
-          // exact, so the final result is unaffected — only the renderer's
-          // per-flush work (markdown re-parse, timeline diff) is reduced.
-          pendingTextFlush = { text: turn.streamedText, at };
+          // Coalesce append deltas without repeatedly serializing the entire
+          // answer over IPC or cloning the timeline per raw token. A provider
+          // `replace` remains a full snapshot; later appends extend it exactly.
+          if (update.textMode === "replace") {
+            pendingTextFlush = { chunks: [turn.streamedText], mode: "replace", at };
+          } else if (pendingTextFlush?.mode === "replace") {
+            pendingTextFlush = { chunks: [turn.streamedText], mode: "replace", at };
+          } else if (pendingTextFlush) {
+            pendingTextFlush.chunks.push(update.text);
+            pendingTextFlush.at = at;
+          } else {
+            pendingTextFlush = { chunks: [update.text], mode: "append", at };
+          }
           if (textFlushTimer === null) {
             textFlushTimer = setTimeout(() => {
               textFlushTimer = null;
@@ -1506,15 +1590,36 @@ export class CliRunner {
           ...(update.activity ? [{ activity: update.activity, detail: update.detail, data: update.data, todos: update.todos, toolUseId: update.toolUseId, toolName: update.toolName }] : []),
           ...(update.activities ?? []),
         ];
+        // Preserve text-before-tool ordering while keeping text-only token
+        // bursts coalesced. This is the only point the persisted timeline is
+        // updated, avoiding duplicate full-string work for every raw delta.
+        if (pendingTextFlush && (
+          parsedActivities.length > 0
+          || Boolean(update.agentStarted || update.agentProgress || update.agentFinished)
+          || Boolean(update.interactive || update.classifierDecision)
+          || (update.toolResults?.length ?? 0) > 0
+          || update.result !== undefined
+        )) flushPendingText();
         const parentAgent = update.parentToolUseId
           ? [...turn.agents.values()].find((agent) => agent.toolUseId === update.parentToolUseId || agent.taskId === update.parentToolUseId)
           : undefined;
         if (parentAgent && !update.interactive && (update.text !== undefined || parsedActivities.length > 0 || (update.toolResults?.length ?? 0) > 0)) {
           if (update.text !== undefined && update.textMode) {
-            const work: AgentWorkItem = { type: "text", text: update.text, mode: update.textMode, timestamp: timestamp() };
-            appendAgentWork(turn, parentAgent.taskId, work);
-            callbacks.onEvent({ type: "agent-work", threadId: request.threadId, taskId: parentAgent.taskId, work, timestamp: work.timestamp });
+            const at = timestamp();
+            const pendingAgent = pendingAgentTextFlushes.get(parentAgent.taskId);
+            if (update.textMode === "replace") {
+              pendingAgentTextFlushes.set(parentAgent.taskId, { chunks: [update.text], mode: "replace", at });
+            } else if (pendingAgent?.mode === "replace") {
+              pendingAgent.chunks.push(update.text);
+              pendingAgent.at = at;
+            } else if (pendingAgent) {
+              pendingAgent.chunks.push(update.text);
+              pendingAgent.at = at;
+            } else {
+              pendingAgentTextFlushes.set(parentAgent.taskId, { chunks: [update.text], mode: "append", at });
+            }
           }
+          if (parsedActivities.length > 0 || (update.toolResults?.length ?? 0) > 0) flushPendingText();
           for (const parsedActivity of parsedActivities) {
             const file = activityFilePath(cwd, parsedActivity);
             if (file) {

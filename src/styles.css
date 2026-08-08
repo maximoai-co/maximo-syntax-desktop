@@ -468,7 +468,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .capability-row span { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--surface) 55%, transparent); font-size: 10px; }
 
 /* min-width:0 lets this flex child shrink so long AI code/tables cannot widen the stage */
-.conversation-scroll { min-width: 0; min-height: 0; height: 0; flex: 1 1 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; -webkit-overflow-scrolling: touch; will-change: scroll-position; transform: translateZ(0); contain: layout paint; }
+.conversation-scroll { min-width: 0; min-height: 0; height: 0; flex: 1 1 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; -webkit-overflow-scrolling: touch; contain: layout paint; }
 .conversation { width: min(820px, calc(100% - var(--app-density-chat-gutter-total, 40px))); max-width: 100%; min-width: 0; margin: 0 auto; padding: 24px 0 190px; box-sizing: border-box; }
 .conversation-show-older { display: block; width: fit-content; margin: 8px auto 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 11px; font-weight: 600; }
 .conversation-show-older:hover { background: var(--surface-hover); color: var(--text); }
@@ -548,16 +548,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   pointer-events: none !important;
   transform: translateY(4px) !important;
 }
-.composer:has(.custom-select.open) .composer-placeholder,
-.composer:has(.model-control.open) .composer-placeholder,
-.composer:has(.context-usage-control.open) .composer-placeholder,
-.composer:has(.add-menu) .composer-placeholder,
-.composer:has(.context-menu) .composer-placeholder,
-.composer:has(.slash-command-menu) .composer-placeholder {
-  opacity: 0 !important;
-  visibility: hidden !important;
-  pointer-events: none !important;
-}
 .message-trail { position: absolute; z-index: 2; inset: 0 auto 0 0; width: 56px; display: flex; align-items: center; justify-content: center; pointer-events: none; opacity: 0; transition: opacity .18s ease; }
 .message-trail.visible { pointer-events: auto; opacity: 1; }
 .message-trail-viewport { position: relative; width: 56px; max-height: 80%; overflow-y: auto; scrollbar-width: none; }
@@ -586,6 +576,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .thread-empty h3 { max-width: 650px; margin: 0; font-family: var(--theme-display-font-family, "Manrope"); color: var(--text-strong); font-size: clamp(19px, 2.3vw, 25px); font-weight: 400; letter-spacing: -.025em; }
 .thread-empty p { max-width: 430px; margin: 7px 0 13px; color: var(--muted); font-size: 11px; }
 .message { position: relative; min-width: 0; max-width: 100%; padding: 0 2px 22px; content-visibility: auto; contain-intrinsic-size: auto 88px; }
+.message.streaming { content-visibility: visible; contain: layout paint style; overflow-anchor: none; }
 .message + .message { padding-top: 3px; }
 .message.assistant, .message.system { display: block; padding-left: 0; }
 .message-meta { min-height: 29px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
@@ -1543,6 +1534,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .main-stage.thread-switch-pending .chat-transcript-pane.stale { opacity: 0.97; }
 .main-stage.thread-switch-pending .chat-transcript-pane.stale .conversation { pointer-events: none; }
 .composer { position: relative; width: min(860px, 100%); margin: 0 auto; border-radius: 16px; overflow: visible; box-shadow: var(--shadow); transition: border-color .2s, transform .2s; }
+/* The composer is a hot input surface. Blurring the changing transcript behind
+   it forces Chromium to re-rasterize the blur for stream updates and typing. */
+.composer.glass-panel { background: color-mix(in srgb, var(--surface-solid) 97%, var(--bg)); backdrop-filter: none; -webkit-backdrop-filter: none; }
 .composer.interactive { overflow: hidden; border-color: color-mix(in srgb, var(--accent) 38%, var(--border)); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow); }
 .composer.drop-active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow); }
 .drop-overlay { position: absolute; z-index: 4; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border-radius: inherit; background: color-mix(in srgb, var(--surface-solid) 94%, transparent); color: var(--accent-strong); pointer-events: none; }
@@ -1575,7 +1569,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .composer textarea::placeholder { color: var(--faint); }
 .composer textarea:disabled { opacity: .65; }
 .composer-input-wrap { position: relative; }
-.composer-placeholder { position: absolute; z-index: 1; top: 13px; left: 14px; right: 14px; overflow: hidden; color: var(--faint); pointer-events: none; text-overflow: ellipsis; white-space: nowrap; }
+.composer-placeholder { position: absolute; z-index: 0; top: 13px; left: 14px; right: 14px; overflow: hidden; color: var(--faint); pointer-events: none; text-overflow: ellipsis; white-space: nowrap; }
 .composer-input { display: block; width: 100%; min-height: 60px; max-height: 190px; overflow-y: auto; padding: 13px 14px 6px; border: 0; outline: 0; background: transparent; color: var(--text-strong); line-height: 1.55; white-space: pre-wrap; overflow-wrap: break-word; caret-color: var(--text-strong); -webkit-user-modify: read-write-plaintext-only; }
 .composer-input:empty::before, .composer-input[data-empty="true"]::before { content: none; }
 .composer-input .command-token { color: var(--accent-strong); font-weight: 600; }
@@ -1585,18 +1579,25 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .composer-input-warning { position: absolute; z-index: 4; right: 10px; bottom: 52px; max-width: min(330px, calc(100% - 20px)); padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-solid); box-shadow: var(--shadow-soft); color: var(--muted); font-size: 9px; pointer-events: none; }
 /* Pasted text cards (composer strip + transcript echo, mirroring Synara) */
 .pasted-text-strip { padding: 9px 10px 0; display: flex; flex-direction: column; gap: 6px; }
-.pasted-text-strip-transcript { margin-bottom: 8px; align-self: flex-start; max-width: 100%; }
+.pasted-text-strip-transcript { width: 100%; margin-bottom: 8px; padding: 0; align-self: flex-start; max-width: 100%; }
 .pasted-text-card { position: relative; display: flex; align-items: center; gap: 8px; max-width: 280px; padding: 6px 28px 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--surface-solid) 85%, var(--accent-soft)); color: var(--text); }
-.pasted-text-card-transcript { max-width: 100%; width: 100%; background: color-mix(in srgb, var(--surface-solid) 92%, var(--accent-soft)); }
+.pasted-text-card-transcript { min-width: 0; max-width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.pasted-text-card-transcript-shell { width: fit-content; max-width: min(16rem, 100%); padding: 4px 8px 4px 4px; background: color-mix(in srgb, var(--surface-solid) 92%, var(--accent-soft)); }
 .pasted-text-card-icon { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 6px; background: var(--bg-soft); color: var(--muted); }
 .pasted-text-card-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
 .pasted-text-card-copy strong { overflow: hidden; color: var(--text-strong); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .pasted-text-card-copy small { overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .pasted-text-card-action { background: none; border: 0; padding: 0; color: var(--muted); font-size: 10px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; display: inline-flex; align-items: center; gap: 2px; }
 .pasted-text-card-action:hover { color: var(--text-strong); }
+.pasted-text-card-transcript-shell .pasted-text-card-icon { width: 24px; height: 24px; border-radius: 6px; }
+.pasted-text-card-transcript-shell .pasted-text-card-copy { gap: 2px; line-height: 1.25; }
+.pasted-text-card-transcript-shell .pasted-text-card-copy strong { font-size: 12px; font-weight: 500; line-height: 1.25; }
+.pasted-text-card-transcript-shell .pasted-text-card-action { color: color-mix(in srgb, var(--muted) 92%, transparent); font-size: 11px; line-height: 1.25; text-decoration-color: color-mix(in srgb, var(--muted) 40%, transparent); text-underline-offset: 2px; }
+.pasted-text-card-transcript-shell .pasted-text-card-action:hover, .pasted-text-card-transcript-shell .pasted-text-card-action:focus-visible { color: var(--text-strong); text-decoration-color: color-mix(in srgb, var(--text-strong) 60%, transparent); }
+.pasted-text-card-count { opacity: .65; }
 .pasted-text-card-remove { position: absolute; top: 6px; right: 6px; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 5px; background: transparent; color: var(--muted); }
 .pasted-text-card-remove:hover { background: var(--surface-hover); color: var(--text-strong); }
-.pasted-text-card-expanded { margin-top: 6px; max-height: 240px; overflow: auto; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-soft); color: var(--text-strong); font-family: var(--theme-code-font-family, monospace); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.pasted-text-card-expanded { width: 100%; max-width: 100%; max-height: 320px; margin: 0; overflow: auto; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-soft); color: var(--text-strong); font-family: var(--theme-code-font-family, monospace); font-size: 11px; line-height: 1.375; white-space: pre-wrap; overflow-wrap: anywhere; }
 .attachment-strip > .attachment-card-shell { flex: 0 0 auto; }
 .attachment-strip .attachment-card { width: 220px; }
 .composer-controls { min-height: 43px; padding: 4px 8px 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
