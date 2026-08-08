@@ -716,8 +716,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .md-gen-image-btn:hover { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.22); transform: translateY(-1px); }
 .md-gen-image-btn:active { transform: translateY(0) scale(.98); }
-.md-gen-image-btn.primary { background: rgba(60,230,196,.94); color: #0b1e1c; border-color: rgba(255,255,255,.22); }
-.md-gen-image-btn.primary:hover { background: #3ce6c4; }
+.md-gen-image-btn.primary { background: var(--accent); color: var(--accent-foreground, var(--bg)); border-color: color-mix(in srgb, var(--accent-foreground, var(--bg)) 24%, transparent); }
+.md-gen-image-btn.primary:hover { background: var(--accent-strong); }
 .md-gen-image-btn.ghost { background: transparent; border-color: rgba(255,255,255,.10); }
 .md-gen-image-expand {
   position: absolute; left: 50%; top: 50%; z-index: 1;
@@ -821,8 +821,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .md-img-lightbox-action:hover { background: rgba(255,255,255,.16); transform: translateY(-1px); }
 .md-img-lightbox-action:disabled { opacity: .6; cursor: progress; }
-.md-img-lightbox-action.primary { background: #3ce6c4; color: #0b1e1c; border-color: rgba(255,255,255,.18); }
-.md-img-lightbox-action.primary:hover { background: #4af0d0; }
+.md-img-lightbox-action.primary { background: var(--accent); color: var(--accent-foreground, var(--bg)); border-color: color-mix(in srgb, var(--accent-foreground, var(--bg)) 24%, transparent); }
+.md-img-lightbox-action.primary:hover { background: var(--accent-strong); }
 .md-img-lightbox-action.ghost { width: 34px; padding: 0; justify-content: center; background: transparent; }
 @media (max-width: 640px) {
   .md-img-lightbox { padding: 12px; }
@@ -1802,7 +1802,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .send-button:disabled { opacity: .3; cursor: default; }
 .send-button.stop { background: var(--danger); color: white; }
 .composer-hint { width: min(820px, 100%); margin: 5px auto 0; text-align: center; color: var(--faint); font-size: 9px; }
-.run-progress-pill { width: max-content; max-width: min(420px, 90%); height: 27px; margin: 0 auto 7px; padding: 0 10px; display: flex; align-items: center; gap: 7px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); color: var(--muted); font-size: 9px; backdrop-filter: blur(18px); }
+.run-progress-pill { width: max-content; max-width: min(420px, 90%); height: 27px; margin: 0 auto 7px; padding: 0 10px; display: flex; align-items: center; gap: 7px; border-radius: 999px; background: color-mix(in srgb, var(--surface-solid) 97%, var(--bg)); border: 1px solid var(--border); color: var(--muted); font-size: 9px; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .run-progress-pill.waiting { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 34%, var(--border)); }
 .live-work-status-copy { min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; }
 .live-work-status-copy > strong, .live-work-status-copy > small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3567,6 +3567,7 @@ html[data-theme-variant="dark"] .workspace-diff-code .diff-line .diff-number { c
 .main-stage.environment-reserved .conversation-scroll { padding-right: 312px; }
 .main-stage.environment-reserved .conversation { width: min(820px, calc(100% - 40px)); margin: 0 auto; }
 .main-stage.environment-reserved .composer-wrap { right: 312px; }
+.main-stage.environment-reserved .scroll-to-bottom-wrapper { right: 312px; }
 .main-stage.environment-reserved .empty-workspace { transform: translateX(-156px); }
 
 @media (max-width: 900px) {
@@ -3588,6 +3589,7 @@ html[data-theme-variant="dark"] .workspace-diff-code .diff-line .diff-number { c
    .main-stage.environment-reserved .conversation-scroll { padding-right: 0; }
    .main-stage.environment-reserved .conversation { width: min(780px, calc(100% - 30px)); margin: 0 auto; }
    .main-stage.environment-reserved .composer-wrap, .main-stage.environment-reserved .empty-workspace { right: 0; margin-right: 0; }
+   .main-stage.environment-reserved .scroll-to-bottom-wrapper { right: 0; }
    .main-stage.environment-reserved .empty-workspace { transform: none; }
 }
 

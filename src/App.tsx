@@ -51,8 +51,10 @@ import { modelProvider, type ModelProvider } from "./utils/modelProvider.js";
 import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollElementNearBottom } from "./utils/chatScroll.js";
 import { resolveComposerRunSelection } from "./utils/composerSelection.js";
 import { retryWithBackoff, isRetryableError, DEFAULT_MAX_RETRIES, getRetryMessage } from "./utils/retry.js";
+import { observeUserMessageOverflow } from "./utils/userMessageOverflowObserver.js";
+import { splitLiveTimelineTail } from "./utils/liveTimeline.js";
 import { TransientRetryNotice, type TransientRetryState } from "./components/TransientRetryNotice";
-import { getLiveRun, getLiveRunsSnapshot, markLiveInteraction, publishLiveRuns, scheduleAfterLiveInteraction, useLiveRun, type LiveRun } from "./liveRunStore";
+import { getLiveRun, getLiveRunsSnapshot, isLiveInteractionActive, markLiveInteraction, publishLiveRuns, scheduleAfterLiveInteraction, useLiveRun, type LiveRun } from "./liveRunStore";
 
 type WorkspaceSurface = "chat" | "activity" | "kanban" | "pull-requests";
 
@@ -559,7 +561,7 @@ function CustomSelect<T extends string>({ value, options, onChange, icon, disabl
   );
 }
 
-function ModelControl({ model, effort, models, modelOptions, disabled, onModel, onEffort }: {
+const ModelControl = memo(function ModelControl({ model, effort, models, modelOptions, disabled, onModel, onEffort }: {
   model: string; effort: string; models: EngineModel[]; modelOptions: SelectOption<string>[]; disabled: boolean;
   onModel: (model: string) => void; onEffort: (effort: string) => void;
 }) {
@@ -593,7 +595,6 @@ function ModelControl({ model, effort, models, modelOptions, disabled, onModel, 
       const next = modelOptions[(currentIndex + direction + modelOptions.length) % modelOptions.length];
       if (!next) return;
       onModel(next.value);
-      onEffort("");
     };
     window.addEventListener("maximo:model-picker", onPicker);
     window.addEventListener("maximo:model-cycle", onCycle);
@@ -601,7 +602,7 @@ function ModelControl({ model, effort, models, modelOptions, disabled, onModel, 
       window.removeEventListener("maximo:model-picker", onPicker);
       window.removeEventListener("maximo:model-cycle", onCycle);
     };
-  }, [model, modelOptions, onEffort, onModel, selectedModel?.supportsEffort]);
+  }, [model, modelOptions, onModel, selectedModel?.supportsEffort]);
   const reset = () => { onModel(""); onEffort(""); setOpen(false); setSubmenu(null); };
   return <div className={`model-control effort-tone-${selectedEffortTone} ${open ? "open" : ""}`} ref={rootRef}>
     <button type="button" className="model-control-trigger" disabled={disabled} aria-label="Model and reasoning effort" aria-haspopup="menu" aria-expanded={open}
@@ -614,7 +615,7 @@ function ModelControl({ model, effort, models, modelOptions, disabled, onModel, 
       <div className="model-control-divider" />
       <button type="button" className="model-reset" onClick={reset}><span>Use active defaults</span><RefreshCw size={11} /></button>
       {submenu === "model" && <div className="model-submenu glass-panel" role="menu" aria-label="Models">
-         {modelOptions.map((option) => <button type="button" className={`model-submenu-row${option === selected ? " selected" : ""}`} key={option.value || "default"} onClick={() => { onModel(option.value); onEffort(""); setSubmenu(null); }}>
+         {modelOptions.map((option) => <button type="button" className={`model-submenu-row${option === selected ? " selected" : ""}`} key={option.value || "default"} onClick={() => { onModel(option.value); setSubmenu(null); }}>
            <span className="model-submenu-icon">{option.icon ?? <Bot size={12} />}</span><div><strong>{option.label}{option === selected && <Check size={11} className="model-submenu-check" />}</strong>{option.description && <small>{option.description}</small>}</div>
          </button>)}
       </div>}
@@ -625,7 +626,7 @@ function ModelControl({ model, effort, models, modelOptions, disabled, onModel, 
       </div>}
     </div>}
   </div>;
-}
+});
 
 function formatContextTokens(value: number): string {
   if (!Number.isFinite(value) || value < 0) return "—";
@@ -700,7 +701,7 @@ function estimateThreadContextUsage(thread: Thread, models: EngineModel[], defau
   };
 }
 
-function ContextUsageControl({ usage, loading, onRefresh }: { usage: ContextUsage | null; loading: boolean; onRefresh: () => Promise<void> }) {
+const ContextUsageControl = memo(function ContextUsageControl({ usage, loading, onRefresh }: { usage: ContextUsage | null; loading: boolean; onRefresh: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const used = contextUsagePercent(usage);
@@ -752,7 +753,7 @@ function ContextUsageControl({ usage, loading, onRefresh }: { usage: ContextUsag
       </> : <div className="context-usage-empty"><RefreshCw size={14} className={loading ? "spin" : ""} /><span>{loading ? "Reading the latest context from Syntax…" : "Context usage is available after the first model request."}</span></div>}
     </div>}
   </div>;
-}
+});
 
 function Logo({ compact = false }: { compact?: boolean }) {
   return compact ? (
@@ -942,7 +943,7 @@ function liveWorkLabel(live: LiveRun | undefined, activeAgent: AgentRun | undefi
   return item.label;
 }
 
-function LiveWorkStatus({ running, waiting, live, inline = false, shimmer = true }: { running: boolean; waiting: boolean; live?: LiveRun; inline?: boolean; shimmer?: boolean }) {
+const LiveWorkStatus = memo(function LiveWorkStatus({ running, waiting, live, inline = false, shimmer = true }: { running: boolean; waiting: boolean; live?: LiveRun; inline?: boolean; shimmer?: boolean }) {
   const activeAgent = useMemo(() => {
     if (!live?.timeline?.length) return undefined;
     // Only scan for running agents when actually running; otherwise avoid expensive merge.
@@ -974,7 +975,7 @@ function LiveWorkStatus({ running, waiting, live, inline = false, shimmer = true
       {!waiting && shimmer && <small className="live-work-shimmer">{syntaxWorkPhrases[phraseIndex]}</small>}
     </span>
   </div>;
-}
+});
 
 function agentStatusLabel(status: AgentStatus): string {
   if (status === "running") return "Running";
@@ -2033,7 +2034,7 @@ function AttachmentGlyph({ kind }: { kind: AttachmentPreviewKind }) {
   return <File size={18} />;
 }
 
-function AttachmentCard({ attachment, onPreview, onRemove, compact = false }: {
+const AttachmentCard = memo(function AttachmentCard({ attachment, onPreview, onRemove, compact = false }: {
   attachment: Attachment;
   onPreview: (attachment: Attachment) => void;
   onRemove?: () => void;
@@ -2064,16 +2065,16 @@ function AttachmentCard({ attachment, onPreview, onRemove, compact = false }: {
       {onRemove && <button type="button" className="attachment-remove" onClick={(event) => { event.stopPropagation(); onRemove(); }} aria-label={`Remove ${attachment.name}`} title={`Remove ${attachment.name}`}><X size={12} /></button>}
     </div>
   );
-}
+});
 
-function AttachmentList({ attachments, onPreview, onRemove, className = "" }: {
+const AttachmentList = memo(function AttachmentList({ attachments, onPreview, onRemove, className = "" }: {
   attachments: Attachment[];
   onPreview: (attachment: Attachment) => void;
   onRemove?: (attachment: Attachment) => void;
   className?: string;
 }) {
   return <div className={`attachment-list ${className}`}>{attachments.map((attachment) => <AttachmentCard key={attachment.path} attachment={attachment} onPreview={onPreview} onRemove={onRemove ? () => onRemove(attachment) : undefined} compact />)}</div>;
-}
+});
 
 function AttachmentPreviewModal({ state, theme, onClose }: { state: AttachmentPreviewState; theme: ThemeMode; onClose: () => void }) {
   const [openError, setOpenError] = useState<string | null>(null);
@@ -2952,22 +2953,6 @@ function userMessageLikelyOverflows(text: string): boolean {
   return false;
 }
 
-// Measures the clamped message against its content so the fade mask never
-// flickers. Mirrors Synara's userMessageOverflowObserver: batch resize events
-// into a single rAF pass instead of re-measuring on every observer callback.
-function observeUserMessageOverflow(element: HTMLElement, measure: () => void): () => void {
-  if (typeof ResizeObserver === "undefined") {
-    return () => undefined;
-  }
-  const observer = new ResizeObserver(() => {
-    measure();
-  });
-  observer.observe(element);
-  return () => {
-    observer.disconnect();
-  };
-}
-
 // --- Collapsed "big paste" feature, copied from Synara's composerPastedText. A
 // large paste is held as an attachment-style card above the composer (not inline
 // text); its full content rides to the provider in a trailing <pasted_text> block
@@ -3191,6 +3176,15 @@ function UserMessageCollapsibleText({ text, expanded, chatFontSizePx, onToggle, 
   );
 }
 
+function useStableIdentityArray<T>(items: T[]): T[] {
+  const stableRef = useRef(items);
+  const previous = stableRef.current;
+  if (previous.length !== items.length || previous.some((item, index) => item !== items[index])) {
+    stableRef.current = items;
+  }
+  return stableRef.current;
+}
+
 const LiveTurn = memo(function LiveTurn({ threadId, running, waiting, streamingEnabled, streamingInteractions, streamingFollowUps, queuedFollowUps, onPreviewAttachment, onOpenFile, onContentChange }: {
   threadId: string;
   running: boolean;
@@ -3204,10 +3198,16 @@ const LiveTurn = memo(function LiveTurn({ threadId, running, waiting, streamingE
   onContentChange: () => void;
 }) {
   const live = useLiveRun(threadId);
-  const liveTextEntry = useMemo(() => {
-    if (!streamingEnabled || !live?.text) return undefined;
-    return { type: "text" as const, text: live.text, timestamp: 0 };
-  }, [streamingEnabled, live?.text]);
+  // Keep completed narration in its original position among tools and agents.
+  // Only the final, actively growing text row is rendered separately, so token
+  // deltas do not rebuild the entire settled timeline.
+  const splitTimeline = useMemo(
+    () => splitLiveTimelineTail(streamingEnabled ? (live?.timeline ?? []) : []),
+    [live?.timeline, streamingEnabled],
+  );
+  const stableWorkTimeline = useStableIdentityArray(splitTimeline.settled);
+  const liveTailText = streamingEnabled ? splitTimeline.tailText : "";
+  const stableActivity = useStableIdentityArray(live?.activity ?? []);
   const optimisticQueuedItems = useMemo(() => {
     if (!queuedFollowUps.length) return [] as RunTimelineItem[];
     const persistedPrompts = new Set(streamingFollowUps.map((message) => message.content.trim()));
@@ -3228,7 +3228,7 @@ const LiveTurn = memo(function LiveTurn({ threadId, running, waiting, streamingE
   }, [queuedFollowUps, streamingFollowUps]);
   const liveTimeline = useMemo(() => {
     if (!streamingEnabled) return [] as RunTimelineItem[];
-    const base = live?.timeline ?? (liveTextEntry ? [liveTextEntry] : []);
+    const base = stableWorkTimeline;
     const follow = [...streamingFollowUps.map(followUpContextItem), ...optimisticQueuedItems];
     if (base.length === 0 && follow.length === 0) return [] as RunTimelineItem[];
     const merged = [...base, ...follow];
@@ -3236,20 +3236,28 @@ const LiveTurn = memo(function LiveTurn({ threadId, running, waiting, streamingE
       merged.sort((left, right) => left.timestamp - right.timestamp);
     }
     return merged;
-  }, [live?.timeline, liveTextEntry, optimisticQueuedItems, streamingEnabled, streamingFollowUps]);
+  }, [optimisticQueuedItems, stableWorkTimeline, streamingEnabled, streamingFollowUps]);
+  const hasLive = Boolean(live);
+  const statusLive = useMemo<LiveRun | undefined>(() => hasLive ? {
+    text: "",
+    activity: stableActivity,
+    timeline: stableWorkTimeline,
+    logs: [],
+  } : undefined, [hasLive, stableActivity, stableWorkTimeline]);
 
   // Notify the scroll owner after this tiny subtree commits. The settled
   // transcript and composer never participate in this update.
   useEffect(() => {
     if (running) onContentChange();
-  }, [live, onContentChange, running]);
+  }, [live?.text, liveTimeline, onContentChange, running]);
 
   if (!running) return null;
   return (
     <article className="message assistant streaming">
       <div className="message-meta"><span className="message-avatar"><Logo compact /></span><span>Maximo Syntax</span></div>
       <MemoizedWorkDisclosure timeline={liveTimeline} interactions={streamingInteractions} live onOpenFile={onOpenFile} onPreviewAttachment={onPreviewAttachment} />
-      <LiveWorkStatus running waiting={waiting} live={live} inline />
+      {liveTailText && <MarkdownContent streaming>{liveTailText}</MarkdownContent>}
+      <LiveWorkStatus running waiting={waiting} live={statusLive} inline />
       {streamingEnabled && live?.text && <div className="message-actions assistant-actions"><CopyMessageButton content={live.text} /></div>}
     </article>
   );
@@ -4078,6 +4086,9 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
     setComposerNotice(null);
     setAttachments((current) => [...current, ...selected].filter((file, index, all) => Boolean(file) && all.findIndex((item) => item.path === file.path) === index).slice(0, MAX_ATTACHMENT_COUNT));
   };
+  const removeAttachment = useCallback((file: Attachment) => {
+    setAttachments((items) => items.filter((item) => item.path !== file.path));
+  }, []);
   const addFiles = async (files: File[]) => {
     const selected = await Promise.all(files.slice(0, MAX_ATTACHMENT_COUNT).map(async (file) => {
       let path = "";
@@ -4180,18 +4191,18 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
     }
     if (composerKeyAction(event.nativeEvent, settings.sendWithEnter) === "send") { event.preventDefault(); void submit(); }
   };
-  const choosePermission = (next: PermissionMode) => {
+  const choosePermission = useCallback((next: PermissionMode) => {
     if (next === "full" && permission !== "full") setConfirmFullAccess(true);
     else {
       setPermission(next);
       onDraftChange?.(thread.id, { permission: next });
     }
-  };
-  const chooseEffort = (next: string) => {
+  }, [onDraftChange, permission, thread.id]);
+  const chooseEffort = useCallback((next: string) => {
     setEffort(next);
     onDraftChange?.(thread.id, { effort: next });
-  };
-  const chooseModel = (next: string) => {
+  }, [onDraftChange, thread.id]);
+  const chooseModel = useCallback((next: string) => {
     setModel(next);
     onDraftChange?.(thread.id, { model: next });
     const nextModel = models.find((item) => (item.value === "default" ? "" : item.value) === next);
@@ -4214,7 +4225,7 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
         : normalized;
     setEffort(nextEffort);
     onDraftChange?.(thread.id, { effort: nextEffort });
-  };
+  }, [effort, models, onDraftChange, thread.id]);
   const [branchRetry, setBranchRetry] = useState<TransientRetryState>(null);
   const refreshBranches = async () => {
     if (!project) return;
@@ -4301,7 +4312,7 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
       : null;
   return (
     <div className="composer-wrap">
-      {confirmFullAccess && <FullAccessConfirm onCancel={() => setConfirmFullAccess(false)} onConfirm={() => { setPermission("full"); setConfirmFullAccess(false); }} />}
+      {confirmFullAccess && <FullAccessConfirm onCancel={() => setConfirmFullAccess(false)} onConfirm={() => { setPermission("full"); onDraftChange?.(thread.id, { permission: "full" }); setConfirmFullAccess(false); }} />}
       {goalBanner && (
         <div
           className={`goal-banner glass-panel goal-banner-${goalBanner.phase}`}
@@ -4358,7 +4369,7 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
           {contextOpen === "location" && <div className="context-menu location-context-menu glass-panel"><span className="menu-label">Start in</span><button className="selected"><HardDrive size={13} /><span><strong>Work locally</strong><small>Use this computer and project folder</small></span><Check size={13} /></button><button onClick={onAccountUsage}><Gauge size={13} /><span><strong>Usage remaining</strong><small>View live plan limits</small></span><ChevronRight size={13} /></button></div>}
           {contextOpen === "branch" && <div className="context-menu branch-context-menu glass-panel"><span className="menu-label">Branches</span>{branchLoading ? <div className="branch-state"><RefreshCw size={12} className="spin" />{branchRetry ? `Retrying ${branchRetry.attempt}/${branchRetry.max} — ${branchRetry.message ?? "Retrying…"}` : "Reading local branches"}</div> : branchRetry ? <div className="branch-state retrying"><RefreshCw size={12} className="spin" />Retrying {branchRetry.attempt}/{branchRetry.max} — {branchRetry.message ?? "Connection issue"}</div> : branchError ? <div className="branch-state error">{branchError}<button type="button" onClick={() => void refreshBranches()}>Retry</button></div> : branchInfo?.dirty ? <small className="branch-dirty">Uncommitted changes are preserved when Git allows the switch.</small> : null}{!branchLoading && !branchError && !branchRetry && branchInfo?.branches.length === 0 && <div className="branch-state">No local branches found</div>}{!branchLoading && !branchError && !branchRetry && branchInfo?.branches.map((branch) => <button type="button" className={branch === branchInfo.current ? "selected" : ""} onClick={() => void checkoutBranch(branch)} key={branch}><GitBranch size={13} /><span>{branch}</span>{branch === branchInfo.current && <Check size={13} />}</button>)}<div className="branch-create"><input value={newBranch} onChange={(event) => setNewBranch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void createBranch(); }} placeholder="New branch name" /><button type="button" onClick={() => void createBranch()} disabled={!newBranch.trim() || branchLoading}><Plus size={13} /></button></div></div>}
         </div>}
-        {attachments.length > 0 && <AttachmentList attachments={attachments} onPreview={onPreviewAttachment} onRemove={(file) => setAttachments((items) => items.filter((item) => item.path !== file.path))} className="attachment-strip" />}
+        {attachments.length > 0 && <AttachmentList attachments={attachments} onPreview={onPreviewAttachment} onRemove={removeAttachment} className="attachment-strip" />}
         {pastedTexts.length > 0 && <div className="pasted-text-strip">{pastedTexts.map((pasted) => (
           <div className="pasted-text-card" key={pasted.id}>
             <span className="pasted-text-card-icon"><File size={13} /></span>
@@ -5523,6 +5534,10 @@ export default function App() {
   const currentThreadRef = useRef<Thread | undefined>(undefined);
   const liveSessionsRef = useRef<Set<string>>(new Set());
   liveSessionsRef.current = liveSessions;
+  // Process lifetime and active-turn lifetime are different: the CLI remains
+  // warm between turns. This ref follows turn events directly, so a delayed
+  // state refresh cannot make a new message look like an in-turn follow-up.
+  const activeTurnsRef = useRef<Set<string>>(new Set());
   // Monotonic id so out-of-order selectThread IPC replies never overwrite a
   // newer optimistic selection when the user is scrubbing quickly through the
   // sidebar. Mirrors Synara's navigation guards.
@@ -5839,7 +5854,11 @@ export default function App() {
   useEffect(() => {
     let frame: number | null = null;
     const pendingEvents: RunEvent[] = [];
+    const pendingVisualEvents: RunEvent[] = [];
+    let disposed = false;
     const processRunEvent = (event: RunEvent) => {
+    if (event.type === "started" || event.type === "turn-started") activeTurnsRef.current.add(event.threadId);
+    if (event.type === "turn-complete" || event.type === "finished") activeTurnsRef.current.delete(event.threadId);
     const notifyBackground = (title: string, body: string, threadId: string) => {
       const latestState = stateRef.current;
       if (!latestState || latestState.selectedThreadId === threadId) return;
@@ -5925,7 +5944,11 @@ export default function App() {
       setPendingQuestion((current) => current?.threadId === event.threadId ? null : current);
       setPendingPermission((current) => current?.threadId === event.threadId ? null : current);
       void refreshContextUsage(event.threadId, true);
-      void refreshState(true).then(() => { void flushQueuedFollowUpRef.current(event.threadId); });
+      void refreshState(true).then(() => {
+        scheduleAfterLiveInteraction(`flush-follow-up:${event.threadId}`, () => {
+          void flushQueuedFollowUpRef.current(event.threadId);
+        });
+      });
       if (currentProject) void retryWithBackoff(() => window.maximoDesktop.gitStatus(currentProject.id), { retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((v) => {
         setTransientRetry(null);
         scheduleAfterLiveInteraction(`git-status:${currentProject.id}`, () => startTransition(() => setGit(v)));
@@ -5944,6 +5967,38 @@ export default function App() {
       });
       void refreshState(true);
     }
+    };
+    const flushVisualEvents = () => {
+      if (disposed || pendingVisualEvents.length === 0) return;
+      if (isLiveInteractionActive()) {
+        scheduleAfterLiveInteraction("run-event-reduction", flushVisualEvents);
+        return;
+      }
+      const events = pendingVisualEvents.splice(0);
+      // Coalesce append chunks once, outside React's render phase. Arrays avoid
+      // repeated string copies when several chunks arrive in the same frame.
+      const coalesced: RunEvent[] = [];
+      const textBuffer = new Map<string, { chunks: string[]; timestamp: number }>();
+      for (const event of events) {
+        if (event.type === "text" && event.mode === "append") {
+          const buffered = textBuffer.get(event.threadId);
+          if (buffered) buffered.chunks.push(event.text);
+          else textBuffer.set(event.threadId, { chunks: [event.text], timestamp: event.timestamp });
+          continue;
+        }
+        const buffered = textBuffer.get(event.threadId);
+        if (buffered) {
+          coalesced.push({ type: "text", threadId: event.threadId, text: buffered.chunks.join(""), mode: "append", timestamp: buffered.timestamp });
+          textBuffer.delete(event.threadId);
+        }
+        coalesced.push(event);
+      }
+      for (const [threadId, buffered] of textBuffer) {
+        coalesced.push({ type: "text", threadId, text: buffered.chunks.join(""), mode: "append", timestamp: buffered.timestamp });
+      }
+      const reducedEvents = coalesced.length ? coalesced : events;
+      const nextLiveRuns = reduceLiveRunEvents(getLiveRunsSnapshot(), reducedEvents);
+      publishLiveRuns(nextLiveRuns, reducedEvents.map((event) => event.threadId));
     };
     let inputDeferrals = 0;
     const flushPendingEvents = () => {
@@ -5971,40 +6026,17 @@ export default function App() {
         });
       }
 
-      if (events.some((event) => event.type !== "finished")) {
-        // Coalesce adjacent append chunks once, outside React's render phase.
-        // Reducers inside a transition updater may be replayed when React
-        // interrupts/restarts background work, multiplying stream CPU cost.
-        const coalesced: RunEvent[] = [];
-        const textBuffer = new Map<string, { text: string; timestamp: number }>();
-        for (const event of events) {
-          if (event.type === "text" && event.mode === "append") {
-            const buffered = textBuffer.get(event.threadId);
-            if (buffered) buffered.text += event.text;
-            else textBuffer.set(event.threadId, { text: event.text, timestamp: event.timestamp });
-            continue;
-          }
-          const buffered = textBuffer.get(event.threadId);
-          if (buffered) {
-            coalesced.push({ type: "text", threadId: event.threadId, text: buffered.text, mode: "append", timestamp: buffered.timestamp });
-            textBuffer.delete(event.threadId);
-          }
-          coalesced.push(event);
-        }
-        for (const [threadId, buffered] of textBuffer) {
-          coalesced.push({ type: "text", threadId, text: buffered.text, mode: "append", timestamp: buffered.timestamp });
-        }
-        const reducedEvents = coalesced.length ? coalesced : events;
-        const nextLiveRuns = reduceLiveRunEvents(getLiveRunsSnapshot(), reducedEvents);
-        publishLiveRuns(nextLiveRuns, reducedEvents.map((event) => event.threadId));
-      }
-
       // Permission/question/lifecycle state is interaction-critical. Keep it
       // outside the transition so React does not deprioritize the modal or
       // completion state together with transcript paint work.
       for (const event of events) {
         try { processRunEvent(event); } catch (error) { console.error("[processRunEvent] isolated error", error); }
       }
+      // Growing-string copies and timeline reduction are visual work. Keep
+      // collecting exact events while the user types, scrolls, drags, or opens
+      // a disclosure, then reduce the coalesced batch after that gesture ends.
+      pendingVisualEvents.push(...events.filter((event) => event.type !== "finished"));
+      flushVisualEvents();
     };
     const unsubscribe = window.maximoDesktop.onRunEvent((event: RunEvent) => {
       if (!event || typeof (event as RunEvent).type !== "string" || typeof (event as RunEvent).threadId !== "string") return;
@@ -6013,8 +6045,10 @@ export default function App() {
       frame = window.requestAnimationFrame(flushPendingEvents);
     });
     return () => {
+      disposed = true;
       unsubscribe();
       pendingEvents.length = 0;
+      pendingVisualEvents.length = 0;
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
   }, [refreshContextUsage, refreshState, currentProject, showToast]);
@@ -6656,7 +6690,7 @@ export default function App() {
   const sendPrompt = useCallback(async (prompt: string, attachments: Attachment[], model: string, effort: string, permission: PermissionMode, contextWindow?: number) => {
     const thread = currentThreadRef.current;
     if (!thread) return;
-    const midTurn = thread.status === "running";
+    const midTurn = activeTurnsRef.current.has(thread.id);
     // Mid-turn: queue in the composer, then hand it to the CLI immediately.
     // The runner writes it at the next tool-result boundary so the Maximo
     // Syntax CLI can inject it into the current task before its next request.
@@ -6674,7 +6708,13 @@ export default function App() {
         ...current,
         [thread.id]: [...(current[thread.id] ?? []), item],
       }));
-      if (stateRef.current?.settings.followUpBehavior === "steer") {
+      const selectionChanged = model !== (thread.model ?? "")
+        || normalizeEffortValue(effort) !== normalizeEffortValue(thread.effort ?? "")
+        || permission !== (thread.permission ?? "auto");
+      // A running CLI turn cannot change its launch flags. Keep a changed
+      // model/effort/permission queued for the next turn; same-selection
+      // context can still steer the active turn immediately.
+      if (stateRef.current?.settings.followUpBehavior === "steer" && !selectionChanged) {
         void flushQueuedFollowUpRef.current(thread.id, item);
       }
       return;

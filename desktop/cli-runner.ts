@@ -1242,6 +1242,11 @@ export class CliRunner {
     return this.processes.has(threadId);
   }
 
+  /** A warm process can stay alive after a result; this reports only a model turn. */
+  isTurnActive(threadId: string): boolean {
+    return Boolean(this.processes.get(threadId)?.__pendingPrompt);
+  }
+
   send(threadId: string, prompt: string, attachments: Attachment[], uuid?: string): boolean {
     const child = this.processes.get(threadId);
     if (!child?.__send) return false;

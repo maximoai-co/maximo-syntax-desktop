@@ -31,6 +31,7 @@ import yaml from "highlight.js/lib/languages/yaml";
 export interface MarkdownCodeBlockProps {
   code: string;
   language?: string;
+  streaming?: boolean;
 }
 
 const LANGUAGE_LABELS: Record<string, string> = {
@@ -232,13 +233,19 @@ async function copyCode(value: string): Promise<boolean> {
  * Modern chat code block: syntax colors, language chip, hover copy + wrap/unwrap.
  * Copies the raw fence body only (no chrome, no language label).
  */
-function MarkdownCodeBlock({ code, language }: MarkdownCodeBlockProps) {
+function MarkdownCodeBlock({ code, language, streaming = false }: MarkdownCodeBlockProps) {
   // Default unwrapped (horizontal scroll) so Wrap is an intentional, visible toggle.
   const [wrapped, setWrapped] = useState(false);
   const [copied, setCopied] = useState(false);
   const label = useMemo(() => formatLanguageLabel(language), [language]);
   const lineCount = useMemo(() => (code.length ? code.split("\n").length : 0), [code]);
-  const highlighted = useMemo(() => highlightCode(code, language), [code, language]);
+  // Keep the real-time Markdown code-block shell, but avoid repeatedly running
+  // highlight.js over a growing, incomplete fence. The persisted final answer
+  // receives full syntax highlighting once the stream settles.
+  const highlighted = useMemo(
+    () => streaming ? { html: escapeHtml(code), language: resolveHljsLanguage(language) } : highlightCode(code, language),
+    [code, language, streaming],
+  );
 
   const onCopy = useCallback(async () => {
     const ok = await copyCode(code);

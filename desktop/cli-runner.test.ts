@@ -667,10 +667,12 @@ describe("CliRunner completion lifecycle", () => {
         sequence.push("persisted");
       },
     });
+    expect(runner.isTurnActive("thread-result")).toBe(true);
     await Promise.race([finished, new Promise((_, reject) => setTimeout(() => reject(new Error("Runner did not finish")), 3_000))]);
     expect(sequence).toEqual(["persisted", "finished"]);
     // The process stays alive for follow-ups; only closing it finalizes the run.
     expect(runner.isRunning("thread-result")).toBe(true);
+    expect(runner.isTurnActive("thread-result")).toBe(false);
     runner.stop("thread-result");
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(runner.isRunning("thread-result")).toBe(false);

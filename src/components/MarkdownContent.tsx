@@ -1,4 +1,4 @@
-import { Children, isValidElement, memo, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { Children, isValidElement, memo, useDeferredValue, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import MarkdownCodeBlock, { codeChildrenToText } from "./MarkdownCodeBlock";
@@ -10,14 +10,9 @@ interface MarkdownContentProps {
   streaming?: boolean;
 }
 
-const STREAMING_TEXT_CHUNK_SIZE = 2_048;
-
-const StreamingTextChunk = memo(function StreamingTextChunk({ text }: { text: string }) {
-  return text;
-});
-
 type PreProps = ComponentPropsWithoutRef<"pre"> & {
   node?: unknown;
+  streaming?: boolean;
 };
 
 type TableProps = ComponentPropsWithoutRef<"table"> & {
@@ -34,7 +29,7 @@ function extractLanguage(className?: string): string | undefined {
  * Fenced blocks are always `pre > code`. We replace that shell with the
  * modern chat code-block UI. Inline `code` keeps the default renderer + CSS.
  */
-function MarkdownPre({ children }: PreProps) {
+function MarkdownPre({ children, streaming = false }: PreProps) {
   const items = Children.toArray(children);
   const only = items.length === 1 ? items[0] : null;
   if (isValidElement(only)) {
@@ -42,7 +37,7 @@ function MarkdownPre({ children }: PreProps) {
     const className = typeof props.className === "string" ? props.className : undefined;
     const language = extractLanguage(className);
     const code = codeChildrenToText(props.children).replace(/\n$/, "");
-    return <MarkdownCodeBlock code={code} language={language} />;
+    return <MarkdownCodeBlock code={code} language={language} streaming={streaming} />;
   }
   // Unusual pre content — keep a safe native shell.
   return <pre className="md-code-fallback">{children}</pre>;
@@ -73,34 +68,31 @@ const markdownComponents = {
   img: MarkdownImg,
 };
 
+function StreamingMarkdownPre(props: PreProps) {
+  return <MarkdownPre {...props} streaming />;
+}
+
+const streamingMarkdownComponents = {
+  ...markdownComponents,
+  pre: StreamingMarkdownPre,
+};
+
 /**
  * Shared chat markdown renderer with modern fenced code blocks
  * (copy, wrap/unwrap, language header) used across message + live stream views.
  */
 function MarkdownContent({ children, className, streaming = false }: MarkdownContentProps) {
   const content = children ?? "";
-  if (streaming) {
-    // react-markdown + GFM parsing is an indivisible CPU task. Re-running it
-    // for a growing response can monopolize the renderer long enough to delay
-    // keystrokes and wheel input. Keep the incomplete tail as cheap text; the
-    // persisted final message gets the full Markdown/code renderer once.
-    const chunks: string[] = [];
-    for (let offset = 0; offset < content.length; offset += STREAMING_TEXT_CHUNK_SIZE) {
-      chunks.push(content.slice(offset, offset + STREAMING_TEXT_CHUNK_SIZE));
-    }
-    return (
-      <div
-        className={className ? `markdown ${className}` : "markdown"}
-        style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
-      >
-        {chunks.map((chunk, index) => <StreamingTextChunk text={chunk} key={index} />)}
-      </div>
-    );
-  }
+  // Keep Markdown fully formatted during a stream. The deferred value lets
+  // React interrupt an older Markdown render when input, scrolling, or a newer
+  // stream snapshot arrives; upstream stream coalescing prevents this subtree
+  // from receiving updates while the user is actively interacting.
+  const deferredContent = useDeferredValue(content);
+  const renderedContent = streaming ? deferredContent : content;
   return (
     <div className={className ? `markdown ${className}` : "markdown"}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-        {content}
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={streaming ? streamingMarkdownComponents : markdownComponents}>
+        {renderedContent}
       </ReactMarkdown>
     </div>
   );

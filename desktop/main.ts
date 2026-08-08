@@ -34,6 +34,7 @@ import {
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
 import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
 import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, ContextUsage, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
+import { launchConfigurationChanged, resolveAsFollowUp, type RunLaunchConfiguration } from "./run-dispatch.js";
 
 let mainWindow: BrowserWindow | null = null;
 let store: StateStore;
@@ -51,11 +52,9 @@ const pendingRunEvents: RunEvent[] = [];
 // while preventing IPC/React churn during tool bursts. Approval and lifecycle
 // events still bypass the queue below.
 const RUN_EVENT_FLUSH_INTERVAL_MS = 80;
-// Tracks the model/effort that the live CLI process was started with.
-// Needed because thread.model diverges from process args when the user
-// changes model while a warm session is alive — send would otherwise reuse
-// the old process with stale flags.
-const runningModel = new Map<string, { model: string; effort: string }>();
+// Tracks launch-time configuration for each warm CLI process. Thread settings
+// can change between turns, but the existing process keeps its original flags.
+const runningModel = new Map<string, RunLaunchConfiguration>();
 let runEventFlushTimer: ReturnType<typeof setTimeout> | null = null;
 // Latest context usage per thread so the final reading can be persisted when a
 // run finishes (usage persistence is throttled during streaming).
@@ -965,7 +964,7 @@ function registerIpc(): void {
           await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
         },
       }, browserHost?.bridgeLaunch(threadId, project.path));
-      runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort });
+      runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort, permission: safeRequest.permission });
       return { accepted: true, state: startedState };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -997,22 +996,28 @@ function registerIpc(): void {
       ...(typeof request.contextWindow === "number" && Number.isFinite(request.contextWindow) && request.contextWindow > 0 ? { contextWindow: Math.round(Math.min(request.contextWindow, 10_000_000)) } : {}),
       ...(thread.truncateAtUuid ? { resumeSessionAt: thread.truncateAtUuid } : {}),
     };
-    const asFollowUp = request.asFollowUp === true;
-    // If the user changed model/effort while a warm session is alive, the old
-    // process was started with stale --model/--effort flags. Reusing it via
-    // runner.send would answer with the wrong model. Restart with --resume so
-    // the transcript continues but the new flags take effect.
+    // Never trust the renderer's possibly stale thread status here. The CLI
+    // stays alive between turns, so only its pending-prompt bit can tell an
+    // in-turn steer from a new turn after a result.
+    const asFollowUp = resolveAsFollowUp(request.asFollowUp, runner.isTurnActive(threadId));
+    // If the user changed model, effort, or permission while a warm session is
+    // alive, the old process still has stale launch flags. Reusing it would
+    // answer with the wrong configuration. Restart with --resume so the
+    // transcript continues and the visible selections take effect.
     const running = runningModel.get(threadId);
     const effectivePrevModel = running?.model ?? thread.model ?? "";
     const effectivePrevEffort = running?.effort ?? thread.effort ?? "";
-    const modelChanged = safeRequest.model !== effectivePrevModel;
-    const effortChanged = safeRequest.effort !== effectivePrevEffort;
+    const effectivePrevPermission = running?.permission ?? thread.permission ?? "auto";
+    const configurationChanged = launchConfigurationChanged(
+      { model: effectivePrevModel, effort: effectivePrevEffort, permission: effectivePrevPermission },
+      { model: safeRequest.model, effort: safeRequest.effort, permission: safeRequest.permission },
+    );
     // Mid-turn follow-ups (asFollowUp) ride the current query's injection point
     // and must not restart — they are steering within the same turn.
-    if ((modelChanged || effortChanged) && !asFollowUp) {
+    if (configurationChanged && !asFollowUp) {
       // The follow-up flag reflects an in-turn injection; a turn-boundary
-      // model change needs a fresh process. Stop the warm session and start a
-      // resumed one that continues the transcript with the new model.
+      // configuration change needs a fresh process. Stop the warm session and
+      // start a resumed one that continues the transcript with the new flags.
       await runner.stopAndWait(threadId);
       runningModel.delete(threadId);
       const sentState = await store.sendRunMessage(threadId, prompt, safeRequest.attachments, safeRequest.model, safeRequest.effort, permission, { asFollowUp });
@@ -1046,7 +1051,7 @@ function registerIpc(): void {
             await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
           },
         }, browserHost?.bridgeLaunch(threadId, project.path));
-        runningModel.set(threadId, { model: resumedRequest.model, effort: resumedRequest.effort });
+        runningModel.set(threadId, { model: resumedRequest.model, effort: resumedRequest.effort, permission: resumedRequest.permission });
         return { accepted: true, state: sentState };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1170,7 +1175,7 @@ function registerIpc(): void {
           await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
         },
       }, browserHost?.bridgeLaunch(threadId, project.path));
-      runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort });
+      runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort, permission: safeRequest.permission });
       return { accepted: true, state: startedState };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
