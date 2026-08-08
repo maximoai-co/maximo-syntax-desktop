@@ -157,7 +157,9 @@ describe("StateStore", () => {
     expect(finished.messages).toHaveLength(2);
     expect(finished.messages[0]?.model).toBe("maximo-atlas-preview");
     expect(finished.messages[1]?.model).toBe("maximo-atlas-preview");
-    expect(finished.messages[1]?.activity).toHaveLength(1);
+    // timeline is the canonical completed-turn activity stream; keeping the
+    // legacy activity copy would duplicate every tool result and patch.
+    expect(finished.messages[1]?.activity).toBeUndefined();
     expect(finished.messages[1]?.timeline).toHaveLength(2);
     expect(finished.messages[1]?.durationMs).toBe(12_000);
   });
@@ -170,8 +172,8 @@ describe("StateStore", () => {
     const project = store.snapshot().projects[0]!;
     const state = await store.createThread(project.id);
     const threadId = state.selectedThreadId!;
-    // Usage is persisted throttled during a run; the final reading is flushed
-    // when the run finishes. Exercise both paths here.
+    // Usage stays in memory during a run; the final reading is persisted with
+    // completion (or explicitly flushed by recovery paths).
     await store.recordContextUsage(threadId, {
       categories: [{ name: "Current context", tokens: 2_500 }],
       totalTokens: 2_500,
@@ -180,8 +182,7 @@ describe("StateStore", () => {
       percentage: 3,
       model: "maximo-atlas",
     });
-    // The throttled call is in-memory only (fresh store's throttle window not
-    // elapsed on first call).
+    // Streaming telemetry alone must not rewrite the full archive.
     expect(store.getThread(threadId)?.contextUsage).toBeUndefined();
     await store.flushContextUsage(threadId, {
       categories: [{ name: "Current context", tokens: 2_500 }],
@@ -194,6 +195,122 @@ describe("StateStore", () => {
     expect(store.getThread(threadId)?.contextUsage).toMatchObject({ totalTokens: 2_500, maxTokens: 100_000 });
     const saved = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
     expect(saved.threads[0].contextUsage.model).toBe("maximo-atlas");
+  });
+
+  it("persists the latest streamed context in the completed-turn write", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(directory, createInitialState(directory));
+    await store.initialize();
+    const project = store.snapshot().projects[0]!;
+    const created = await store.createThread(project.id);
+    const threadId = created.selectedThreadId!;
+    await store.beginRun(threadId, "Measure this run", [], "maximo-atlas", "", "auto");
+    await store.recordContextUsage(threadId, {
+      categories: [{ name: "Current context", tokens: 4_200 }],
+      totalTokens: 4_200,
+      totalProcessedTokens: 4_200,
+      maxTokens: 100_000,
+      rawMaxTokens: 100_000,
+      percentage: 4.2,
+      model: "maximo-atlas",
+    });
+
+    await store.finishRun(threadId, "Done", "complete");
+
+    expect(store.getThread(threadId)?.contextUsage?.totalProcessedTokens).toBe(4_200);
+    expect(store.snapshot().profile.threadTokenTotals[threadId]).toBe(4_200);
+    const saved = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+    expect(saved.threads[0].contextUsage.totalProcessedTokens).toBe(4_200);
+  });
+
+  it("sends full detail only for the selected chat and removes duplicate patch history", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(directory, createInitialState(directory));
+    await store.initialize();
+    const project = store.snapshot().projects[0]!;
+
+    const firstState = await store.createThread(project.id);
+    const firstThreadId = firstState.selectedThreadId!;
+    await store.beginRun(firstThreadId, "Large edit", [], "", "", "auto");
+    const patch = `@@ -1 +1 @@\n-${"a".repeat(100_000)}\n+${"b".repeat(100_000)}`;
+    const fileChange = { path: join(directory, "large.ts"), patch, additions: 1, deletions: 1 };
+    await store.finishRun(
+      firstThreadId,
+      "Done",
+      "complete",
+      "session-large",
+      false,
+      [{ label: "Using Edit", detail: fileChange.path, toolName: "Edit", fileChange, timestamp: 1 }],
+      10,
+      [{ type: "activity", label: "Using Edit", detail: fileChange.path, toolName: "Edit", fileChange, timestamp: 1 }],
+      [fileChange],
+    );
+
+    const secondState = await store.createThread(project.id);
+    const secondThreadId = secondState.selectedThreadId!;
+    const shell = store.snapshotForRenderer();
+    const firstShell = shell.threads.find((thread) => thread.id === firstThreadId)!;
+    const secondDetail = shell.threads.find((thread) => thread.id === secondThreadId)!;
+    expect(firstShell.detailLevel).toBe("summary");
+    expect(firstShell.messages.at(-1)?.content).toBe("Done");
+    expect(firstShell.messages.at(-1)?.timeline).toBeUndefined();
+    expect(firstShell.messages.at(-1)?.fileChanges).toBeUndefined();
+    expect(secondDetail.detailLevel).toBe("full");
+
+    const selected = await store.selectThread(firstThreadId);
+    const hydrated = selected.threads.find((thread) => thread.id === firstThreadId)!;
+    const assistant = hydrated.messages.at(-1)!;
+    expect(hydrated.detailLevel).toBe("full");
+    expect(assistant.activity).toBeUndefined();
+    expect(assistant.timeline?.[0]?.type).toBe("activity");
+    expect(assistant.timeline?.[0]?.type === "activity" ? assistant.timeline[0].fileChange : undefined).toBeUndefined();
+    expect(assistant.fileChanges?.[0]?.patch).toBe(patch);
+    expect(JSON.stringify(shell).length).toBeLessThan(JSON.stringify(store.snapshot()).length / 2);
+
+    await store.activateThread(secondThreadId);
+    expect(store.snapshot().selectedThreadId).toBe(secondThreadId);
+    const onDemandDetail = store.threadDetail(firstThreadId);
+    expect(onDemandDetail.detailLevel).toBe("full");
+    expect(onDemandDetail.messages.at(-1)?.fileChanges?.[0]?.patch).toBe(patch);
+  });
+
+  it("compacts duplicate history while migrating an existing state file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    temporaryDirectories.push(directory);
+    const initial = createInitialState(directory);
+    const project = initial.projects[0]!;
+    const fileChange = { path: join(directory, "legacy.ts"), patch: "@@ -1 +1 @@\n-old\n+new", additions: 1, deletions: 1 };
+    initial.threads = [{
+      id: "legacy-thread",
+      projectId: project.id,
+      title: "Legacy chat",
+      createdAt: 1,
+      updatedAt: 2,
+      status: "complete",
+      messages: [{
+        id: "legacy-answer",
+        role: "assistant",
+        content: "Migrated",
+        createdAt: 2,
+        activity: [{ label: "Using Edit", detail: fileChange.path, toolName: "Edit", fileChange, timestamp: 1 }],
+        timeline: [{ type: "activity", label: "Using Edit", detail: fileChange.path, toolName: "Edit", fileChange, timestamp: 1 }],
+        fileChanges: [fileChange],
+      }],
+    }];
+    initial.selectedThreadId = "legacy-thread";
+    const store = new StateStore(directory, initial);
+
+    await store.initialize();
+
+    const migrated = store.getThread("legacy-thread")?.messages[0];
+    expect(migrated?.activity).toBeUndefined();
+    expect(migrated?.timeline?.[0]?.type === "activity" ? migrated.timeline[0].fileChange : undefined).toBeUndefined();
+    expect(migrated?.fileChanges?.[0]).toEqual(fileChange);
+    const saved = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+    expect(saved.threads[0].messages[0].activity).toBeUndefined();
+    expect(saved.threads[0].messages[0].timeline[0].fileChange).toBeUndefined();
   });
 
   it("does not duplicate a final assistant response when completion is delivered twice", async () => {
@@ -241,6 +358,34 @@ describe("StateStore", () => {
     expect(store.getThread(threadId1)?.unread).toBe(true);
     await store.markAllNotificationsRead();
     expect(store.getThread(threadId1)?.unread).toBe(false);
+  });
+
+  it("keeps a selected chat read through the lightweight navigation checkpoint", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(directory, createInitialState(directory));
+    await store.initialize();
+    const project = store.snapshot().projects[0]!;
+    const first = await store.createThread(project.id);
+    const firstThreadId = first.selectedThreadId!;
+    await store.beginRun(firstThreadId, "First", [], "", "", "auto");
+    await store.finishRun(firstThreadId, "Background answer", "complete");
+    const second = await store.createThread(project.id);
+    const secondThreadId = second.selectedThreadId!;
+    await store.beginRun(secondThreadId, "Second", [], "", "", "auto");
+    await store.finishRun(secondThreadId, "Foreground answer", "complete");
+    await store.update((draft) => {
+      const firstThread = draft.threads.find((thread) => thread.id === firstThreadId);
+      if (firstThread) firstThread.unread = true;
+    });
+
+    await store.activateThread(firstThreadId);
+    await store.activateThread(secondThreadId);
+
+    const reloaded = new StateStore(directory, createInitialState());
+    await reloaded.initialize();
+    expect(reloaded.getThread(firstThreadId)?.unread).toBe(false);
+    expect(reloaded.snapshot().selectedThreadId).toBe(secondThreadId);
   });
 
   it("settles intermediate turn responses without marking the thread as running", async () => {

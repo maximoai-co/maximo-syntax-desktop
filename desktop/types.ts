@@ -389,6 +389,12 @@ export interface ThreadGoalState {
 export interface Thread {
   id: string;
   projectId: string;
+  /**
+   * Renderer-only hydration marker. The main process keeps complete threads,
+   * while workspace snapshots carry lightweight message shells for every
+   * thread except the selected one.
+   */
+  detailLevel?: "summary" | "full";
   title: string;
   createdAt: number;
   updatedAt: number;
@@ -872,6 +878,8 @@ export interface DesktopApi {
   recordQuestionInteraction(threadId: string, questions: AskUserAnswer[], toolUseId?: string): Promise<AppState>;
   recordPermissionInteraction(threadId: string, interaction: { toolName: string; decision: "approved" | "denied"; detail?: string; remember?: boolean; toolUseId?: string }): Promise<AppState>;
   selectThread(threadId: string): Promise<AppState>;
+  activateThread(threadId: string): Promise<void>;
+  loadThreadDetail(threadId: string): Promise<Thread>;
   markThreadRead(threadId: string): Promise<AppState>;
   markAllNotificationsRead(): Promise<AppState>;
   renameThread(threadId: string, title: string): Promise<AppState>;

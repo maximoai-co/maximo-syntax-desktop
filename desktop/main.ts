@@ -33,7 +33,7 @@ import {
 } from "./whats-new.js";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
 import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
-import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, ContextUsage, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
+import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 import { launchConfigurationChanged, resolveAsFollowUp, type RunLaunchConfiguration } from "./run-dispatch.js";
 
 let mainWindow: BrowserWindow | null = null;
@@ -56,14 +56,8 @@ const RUN_EVENT_FLUSH_INTERVAL_MS = 80;
 // can change between turns, but the existing process keeps its original flags.
 const runningModel = new Map<string, RunLaunchConfiguration>();
 let runEventFlushTimer: ReturnType<typeof setTimeout> | null = null;
-// Latest context usage per thread so the final reading can be persisted when a
-// run finishes (usage persistence is throttled during streaming).
-const latestRunContextByThread = new Map<string, ContextUsage>();
-
-function latestRunContext(threadId: string): ContextUsage | undefined {
-  return latestRunContextByThread.get(threadId);
-}
-
+let rendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+const rendererRecoveryTimes: number[] = [];
 // Local staging ceiling; the CLI applies its format-specific API limits when
 // it dereferences the @-mentioned path.
 const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
@@ -222,10 +216,6 @@ function flushRunEvents(): void {
 }
 
 function sendRunEvent(event: RunEvent): void {
-  // Keep the latest context per thread so the final reading can be persisted
-  // when the run finishes (usage persistence is throttled during streaming).
-  if (event.type === "context") latestRunContextByThread.set(event.threadId, event.context);
-  if (event.type === "finished") latestRunContextByThread.delete(event.threadId);
   const immediate = event.type === "started"
     // Text is already coalesced to 120 ms by CliRunner; do not put it through a
     // second trailing timer or make the visible stream feel ~200 ms behind.
@@ -406,6 +396,37 @@ function createApplicationMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+async function loadRendererContents(window: BrowserWindow): Promise<void> {
+  if (process.env.VITE_DEV_SERVER_URL) await window.loadURL(process.env.VITE_DEV_SERVER_URL);
+  else await window.loadFile(join(app.getAppPath(), "dist-renderer", "index.html"));
+}
+
+function scheduleRendererRecovery(window: BrowserWindow, reason: string, exitCode: number): void {
+  if (isQuitting || window.isDestroyed() || reason === "clean-exit") return;
+  console.error("[renderer] process exited:", reason, exitCode);
+
+  const now = Date.now();
+  while (rendererRecoveryTimes.length > 0 && now - rendererRecoveryTimes[0]! > 60_000) rendererRecoveryTimes.shift();
+  if (rendererRecoveryTimes.length >= 2 || rendererRecoveryTimer !== null) {
+    console.error("[renderer] automatic recovery suppressed to avoid a crash loop");
+    return;
+  }
+  rendererRecoveryTimes.push(now);
+
+  // A native WebContentsView can otherwise remain painted over a dead
+  // renderer. Detach it first, then reload the same isolated renderer so the
+  // user gets a working shell instead of a permanent black window.
+  browserManager?.setWindow(null);
+  rendererRecoveryTimer = setTimeout(() => {
+    rendererRecoveryTimer = null;
+    if (isQuitting || window.isDestroyed() || mainWindow !== window) return;
+    void loadRendererContents(window).then(() => {
+      if (!window.isDestroyed() && mainWindow === window) browserManager?.setWindow(window);
+    }).catch((error) => console.error("[renderer] automatic recovery failed:", error));
+  }, 250);
+  rendererRecoveryTimer.unref();
+}
+
 async function createWindow(): Promise<void> {
   const preloadPath = join(app.getAppPath(), "dist-electron", "preload.cjs");
   mainWindow = new BrowserWindow({
@@ -473,12 +494,12 @@ async function createWindow(): Promise<void> {
       console.error(`[renderer:${details.level}] ${details.message} (${details.sourceId}:${details.lineNumber})`);
     }
   });
+  const windowForRendererRecovery = mainWindow;
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
-    if (!isQuitting) console.error("[renderer] process exited:", details.reason, details.exitCode);
+    scheduleRendererRecovery(windowForRendererRecovery, details.reason, details.exitCode);
   });
 
-  if (process.env.VITE_DEV_SERVER_URL) await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-  else await mainWindow.loadFile(join(app.getAppPath(), "dist-renderer", "index.html"));
+  await loadRendererContents(mainWindow);
 
   if (process.env.MAXIMO_DESKTOP_SCREENSHOT) {
     const screenshotPath = resolve(process.env.MAXIMO_DESKTOP_SCREENSHOT);
@@ -534,7 +555,7 @@ function registerIpc(): void {
   });
   ipcMain.handle("whats-new:load", async (): Promise<WhatsNewSnapshot> => {
     const currentVersion = app.getVersion();
-    const lastSeenVersion = store.snapshot().lastSeenWhatsNewVersion ?? null;
+    const lastSeenVersion = store.getLastSeenWhatsNewVersion();
     const entries = await loadWhatsNewEntries(currentVersion);
     const snapshot = toWhatsNewSnapshot(currentVersion, lastSeenVersion, entries);
     if (snapshot.decision === "silent-bootstrap" && snapshot.nextLastSeenVersion) {
@@ -552,7 +573,7 @@ function registerIpc(): void {
       draft.lastSeenWhatsNewVersion = version;
     });
   });
-  ipcMain.handle("state:load", () => store.snapshot());
+  ipcMain.handle("state:load", () => store.snapshotForRenderer());
   ipcMain.handle("notifications:supported", () => ElectronNotification.isSupported());
   ipcMain.handle("notifications:sound", () => {
     if (process.platform !== "darwin") {
@@ -648,10 +669,9 @@ function registerIpc(): void {
     browserManager.openDevTools({ threadId: safeText(input?.threadId, 100), tabId: safeText(input?.tabId, 200) });
   });
   ipcMain.handle("skills:list", async (_event, requestedProjectPath?: string) => {
-    const snapshot = store.snapshot();
     const projectPath = typeof requestedProjectPath === "string" && requestedProjectPath
       ? requestedProjectPath
-      : snapshot.projects.find((project) => project.id === snapshot.selectedProjectId)?.path;
+      : store.getSelectedProjectPath();
     return discoverSkills(projectPath ?? null);
   });
   ipcMain.handle("onboarding:complete", () => store.update((draft) => { draft.onboardingComplete = true; }));
@@ -754,6 +774,8 @@ function registerIpc(): void {
     });
   });
   ipcMain.handle("thread:select", (_event, threadId: string) => store.selectThread(safeText(threadId, 100)));
+  ipcMain.handle("thread:activate", (_event, threadId: string) => store.activateThread(safeText(threadId, 100)));
+  ipcMain.handle("thread:detail", (_event, threadId: string) => store.threadDetail(safeText(threadId, 100)));
   ipcMain.handle("thread:mark-read", (_event, threadId: string) => store.markThreadRead(safeText(threadId, 100)));
   ipcMain.handle("thread:mark-all-read", () => store.markAllNotificationsRead());
   ipcMain.handle("thread:rename", (_event, threadId: string, title: string) => store.renameThread(safeText(threadId, 100), safeText(title, 100)));
@@ -954,10 +976,6 @@ function registerIpc(): void {
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);
           if (event.type === "finished") {
             runningModel.delete(threadId);
-            // Persist the final usage reading so the throttled path above does
-            // not drop the last (largest) token totals when the run ends.
-            const context = latestRunContext(threadId);
-            if (context) void store.flushContextUsage(threadId, context);
           }
         },
         onComplete: async (result) => {
@@ -1043,8 +1061,6 @@ function registerIpc(): void {
             if (event.type === "context") void store.recordContextUsage(threadId, event.context);
             if (event.type === "finished") {
               runningModel.delete(threadId);
-              const context = latestRunContext(threadId);
-              if (context) void store.flushContextUsage(threadId, context);
             }
           },
           onComplete: async (result) => {
@@ -1167,8 +1183,6 @@ function registerIpc(): void {
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);
           if (event.type === "finished") {
             runningModel.delete(threadId);
-            const context = latestRunContext(threadId);
-            if (context) void store.flushContextUsage(threadId, context);
           }
         },
         onComplete: async (result) => {
@@ -1522,16 +1536,17 @@ app.whenReady().then(async () => {
       if (process.env.MAXIMO_DESKTOP_QA_THEME === "dark") draft.settings.theme = "dark";
       if (process.env.MAXIMO_DESKTOP_QA_THEME === "light") draft.settings.theme = "light";
     });
-    if (process.env.MAXIMO_DESKTOP_QA_THREAD && store.snapshot().threads.length === 0 && store.snapshot().projects[0]) {
-      await store.createThread(store.snapshot().projects[0].id);
+    const firstProject = store.getFirstProject();
+    if (process.env.MAXIMO_DESKTOP_QA_THREAD && !store.hasThreads() && firstProject) {
+      await store.createThread(firstProject.id);
     }
   }
-  nativeTheme.themeSource = store.snapshot().settings.theme;
+  nativeTheme.themeSource = store.getTheme();
   runtime = new RuntimeManager({
     appPath: app.getAppPath(),
     userDataPath: app.getPath("userData"),
     isPackaged: app.isPackaged,
-    configuredPath: () => store.snapshot().settings.cliPath,
+    configuredPath: () => store.getCliPath(),
     onStatus: (status) => send("engine:status-changed", status),
   });
   terminalManager = new TerminalManager((event) => send("terminal:event", event));

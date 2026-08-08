@@ -177,62 +177,192 @@ function normalizeState(input: unknown, fallback: AppState): AppState {
     profile: normalizeProfileUsage(value.profile),
     spaces,
     projects,
-    threads: Array.isArray(value.threads) ? value.threads.map((thread) => ({
-      ...thread,
-      ...(thread.title === "New task" ? { title: "New chat" } : {}),
-      ...(thread.status === "running" ? { status: "cancelled" as const } : {}),
-    })) : [],
+    threads: Array.isArray(value.threads) ? value.threads.map((thread) => {
+      const normalizedThread = {
+        ...thread,
+        ...(thread.title === "New task" ? { title: "New chat" } : {}),
+        ...(thread.status === "running" ? { status: "cancelled" as const } : {}),
+      };
+      // detailLevel exists only on the lightweight renderer projection. Never
+      // let it become part of the authoritative on-disk thread model.
+      delete normalizedThread.detailLevel;
+      return normalizedThread;
+    }) : [],
     selectedSpaceId,
     lastSeenWhatsNewVersion,
   };
 }
 
-const USAGE_PERSIST_INTERVAL_MS = 2_000;
+function normalizedChangePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+/**
+ * Completed turns used to persist the same tool activity twice (`activity`
+ * and `timeline`) and the same large patch once per edit plus once per turn.
+ * The renderer has preferred `timeline` for years and can resolve an edit row
+ * against the aggregate turn-level `fileChanges`, so those copies contain no
+ * additional user-visible information.
+ */
+function compactMessageHistory(message: ChatMessage): boolean {
+  let changed = false;
+  if (message.timeline?.length && message.activity !== undefined) {
+    delete message.activity;
+    changed = true;
+  }
+
+  if (!message.timeline?.length || !message.fileChanges?.length) return changed;
+  const aggregatePaths = new Set(message.fileChanges.map((change) => normalizedChangePath(change.path)));
+  let timelineChanged = false;
+  const timeline = message.timeline.map((item) => {
+    if (item.type !== "activity" || !item.fileChange || !aggregatePaths.has(normalizedChangePath(item.fileChange.path))) return item;
+    const { fileChange: _duplicatePatch, ...withoutDuplicatePatch } = item;
+    timelineChanged = true;
+    return withoutDuplicatePatch;
+  });
+  if (timelineChanged) {
+    message.timeline = timeline;
+    changed = true;
+  }
+  return changed;
+}
+
+function compactStateHistory(state: AppState): boolean {
+  let changed = false;
+  for (const thread of state.threads) {
+    for (const message of thread.messages) changed = compactMessageHistory(message) || changed;
+  }
+  return changed;
+}
+
+function summaryMessage(message: ChatMessage): ChatMessage {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    createdAt: message.createdAt,
+    ...(message.model !== undefined ? { model: message.model } : {}),
+    ...(message.attachments?.length ? { attachments: structuredClone(message.attachments) } : {}),
+    ...(message.isError !== undefined ? { isError: message.isError } : {}),
+    ...(message.interaction ? { interaction: structuredClone(message.interaction) } : {}),
+    ...(message.kind ? { kind: message.kind } : {}),
+    ...(message.uuid ? { uuid: message.uuid } : {}),
+  };
+}
+
+interface StoredSelection {
+  version: 1;
+  selectedProjectId: string | null;
+  selectedThreadId: string | null;
+  selectedSpaceId: string | null;
+  projectLastOpenedAt: Record<string, number>;
+  readThreadIds: string[];
+}
+
+function applyContextUsage(draft: AppState, threadId: string, contextUsage: ContextUsage): void {
+  const thread = draft.threads.find((candidate) => candidate.id === threadId);
+  if (!thread) return;
+  thread.contextUsage = contextUsage;
+
+  const currentTokens = contextUsage.totalProcessedTokens
+    ?? (contextUsage.apiUsage
+      ? contextUsage.apiUsage.input_tokens + contextUsage.apiUsage.output_tokens + contextUsage.apiUsage.cache_creation_input_tokens + contextUsage.apiUsage.cache_read_input_tokens
+      : contextUsage.totalTokens);
+  const previousTokens = draft.profile.threadTokenTotals[threadId] ?? 0;
+  const delta = currentTokens >= previousTokens ? currentTokens - previousTokens : currentTokens;
+  draft.profile.threadTokenTotals[threadId] = Math.max(0, currentTokens);
+  if (delta <= 0) return;
+  const day = new Date().toISOString().slice(0, 10);
+  const model = contextUsage.model.trim() || thread.model?.trim() || "CLI default";
+  draft.profile.totalTokens += delta;
+  draft.profile.dailyTokens[day] = (draft.profile.dailyTokens[day] ?? 0) + delta;
+  draft.profile.modelTokens[model] = (draft.profile.modelTokens[model] ?? 0) + delta;
+}
 
 export class StateStore {
   private readonly statePath: string;
+  private readonly selectionPath: string;
   private state: AppState;
   private updateQueue: Promise<void> = Promise.resolve();
   private writeQueue: Promise<void> = Promise.resolve();
-  private lastUsagePersistAt: number | null = null;
+  private selectionWriteQueue: Promise<void> = Promise.resolve();
+  private pendingContextUsage = new Map<string, ContextUsage>();
 
   constructor(dataDirectory: string, initialState: AppState) {
     this.statePath = join(dataDirectory, "state.json");
+    this.selectionPath = join(dataDirectory, "selection.json");
     this.state = initialState;
   }
 
   async initialize(): Promise<AppState> {
     await mkdir(dirname(this.statePath), { recursive: true });
+    let shouldPersistState = false;
+    let historyChecked = false;
     try {
       const raw = await readFile(this.statePath, "utf8");
       this.state = normalizeState(JSON.parse(raw), this.state);
+      shouldPersistState = compactStateHistory(this.state);
+      historyChecked = true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
         const backup = `${this.statePath}.corrupt-${Date.now()}`;
         await rename(this.statePath, backup).catch(() => undefined);
       }
-      await this.persist();
+      shouldPersistState = true;
     }
-    return this.snapshot();
+    if (!historyChecked) shouldPersistState = compactStateHistory(this.state) || shouldPersistState;
+    try {
+      this.applyStoredSelection(JSON.parse(await readFile(this.selectionPath, "utf8")));
+    } catch {
+      // selection.json is a tiny best-effort navigation checkpoint. A missing
+      // or malformed file must never make the authoritative state unreadable.
+    }
+    if (shouldPersistState) await this.persist();
+    return this.snapshotForRenderer();
   }
 
   snapshot(): AppState {
     return structuredClone(this.state);
   }
 
-  async update(mutator: (draft: AppState) => void): Promise<AppState> {
-    let result: AppState | undefined;
+  /**
+   * Keep the workspace shell cheap: only the selected chat crosses Electron's
+   * structured-clone boundary with timelines and patches. Other chats retain
+   * searchable text and all sidebar/profile metadata.
+   */
+  snapshotForRenderer(selectedThreadId = this.state.selectedThreadId): AppState {
+    const { threads: _threads, ...shell } = this.state;
+    return {
+      ...structuredClone(shell),
+      threads: this.state.threads.map((thread) => {
+        if (thread.id === selectedThreadId) {
+          return { ...structuredClone(thread), detailLevel: "full" as const };
+        }
+        const { messages: _messages, detailLevel: _detailLevel, ...metadata } = thread;
+        return {
+          ...structuredClone(metadata),
+          detailLevel: "summary" as const,
+          messages: thread.messages.map(summaryMessage),
+        };
+      }),
+    };
+  }
+
+  private async commit(mutator: (draft: AppState) => void): Promise<void> {
     const operation = this.updateQueue.then(async () => {
       const draft = this.snapshot();
       mutator(draft);
       this.state = draft;
       await this.persist();
-      result = this.snapshot();
     });
     this.updateQueue = operation.catch(() => undefined);
     await operation;
-    return result ?? this.snapshot();
+  }
+
+  async update(mutator: (draft: AppState) => void): Promise<AppState> {
+    await this.commit(mutator);
+    return this.snapshotForRenderer();
   }
 
   async updateSettings(patch: Partial<Settings>): Promise<AppState> {
@@ -244,62 +374,18 @@ export class StateStore {
     });
   }
 
-  async recordContextUsage(threadId: string, contextUsage: ContextUsage): Promise<AppState> {
-    // Usage telemetry streams at high frequency (per API message_delta during a
-    // run). Persisting a full state snapshot + disk write on every event stalls
-    // the shared write queue (which backs thread switching, message edits, etc.)
-    // and thrashes the main process. The renderer already receives usage live
-    // via run events, so persist throttled: at most every 2s, plus a final
-    // write when the run completes.
-    const now = Date.now();
-    if (this.lastUsagePersistAt === null) this.lastUsagePersistAt = now;
-    if (now - this.lastUsagePersistAt >= USAGE_PERSIST_INTERVAL_MS) {
-      this.lastUsagePersistAt = now;
-      return this.update((draft) => {
-        const thread = draft.threads.find((candidate) => candidate.id === threadId);
-        if (!thread) return;
-        thread.contextUsage = contextUsage;
-
-        const currentTokens = contextUsage.totalProcessedTokens
-          ?? (contextUsage.apiUsage
-            ? contextUsage.apiUsage.input_tokens + contextUsage.apiUsage.output_tokens + contextUsage.apiUsage.cache_creation_input_tokens + contextUsage.apiUsage.cache_read_input_tokens
-            : contextUsage.totalTokens);
-        const previousTokens = draft.profile.threadTokenTotals[threadId] ?? 0;
-        const delta = currentTokens >= previousTokens ? currentTokens - previousTokens : currentTokens;
-        draft.profile.threadTokenTotals[threadId] = Math.max(0, currentTokens);
-        if (delta <= 0) return;
-        const day = new Date().toISOString().slice(0, 10);
-        const model = contextUsage.model.trim() || thread.model?.trim() || "CLI default";
-        draft.profile.totalTokens += delta;
-        draft.profile.dailyTokens[day] = (draft.profile.dailyTokens[day] ?? 0) + delta;
-        draft.profile.modelTokens[model] = (draft.profile.modelTokens[model] ?? 0) + delta;
-      });
-    }
-    return this.snapshot();
+  async recordContextUsage(threadId: string, contextUsage: ContextUsage): Promise<void> {
+    // Context deltas can arrive many times per second. Keep only the latest
+    // reading in memory; finishRun persists it in the same atomic write as the
+    // completed turn, eliminating periodic 55 MB archive clones while AI runs.
+    this.pendingContextUsage.set(threadId, contextUsage);
   }
 
   /** Force a final usage persistence (e.g. when a run completes). */
-  async flushContextUsage(threadId: string, contextUsage: ContextUsage): Promise<AppState> {
-    this.lastUsagePersistAt = Date.now();
-    return this.update((draft) => {
-      const thread = draft.threads.find((candidate) => candidate.id === threadId);
-      if (!thread) return;
-      thread.contextUsage = contextUsage;
-
-      const currentTokens = contextUsage.totalProcessedTokens
-        ?? (contextUsage.apiUsage
-          ? contextUsage.apiUsage.input_tokens + contextUsage.apiUsage.output_tokens + contextUsage.apiUsage.cache_creation_input_tokens + contextUsage.apiUsage.cache_read_input_tokens
-          : contextUsage.totalTokens);
-      const previousTokens = draft.profile.threadTokenTotals[threadId] ?? 0;
-      const delta = currentTokens >= previousTokens ? currentTokens - previousTokens : currentTokens;
-      draft.profile.threadTokenTotals[threadId] = Math.max(0, currentTokens);
-      if (delta <= 0) return;
-      const day = new Date().toISOString().slice(0, 10);
-      const model = contextUsage.model.trim() || thread.model?.trim() || "CLI default";
-      draft.profile.totalTokens += delta;
-      draft.profile.dailyTokens[day] = (draft.profile.dailyTokens[day] ?? 0) + delta;
-      draft.profile.modelTokens[model] = (draft.profile.modelTokens[model] ?? 0) + delta;
-    });
+  async flushContextUsage(threadId: string, contextUsage: ContextUsage): Promise<void> {
+    const pendingAtStart = this.pendingContextUsage.get(threadId);
+    await this.commit((draft) => applyContextUsage(draft, threadId, contextUsage));
+    if (this.pendingContextUsage.get(threadId) === pendingAtStart) this.pendingContextUsage.delete(threadId);
   }
 
   async resetProviderSelections(): Promise<AppState> {
@@ -332,14 +418,15 @@ export class StateStore {
 
   async selectSpace(spaceId: string | null): Promise<AppState> {
     if (spaceId !== null && !this.state.spaces.some((space) => space.id === spaceId)) throw new Error("Space not found.");
-    return this.update((draft) => {
-      draft.selectedSpaceId = spaceId;
-      const project = draft.projects.find((candidate) => (candidate.spaceId ?? null) === spaceId);
-      draft.selectedProjectId = project?.id;
-      draft.selectedThreadId = project
-        ? draft.threads.find((thread) => thread.projectId === project.id)?.id
-        : undefined;
-    });
+    this.state.selectedSpaceId = spaceId;
+    const project = this.state.projects.find((candidate) => (candidate.spaceId ?? null) === spaceId);
+    this.state.selectedProjectId = project?.id;
+    this.state.selectedThreadId = project
+      ? this.state.threads.find((thread) => thread.projectId === project.id)?.id
+      : undefined;
+    const result = this.snapshotForRenderer();
+    await this.persistSelection().catch(() => undefined);
+    return result;
   }
 
   async addProject(projectPath: string): Promise<AppState> {
@@ -398,15 +485,16 @@ export class StateStore {
   }
 
   async selectProject(projectId: string): Promise<AppState> {
-    return this.update((draft) => {
-      const project = draft.projects.find((candidate) => candidate.id === projectId);
-      if (!project) throw new Error("Project not found.");
-      project.lastOpenedAt = Date.now();
-      draft.selectedProjectId = projectId;
-      draft.selectedSpaceId = project.spaceId ?? null;
-      const selectedThread = draft.threads.find((thread) => thread.id === draft.selectedThreadId);
-      if (selectedThread && selectedThread.projectId !== projectId) draft.selectedThreadId = undefined;
-    });
+    const project = this.state.projects.find((candidate) => candidate.id === projectId);
+    if (!project) throw new Error("Project not found.");
+    project.lastOpenedAt = Date.now();
+    this.state.selectedProjectId = projectId;
+    this.state.selectedSpaceId = project.spaceId ?? null;
+    const selectedThread = this.state.threads.find((thread) => thread.id === this.state.selectedThreadId);
+    if (selectedThread && selectedThread.projectId !== projectId) this.state.selectedThreadId = undefined;
+    const result = this.snapshotForRenderer();
+    await this.persistSelection().catch(() => undefined);
+    return result;
   }
 
   async renameProject(projectId: string, name: string): Promise<AppState> {
@@ -489,8 +577,9 @@ export class StateStore {
       this.state.selectedProjectId = projectId;
       this.state.selectedThreadId = existingDraft.id;
       this.state.selectedSpaceId = this.state.projects.find((project) => project.id === projectId)?.spaceId ?? null;
-      void this.persist();
-      return Promise.resolve(this.snapshot());
+      const result = this.snapshotForRenderer();
+      await this.persistSelection().catch(() => undefined);
+      return result;
     }
     const thread: Thread = {
       id: randomUUID(),
@@ -511,20 +600,38 @@ export class StateStore {
   }
 
   async selectThread(threadId: string): Promise<AppState> {
-    // Smooth thread switching: update in-memory state synchronously so the
-    // UI can transition immediately, then persist in background without
-    // blocking the caller. This avoids the updateQueue + file-write stall
-    // that made switching feel janky when many threads existed.
+    // Update selection synchronously, persist only the tiny checkpoint, and
+    // keep the legacy full response for callers that have not adopted the
+    // activateThread + threadDetail split yet.
+    this.activateThreadInMemory(threadId);
+    // The navigation checkpoint is a few hundred bytes on its own serialized
+    // queue. Never stringify the whole chat archive just because the user
+    // clicked a row, and never wait behind a large history write.
+    const result = this.snapshotForRenderer();
+    await this.persistSelection().catch(() => undefined);
+    return result;
+  }
+
+  /** Select a chat without serializing any transcript back across IPC. */
+  async activateThread(threadId: string): Promise<void> {
+    this.activateThreadInMemory(threadId);
+    await this.persistSelection().catch(() => undefined);
+  }
+
+  /** Load one compacted transcript on demand for the renderer detail cache. */
+  threadDetail(threadId: string): Thread {
+    const thread = this.state.threads.find((candidate) => candidate.id === threadId);
+    if (!thread) throw new Error("Chat not found.");
+    return { ...structuredClone(thread), detailLevel: "full" };
+  }
+
+  private activateThreadInMemory(threadId: string): void {
     const thread = this.state.threads.find((candidate) => candidate.id === threadId);
     if (!thread) throw new Error("Chat not found.");
     thread.unread = false;
     this.state.selectedThreadId = thread.id;
     this.state.selectedProjectId = thread.projectId;
     this.state.selectedSpaceId = this.state.projects.find((project) => project.id === thread.projectId)?.spaceId ?? null;
-    // Fire persist without awaiting to keep switch instant; updateQueue still
-    // serializes the write.
-    void this.persist();
-    return this.snapshot();
   }
 
   async markThreadRead(threadId: string): Promise<AppState> {
@@ -868,10 +975,12 @@ export class StateStore {
     });
   }
 
-  async finishRun(threadId: string, content: string, status: ThreadStatus, sessionId?: string, error = false, activity: RunActivity[] = [], durationMs = 0, timeline: RunTimelineItem[] = [], fileChanges: FileChange[] = [], final = true, continueRunning = false): Promise<AppState> {
-    return this.update((draft) => {
+  async finishRun(threadId: string, content: string, status: ThreadStatus, sessionId?: string, error = false, activity: RunActivity[] = [], durationMs = 0, timeline: RunTimelineItem[] = [], fileChanges: FileChange[] = [], final = true, continueRunning = false): Promise<void> {
+    const pendingUsage = this.pendingContextUsage.get(threadId);
+    await this.commit((draft) => {
       const thread = draft.threads.find((candidate) => candidate.id === threadId);
       if (!thread) return;
+      if (pendingUsage) applyContextUsage(draft, threadId, pendingUsage);
       const assistantContent = content.trim() || (fileChanges.length > 0 ? "I updated the files listed below." : "");
       const answerModel = [...thread.messages].reverse().find((message) => message.role === "user" && message.kind !== "follow-up")?.model;
       const continuedContexts: ChatMessage[] = [];
@@ -884,7 +993,7 @@ export class StateStore {
       const latest = thread.messages.at(-1);
       const duplicateFinal = final && assistantContent && latest?.role === "assistant" && latest.content === assistantContent;
       if (!duplicateFinal && (assistantContent || timeline.length > 0 || fileChanges.length > 0)) {
-        thread.messages.push({
+        const assistantMessage: ChatMessage = {
           id: randomUUID(),
           role: "assistant",
           content: assistantContent,
@@ -895,7 +1004,9 @@ export class StateStore {
           timeline,
           durationMs,
           ...(fileChanges.length > 0 ? { fileChanges } : {}),
-        });
+        };
+        compactMessageHistory(assistantMessage);
+        thread.messages.push(assistantMessage);
       }
       if (continuedContexts.length > 0) thread.messages.push(...continuedContexts);
       if (final) thread.status = status;
@@ -908,6 +1019,7 @@ export class StateStore {
       thread.updatedAt = Date.now();
       if (sessionId) thread.cliSessionId = sessionId;
     });
+    if (this.pendingContextUsage.get(threadId) === pendingUsage) this.pendingContextUsage.delete(threadId);
   }
 
   getProject(projectId: string): Project | undefined {
@@ -918,13 +1030,115 @@ export class StateStore {
     return this.state.threads.find((thread) => thread.id === threadId);
   }
 
+  getLastSeenWhatsNewVersion(): string | null {
+    return this.state.lastSeenWhatsNewVersion ?? null;
+  }
+
+  getSelectedProjectPath(): string | undefined {
+    return this.state.projects.find((project) => project.id === this.state.selectedProjectId)?.path;
+  }
+
+  getFirstProject(): Project | undefined {
+    return this.state.projects[0];
+  }
+
+  hasThreads(): boolean {
+    return this.state.threads.length > 0;
+  }
+
+  getTheme(): Settings["theme"] {
+    return this.state.settings.theme;
+  }
+
+  getCliPath(): string {
+    return this.state.settings.cliPath;
+  }
+
+  private selectionSnapshot(): StoredSelection {
+    return {
+      version: 1,
+      selectedProjectId: this.state.selectedProjectId ?? null,
+      selectedThreadId: this.state.selectedThreadId ?? null,
+      selectedSpaceId: this.state.selectedSpaceId ?? null,
+      projectLastOpenedAt: Object.fromEntries(this.state.projects.map((project) => [project.id, project.lastOpenedAt])),
+      // Selecting an unread chat is part of navigation, so retain that tiny
+      // read-state change without forcing a full transcript archive write.
+      readThreadIds: this.state.threads.filter((thread) => !thread.unread).map((thread) => thread.id),
+    };
+  }
+
+  private applyStoredSelection(input: unknown): void {
+    if (!input || typeof input !== "object") return;
+    const selection = input as Partial<StoredSelection>;
+    if (selection.projectLastOpenedAt && typeof selection.projectLastOpenedAt === "object" && !Array.isArray(selection.projectLastOpenedAt)) {
+      for (const project of this.state.projects) {
+        const timestamp = selection.projectLastOpenedAt[project.id];
+        if (typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp > project.lastOpenedAt) project.lastOpenedAt = timestamp;
+      }
+    }
+    if (Array.isArray(selection.readThreadIds)) {
+      const readThreadIds = new Set(selection.readThreadIds.filter((id): id is string => typeof id === "string"));
+      for (const thread of this.state.threads) {
+        if (readThreadIds.has(thread.id)) thread.unread = false;
+      }
+    }
+
+    const thread = typeof selection.selectedThreadId === "string"
+      ? this.state.threads.find((candidate) => candidate.id === selection.selectedThreadId)
+      : undefined;
+    if (thread) {
+      const project = this.state.projects.find((candidate) => candidate.id === thread.projectId);
+      this.state.selectedThreadId = thread.id;
+      this.state.selectedProjectId = thread.projectId;
+      this.state.selectedSpaceId = project?.spaceId ?? null;
+      thread.unread = false;
+      return;
+    }
+
+    const project = typeof selection.selectedProjectId === "string"
+      ? this.state.projects.find((candidate) => candidate.id === selection.selectedProjectId)
+      : undefined;
+    if (project) {
+      this.state.selectedProjectId = project.id;
+      this.state.selectedThreadId = undefined;
+      this.state.selectedSpaceId = project.spaceId ?? null;
+      return;
+    }
+
+    if (selection.selectedProjectId === null) {
+      this.state.selectedProjectId = undefined;
+      this.state.selectedThreadId = undefined;
+      const requestedSpaceId = selection.selectedSpaceId;
+      this.state.selectedSpaceId = typeof requestedSpaceId === "string" && this.state.spaces.some((space) => space.id === requestedSpaceId)
+        ? requestedSpaceId
+        : null;
+    }
+  }
+
   private persist(): Promise<void> {
-    const payload = `${JSON.stringify(this.state, null, 2)}\n`;
-    this.writeQueue = this.writeQueue.then(async () => {
+    const payload = `${JSON.stringify(this.state)}\n`;
+    const selectionPayload = `${JSON.stringify(this.selectionSnapshot())}\n`;
+    this.writeQueue = this.writeQueue.catch(() => undefined).then(async () => {
       const temporaryPath = `${this.statePath}.tmp`;
       await writeFile(temporaryPath, payload, { encoding: "utf8", mode: 0o600 });
       await rename(temporaryPath, this.statePath);
     });
-    return this.writeQueue;
+    const stateWrite = this.writeQueue;
+    const selectionWrite = this.enqueueSelectionWrite(selectionPayload);
+    return Promise.all([stateWrite, selectionWrite]).then(() => undefined);
+  }
+
+  private persistSelection(): Promise<void> {
+    const payload = `${JSON.stringify(this.selectionSnapshot())}\n`;
+    return this.enqueueSelectionWrite(payload);
+  }
+
+  private enqueueSelectionWrite(payload: string): Promise<void> {
+    this.selectionWriteQueue = this.selectionWriteQueue.catch(() => undefined).then(async () => {
+      const temporaryPath = `${this.selectionPath}.tmp`;
+      await writeFile(temporaryPath, payload, { encoding: "utf8", mode: 0o600 });
+      await rename(temporaryPath, this.selectionPath);
+    });
+    return this.selectionWriteQueue;
   }
 }

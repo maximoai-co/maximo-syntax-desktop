@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -56,10 +56,19 @@ export default function KanbanView({ state, currentProject, onOpenThread, onNewT
   const projects = state.projects;
   const [projectId, setProjectId] = useState(currentProject?.id ?? projects[0]?.id ?? "");
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const previousCurrentProjectId = useRef(currentProject?.id);
   useEffect(() => {
-    if (currentProject?.id) setProjectId(currentProject.id);
-    else if (!projects.some((project) => project.id === projectId)) setProjectId(projects[0]?.id ?? "");
-  }, [currentProject?.id, projectId, projects]);
+    // `currentProject` is the app-wide chat selection. It should establish the
+    // initial Kanban project and react to real external project changes, but it
+    // must not overwrite a project chosen from this view on every state update.
+    const currentProjectChanged = previousCurrentProjectId.current !== currentProject?.id;
+    previousCurrentProjectId.current = currentProject?.id;
+    if (currentProjectChanged && currentProject?.id && projects.some((project) => project.id === currentProject.id)) {
+      setProjectId(currentProject.id);
+      return;
+    }
+    setProjectId((selectedId) => projects.some((project) => project.id === selectedId) ? selectedId : projects[0]?.id ?? "");
+  }, [currentProject?.id, projects]);
   const project = projects.find((candidate) => candidate.id === projectId) ?? projects[0];
   const columns = useMemo(() => {
     const result: Record<KanbanColumn, Thread[]> = { draft: [], "in-progress": [], done: [] };
