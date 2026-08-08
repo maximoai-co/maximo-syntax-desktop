@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Activity as ActivityIcon, AlertCircle, Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
   File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, Image, LogOut, SquarePen,
-  GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
+  GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
   Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Undo2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, X, Zap,
 } from "lucide-react";
 import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT } from "../desktop/types";
@@ -2697,7 +2697,7 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
     <>
       <aside className={`sidebar ${open ? "open" : ""}`} ref={sidebarRef}>
         <div className="sidebar-nav drag-region">
-          <button className="sidebar-nav-button no-drag" onClick={onToggleSidebar} title="Toggle sidebar"><PanelLeft size={15} /></button>
+          <button className="sidebar-nav-button no-drag" onClick={onToggleSidebar} title="Collapse sidebar" aria-label="Collapse sidebar"><PanelLeftClose size={15} /></button>
           <button className="sidebar-nav-button no-drag" onClick={onBack} disabled={!canGoBack} title="Back"><ArrowLeft size={15} /></button>
           <button className="sidebar-nav-button no-drag" onClick={onForward} disabled={!canGoForward} title="Forward"><ArrowRight size={15} /></button>
           <span />
@@ -2862,6 +2862,60 @@ const MemoizedSidebar = memo(Sidebar, (prev, next) =>
   prev.timestampFormat === next.timestampFormat &&
   prev.updateState === next.updateState
 );
+
+function RenameThreadModal({ thread, theme, onClose, onRename }: {
+  thread: Thread;
+  theme: ThemeMode;
+  onClose: () => void;
+  onRename: (title: string) => Promise<void>;
+}) {
+  const [title, setTitle] = useState(thread.title);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const trimmedTitle = title.trim();
+  const canSave = Boolean(trimmedTitle) && trimmedTitle !== thread.title.trim() && !busy;
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [busy, onClose]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!canSave) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onRename(trimmedTitle);
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to rename this chat.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className={`modal-backdrop theme-${theme}`} onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+      <form className="rename-thread-modal glass-panel" onSubmit={(event) => void submit(event)} role="dialog" aria-modal="true" aria-labelledby="rename-thread-title">
+        <div className="modal-header"><div><span className="eyebrow">CHAT</span><h2 id="rename-thread-title">Rename chat</h2><p>Keep it short and recognizable.</p></div><button type="button" onClick={onClose} disabled={busy} aria-label="Close rename dialog"><X size={17} /></button></div>
+        <input ref={inputRef} className="rename-thread-input" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} aria-label="Chat title" />
+        {error && <p className="rename-thread-error" role="alert">{error}</p>}
+        <footer className="modal-footer"><button type="button" className="secondary-button" onClick={onClose} disabled={busy}>Cancel</button><button type="submit" className="primary-button compact" disabled={!canSave}>{busy ? "Saving…" : "Save"}</button></footer>
+      </form>
+    </div>,
+    document.body,
+  );
+}
 
 function EmptyWorkspace({ project, onOpenProject, onNewThread }: { project?: Project; onOpenProject: () => void; onNewThread: () => void }) {
   return (
@@ -5575,6 +5629,8 @@ export default function App() {
   const [activeSurface, setActiveSurface] = useState<WorkspaceSurface>("chat");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
+  const [topbarThreadMenu, setTopbarThreadMenu] = useState<{ threadId: string; top: number; left: number } | null>(null);
+  const [renameThreadId, setRenameThreadId] = useState<string | null>(null);
   const [inspectorVisible, setInspectorVisible] = useState(true);
   const [environmentOpen, setEnvironmentOpen] = useState(false);
   const [dockRequest, setDockRequest] = useState<WorkspaceDockRequest | null>(null);
@@ -5746,6 +5802,49 @@ export default function App() {
     }
   }, [currentThread, rememberThreadDetail]);
   const currentProject = useMemo(() => state ? state.projects.find((project) => project.id === (currentThread?.projectId ?? state.selectedProjectId)) : undefined, [state?.projects, state?.selectedProjectId, currentThread?.projectId]);
+  const topbarMenuThread = useMemo(() => topbarThreadMenu && state ? state.threads.find((thread) => thread.id === topbarThreadMenu.threadId) : undefined, [state?.threads, topbarThreadMenu]);
+  const renameThreadTarget = useMemo(() => renameThreadId && state ? state.threads.find((thread) => thread.id === renameThreadId) : undefined, [renameThreadId, state?.threads]);
+  const sidebarActivityKind = useMemo<"active" | "unread" | null>(() => {
+    const threads = state?.threads ?? [];
+    const visibleThreads = threads.filter((thread) => !thread.archived && thread.messages.length > 0);
+    if (pendingQuestion || pendingPermission || visibleThreads.some((thread) => thread.status === "running" || liveSessions.has(thread.id))) return "active";
+    if (visibleThreads.some((thread) => thread.unread)) return "unread";
+    return null;
+  }, [liveSessions, pendingPermission, pendingQuestion, state?.threads]);
+
+  useEffect(() => {
+    setTopbarThreadMenu(null);
+  }, [activeSurface, currentThread?.id]);
+
+  useEffect(() => {
+    if (!topbarThreadMenu) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      if (target?.closest(".topbar-thread-options-button, .topbar-thread-context-popover")) return;
+      setTopbarThreadMenu(null);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape") setTopbarThreadMenu(null); };
+    const closeOnResize = () => setTopbarThreadMenu(null);
+    document.addEventListener("mousedown", close);
+    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", closeOnResize);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", closeOnResize);
+    };
+  }, [topbarThreadMenu]);
+
+  const toggleTopbarThreadMenu = useCallback((event: ReactMouseEvent<HTMLButtonElement>, threadId: string) => {
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 210;
+    const menuHeight = 158;
+    const topBelow = rect.bottom + 5;
+    const top = topBelow + menuHeight <= window.innerHeight - 8 ? topBelow : Math.max(8, rect.top - menuHeight - 5);
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
+    setTopbarThreadMenu((current) => current?.threadId === threadId ? null : { threadId, top, left });
+  }, []);
   const selectNewChatFlow = useCallback((threadId: string, selection: NewChatFlowSelection) => {
     setNewChatFlowSelections((current) => ({ ...current, [threadId]: selection }));
   }, []);
@@ -6407,6 +6506,43 @@ export default function App() {
   const markThreadRead = useCallback(async (threadId: string) => {
     setState(await withSmallRetry(() => window.maximoDesktop.markThreadRead(threadId)));
   }, [withSmallRetry]);
+
+  const toggleThreadPinned = useCallback((threadId: string) => {
+    void window.maximoDesktop.toggleThreadPinned(threadId)
+      .then(setState)
+      .catch((error) => showToast(getRetryMessage(error) || "Unable to update this chat."));
+  }, [showToast]);
+
+  const requestThreadRename = useCallback((threadId: string) => {
+    setTopbarThreadMenu(null);
+    setRenameThreadId(threadId);
+  }, []);
+
+  const renameThread = useCallback(async (threadId: string, title: string) => {
+    try {
+      setState(await window.maximoDesktop.renameThread(threadId, title));
+    } catch (error) {
+      throw new Error(getRetryMessage(error) || "Unable to rename this chat.");
+    }
+  }, []);
+
+  const archiveThread = useCallback((threadId: string) => {
+    const snapshot = stateRef.current;
+    if (!snapshot) return;
+    if (snapshot.settings.confirmThreadArchive && !window.confirm("Archive this chat? You can restore it from Settings.")) return;
+    void window.maximoDesktop.archiveThread(threadId)
+      .then(setState)
+      .catch((error) => showToast(getRetryMessage(error) || "Unable to archive this chat."));
+  }, [showToast]);
+
+  const deleteThread = useCallback((threadId: string) => {
+    const snapshot = stateRef.current;
+    if (!snapshot) return;
+    if (snapshot.settings.confirmThreadDelete && !window.confirm("Delete this chat from Maximo Syntax Desktop? The project files will not be touched.")) return;
+    void window.maximoDesktop.deleteThread(threadId)
+      .then(setState)
+      .catch((error) => showToast(getRetryMessage(error) || "Unable to delete this chat."));
+  }, [showToast]);
 
   const requestDockPane = useCallback((kind: WorkspacePaneKind, filePath?: string, url?: string) => {
     setInspectorVisible(true);
@@ -7129,10 +7265,10 @@ export default function App() {
        <MemoizedSidebar state={state} currentThread={currentThread} account={account} timestampFormat={state.settings.timestampFormat} activeSurface={activeSurface} onNavigateSurface={navigateSurface} onOpenProject={openProject} onCreateProject={() => setCreateProjectOpen(true)} onNewThread={newThread}
          onSelectProject={(id) => void selectProject(id)} onSelectThread={(id, surface) => void selectThread(id, surface)} onOpenSearch={() => setSearchOpen(true)} onToggleSidebar={() => window.innerWidth <= 900 ? setSidebarOpen(false) : setSidebarVisible((value) => !value)} onBack={() => void goBack()} onForward={() => void goForward()} canGoBack={navigation.index > 0} canGoForward={navigation.index >= 0 && navigation.index < navigation.ids.length - 1} onSettings={() => setSettingsOpen(true)} onAccount={openAccount}
          onUsage={() => { setAccountOpen(true); void refreshUsage(); }} onLogout={() => void logoutAccount()} onMarkThreadRead={(id) => void markThreadRead(id)} onMarkAllNotificationsRead={() => void markAllNotificationsRead()}
-          onDeleteThread={(id) => { if (state.settings.confirmThreadDelete && !window.confirm("Delete this chat from Maximo Syntax Desktop? The project files will not be touched.")) return; void window.maximoDesktop.deleteThread(id).then(setState); }}
-          onRenameThread={(id) => { const thread = state.threads.find((item) => item.id === id); const title = window.prompt("Rename chat", thread?.title ?? ""); if (title?.trim()) void window.maximoDesktop.renameThread(id, title).then(setState); }}
-          onToggleThreadPinned={(id) => void window.maximoDesktop.toggleThreadPinned(id).then(setState)}
-          onArchiveThread={(id) => { if (state.settings.confirmThreadArchive && !window.confirm("Archive this chat? You can restore it from Settings.")) return; void window.maximoDesktop.archiveThread(id).then(setState); }}
+          onDeleteThread={deleteThread}
+          onRenameThread={requestThreadRename}
+          onToggleThreadPinned={toggleThreadPinned}
+          onArchiveThread={archiveThread}
          onRenameProject={(id) => { const project = state.projects.find((item) => item.id === id); const name = window.prompt("Rename project", project?.name ?? ""); if (name?.trim()) void window.maximoDesktop.renameProject(id, name).then(setState); }}
           onToggleProjectPinned={(id) => void window.maximoDesktop.toggleProjectPinned(id).then(setState)}
           onReorderProject={(sourceId, targetId) => void window.maximoDesktop.reorderProjects(sourceId, targetId).then(setState).catch(() => showToast("Unable to reorder projects."))}
@@ -7146,7 +7282,11 @@ export default function App() {
         onUpdateAction={() => { void openAppUpdateDownload(); }} />
       <section className="workspace">
         <header className="topbar drag-region">
-          <div className="topbar-left">{currentProject && <><FolderOpen size={14} /><span>{currentProject.name}</span></>}{currentThread && <><span className="crumb">/</span><strong>{currentThread.title}</strong></>}</div>
+          <div className="topbar-left">
+            <button className={`topbar-button no-drag sidebar-reopen-button ${sidebarVisible ? "sidebar-visible" : ""}`} onClick={() => window.innerWidth <= 900 ? setSidebarOpen(true) : setSidebarVisible(true)} title={sidebarActivityKind === "active" ? "Show sidebar · Activity in progress" : sidebarActivityKind === "unread" ? "Show sidebar · Unread activity" : "Show sidebar"} aria-label={sidebarActivityKind === "active" ? "Show sidebar, activity in progress" : sidebarActivityKind === "unread" ? "Show sidebar, unread activity" : "Show sidebar"}><PanelLeftOpen size={16} />{sidebarActivityKind && <span className={`nav-bell-badge ${sidebarActivityKind === "active" ? "has-active" : "has-unread"}`} aria-hidden="true" />}</button>
+            {currentProject && <><FolderOpen size={14} /><span>{currentProject.name}</span></>}
+            {currentThread && <><span className="crumb">/</span><strong>{currentThread.title}</strong><button type="button" className={`topbar-button no-drag topbar-thread-options-button ${topbarThreadMenu?.threadId === currentThread.id ? "active" : ""}`} onClick={(event) => toggleTopbarThreadMenu(event, currentThread.id)} title="Chat options" aria-label={`Options for ${currentThread.title}`} aria-haspopup="menu" aria-expanded={topbarThreadMenu?.threadId === currentThread.id}><MoreHorizontal size={16} /></button></>}
+          </div>
           <div className="topbar-right no-drag">
              {engine?.available && <span className="engine-ready"><i />CLI {engine.version}</span>}
                {activeSurface === "chat" && currentProject && <button className={`topbar-button ${environmentOpen && !inspectorVisible ? "active" : ""}`} onClick={toggleEnvironment} title="Toggle environment"><HardDrive size={16} /></button>}
@@ -7154,6 +7294,12 @@ export default function App() {
             <button className="topbar-button" onClick={() => setSettingsOpen(true)} title="Settings"><Settings size={16} /></button>
           </div>
         </header>
+        {topbarMenuThread && topbarThreadMenu && createPortal(<div className={`thread-context-popover topbar-thread-context-popover glass-panel theme-${state.settings.theme}`} style={{ top: topbarThreadMenu.top, left: topbarThreadMenu.left }} role="menu" aria-label={`Actions for ${topbarMenuThread.title}`}>
+          <button type="button" role="menuitem" onClick={() => { setTopbarThreadMenu(null); toggleThreadPinned(topbarMenuThread.id); }}>{topbarMenuThread.pinned ? <PinOff size={14} /> : <Pin size={14} />}{topbarMenuThread.pinned ? "Unpin chat" : "Pin chat"}</button>
+          <button type="button" role="menuitem" onClick={() => requestThreadRename(topbarMenuThread.id)}><Pencil size={14} />Rename chat</button>
+          <button type="button" role="menuitem" onClick={() => { setTopbarThreadMenu(null); archiveThread(topbarMenuThread.id); }}><Archive size={14} />Archive chat</button>
+          <button type="button" role="menuitem" className="danger" onClick={() => { setTopbarThreadMenu(null); deleteThread(topbarMenuThread.id); }}><Trash2 size={14} />Delete chat</button>
+        </div>, document.body)}
              <main className={`main-stage ${activeSurface !== "chat" && activeSurface !== "activity" ? "surface-stage" : environmentOpen && !inspectorVisible ? "environment-reserved" : ""} ${isThreadSwitchStale ? "thread-switch-pending" : ""}`}>
              {activeSurface === "kanban" ? <KanbanView state={state} currentProject={currentProject} onOpenThread={selectThread} onNewThread={(projectId) => void newThread(projectId)} /> : activeSurface === "pull-requests" ? <PullRequestsView project={currentProject} /> : <>
             {currentProject && <WorkspaceEnvironment
@@ -7219,7 +7365,7 @@ export default function App() {
       </section>
       {currentProject && <WorkspaceDock
          open={inspectorVisible && !settingsOpen}
-         suspendNativeSurfaces={accountOpen || whatsNewDialogOpen || Boolean(attachmentPreview)}
+         suspendNativeSurfaces={accountOpen || whatsNewDialogOpen || Boolean(attachmentPreview) || Boolean(renameThreadTarget)}
         project={currentProject}
         thread={currentThread}
         state={state}
@@ -7253,6 +7399,7 @@ export default function App() {
         onOpenBrowser={(url) => requestDockPane("browser", undefined, url)}
       />}
       {createProjectOpen && <CreateProjectModal onClose={() => setCreateProjectOpen(false)} onChooseSources={() => window.maximoDesktop.chooseProjectSources()} onCreate={createProject} spaces={state.spaces} selectedSpaceId={state.selectedSpaceId} onCreateSpace={createSpace} />}
+      {renameThreadTarget && <RenameThreadModal key={renameThreadTarget.id} thread={renameThreadTarget} theme={state.settings.theme} onClose={() => setRenameThreadId(null)} onRename={(title) => renameThread(renameThreadTarget.id, title)} />}
       {settingsOpen && <EnhancedSettingsModal state={state} engine={engine} models={engineModels} modelOptions={modelOptions} account={account} usage={usage} appVersion={appVersion} appDataPath={appDataPath} skills={[...discoveredSkills, ...skillCommands]} initialSection={settingsSectionRequest} onClose={() => { setSettingsOpen(false); setSettingsSectionRequest("general"); }} onSave={async (patch) => { const next = await window.maximoDesktop.updateSettings(patch); setState(next); setInspectorVisible(next.settings.showInspector); setEnvironmentOpen(next.settings.environmentPanelDefaultOpen); }} onRepair={async () => { const next = await window.maximoDesktop.updateEngine(); setEngine(next); if (next.available) await refreshEngineModels(); }} onAccount={() => { setSettingsOpen(false); openAccount(); }} onUsage={() => void refreshUsage()} onRefreshSkills={() => refreshDiscoveredSkills(currentProject?.path)} onResetProvider={resetProviderState} onRevealDataPath={() => { if (appDataPath) void window.maximoDesktop.revealPath(appDataPath); }} onRestoreThread={async (threadId) => { setState(await window.maximoDesktop.unarchiveThread(threadId)); }} onDeleteArchivedThread={async (threadId) => { const thread = state.threads.find((item) => item.id === threadId); if (!thread || !window.confirm(`Permanently delete "${thread.title}"? This removes the chat history forever.`)) return; setState(await window.maximoDesktop.deleteThread(threadId)); }} updateState={updateState} onCheckForUpdates={checkForAppUpdates} onOpenUpdateDownload={openAppUpdateDownload} onOpenWhatsNew={() => { void refreshWhatsNew({ forceDialog: true }); }} />}
       {accountOpen && <AccountModal account={account} usage={usage} usageBusy={usageBusy} busy={accountBusy} onClose={() => setAccountOpen(false)} onRefresh={() => void refreshAccount()} onLogin={(method, apiKey, openCodePlan) => loginAccount(method, apiKey, openCodePlan)} onCancelLogin={() => void cancelLoginAccount()} onLogout={() => void logoutAccount()} onUsage={() => void refreshUsage()} />}
       {attachmentPreview && <AttachmentPreviewModal state={attachmentPreview} theme={state.settings.theme} onClose={() => { attachmentPreviewRequestRef.current += 1; setAttachmentPreview(null); }} />}
