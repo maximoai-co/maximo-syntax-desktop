@@ -4,16 +4,21 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.9] - 2026-08-08
+## [0.1.9] - Unreleased
 
-- Upgraded the bundled CLI engine to **v0.1.29**, which adds the **ImageGeneration** tool: Maximo can now generate images through the connected backend (Maximo AI → `/v1/api/image-generation`, MyTabulon → `/v1/image-generation`) and show the result inline.
-- Added an Image icon and "Generated image" activity label for image generation tool activity in the timeline.
+- Upgraded the bundled CLI engine to **v0.1.32** (from v0.1.28): adds **ImageGeneration** (`Maximo AI → /v1/api/image-generation`, `MyTabulon → /v1/image-generation`) with verbatim URL handling (`Image 1 URL:`) and a fully generic prompt (no hard-coded domains, blocks `https://example.com` and other placeholders, forbids any `![...](https://...)` on empty results); fixes Extra High effort crash (`--effort xhigh`); adds Image icon and "Generated image" activity label.
+- Fixed generated images not rendering in chat: `Content-Security-Policy` now allows `img-src 'self' data: https: http: blob:` and `connect-src` includes both backends, so remote `https://.../uploads/ai-images/...` URLs load inline.
+- **Generated image card — 2026 Liquid Glass restyle**: markdown images now render as a rounded 20px squircle card with soft layered shadows, shimmer skeleton, hover-revealed liquid-glass action bar (caption + Preview/Copy/Share/Download/Open), and a full-screen glass lightbox (blurred backdrop, radial glow, 22px rounded image, floating control pill) — Liquid Glass / Glassmorphism 2.0, squircle corners.
+- Removed `AI generated` top badge and fixed Preview pill centering: single `transform: translate(-50%,-50%)` at `left:50% top:50%` and transparent image background for perfect centering.
+- Fixed long prompts pushing image action buttons inward: caption truncated to 72 chars and CSS `flex:1 1 0` + `min-width:0` + `text-overflow:ellipsis` with `flex-shrink:0` on buttons.
+
 
 ## [0.1.8] - 2026-08-06
 
 - Fixed mid-turn model/effort changes: when the user switches model or effort while a warm session is still running, the desktop now restarts the session with `--resume` at the transcript anchor so the new flags take effect instead of reusing the stale live process; follow-up injections ride the same turn and intentionally do not restart.
 - Fixed effort being silently dropped when the user picks a custom model slug or changes effort while the engine catalog is still loading — the CLI shim now forwards it and the provider validates, instead of requiring the catalog to declare `supportsEffort`.
 - Fixed the thread message-model/effort fields being left stale when the user clears them to "Default" — the store now deletes the field instead of keeping the previous non-default.
+
 
 ## [0.1.7] - 2026-08-06
 
@@ -26,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Diff workspace improvements: lazy per-file inline diffs with per-file collapse, a jump-to-file search, and file context menus (refer in chat / ask why it changed / copy path); the selected file always expands and caches its patch when opened from the timeline.
 - Normalized git status codes (`??` → `?`, rename collapse) and line counts for untracked files so the diff tree no longer shows `+0 -0` for brand-new files.
 - Documented the macOS Gatekeeper first-launch workaround in the README.
+
 
 ## [0.1.6] - 2026-08-05
 

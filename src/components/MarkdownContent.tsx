@@ -2,6 +2,7 @@ import { Children, isValidElement, memo, type ComponentPropsWithoutRef, type Rea
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import MarkdownCodeBlock, { codeChildrenToText } from "./MarkdownCodeBlock";
+import MarkdownImage from "./MarkdownImage";
 
 interface MarkdownContentProps {
   children: string;
@@ -49,9 +50,20 @@ function MarkdownTable({ children, node: _node, ...props }: TableProps) {
   );
 }
 
+type ImgProps = ComponentPropsWithoutRef<"img"> & { node?: unknown };
+
+function MarkdownImg({ src, alt, title }: ImgProps) {
+  if (!src || typeof src !== "string") return null;
+  // Keep local assets / data: as native img (no card)
+  const isRemoteGenerated = /^https?:\/\//i.test(src);
+  if (!isRemoteGenerated) return <img src={src} alt={alt || ""} title={title} loading="lazy" decoding="async" />;
+  return <MarkdownImage src={src} alt={alt} title={title} />;
+}
+
 const markdownComponents = {
   pre: MarkdownPre,
   table: MarkdownTable,
+  img: MarkdownImg,
 };
 
 /**

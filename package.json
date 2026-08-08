@@ -1,7 +1,7 @@
 {
   "name": "@maximoai/maximo-syntax-desktop",
   "version": "0.1.9",
-  "description": "Your AI workspace for work. Write and edit code, build software, draft documents, analyze data, organize projects, and run agents — one native desktop app.",
+  "description": "Your AI workspace for work. Write and edit code, build software, draft documents, analyze data, organize projects, and run agents \u2014 one native desktop app.",
   "homepage": "https://maximoai.co",
   "repository": {
     "type": "git",
@@ -47,7 +47,7 @@
     "dist:win": "npm run build && electron-builder --win"
   },
   "dependencies": {
-    "@maximoai/maximo-syntax-cli": "^0.1.29",
+    "@maximoai/maximo-syntax-cli": "^0.1.32",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "highlight.js": "^11.11.1",
@@ -107,7 +107,7 @@
         "CFBundleDisplayName": "Maximo Syntax",
         "CFBundleName": "Maximo Syntax",
         "NSUserNotificationAlertStyle": "alert",
-        "NSHumanReadableCopyright": "Copyright © 2026 Maximo AI Ltd"
+        "NSHumanReadableCopyright": "Copyright \u00a9 2026 Maximo AI Ltd"
       },
       "hardenedRuntime": true,
       "gatekeeperAssess": false
