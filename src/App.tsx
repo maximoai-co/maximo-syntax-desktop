@@ -1388,6 +1388,7 @@ type QueuedFollowUp = {
   model: string;
   effort: string;
   permission: PermissionMode;
+  createdAt: number;
 };
 
 function activityFilePath(item: RunActivity): string | undefined {
@@ -3135,7 +3136,7 @@ function UserMessageCollapsibleText({ text, expanded, chatFontSizePx, onToggle, 
   );
 }
 
-function MessageView({ thread, project, git, models, live, waiting, skillNames, timestampFormat, streamingEnabled, onPreviewAttachment, onOpenFile, onTogglePin, onEditResend, onRevert }: { thread: Thread; project?: Project; git?: GitStatus | null; models: EngineModel[]; live?: LiveRun; waiting?: boolean; skillNames?: Set<string>; timestampFormat: TimestampFormat; streamingEnabled: boolean; onPreviewAttachment: (attachment: Attachment) => void; onOpenFile: (path: string, diff?: GitDiff) => void; onTogglePin: (messageId: string) => void; onEditResend?: (messageId: string, text: string) => void; onRevert?: (messageId: string, revertFiles: boolean) => void }) {
+function MessageView({ thread, project, git, models, live, waiting, skillNames, timestampFormat, streamingEnabled, queuedFollowUps = [], onPreviewAttachment, onOpenFile, onTogglePin, onEditResend, onRevert }: { thread: Thread; project?: Project; git?: GitStatus | null; models: EngineModel[]; live?: LiveRun; waiting?: boolean; skillNames?: Set<string>; timestampFormat: TimestampFormat; streamingEnabled: boolean; queuedFollowUps?: QueuedFollowUp[]; onPreviewAttachment: (attachment: Attachment) => void; onOpenFile: (path: string, diff?: GitDiff) => void; onTogglePin: (messageId: string) => void; onEditResend?: (messageId: string, text: string) => void; onRevert?: (messageId: string, revertFiles: boolean) => void }) {
   if (!thread) {
     return (
       <div className="chat-transcript-pane">
@@ -3491,7 +3492,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
       streamingInteractions: pendingInteractions,
       streamingFollowUps,
     };
-  }, [editingMessageId, expandedUserMessagesById, git, latestEditableUserMessageId, models, onEditResend, onOpenFile, onPreviewAttachment, onRevert, onTogglePin, project, revertableUserMessageIds, skillNames, displayThread, timestampFormat, waiting]);
+  }, [editingMessageId, expandedUserMessagesById, git, latestEditableUserMessageId, models, onEditResend, onOpenFile, onPreviewAttachment, onRevert, onTogglePin, project, queuedFollowUps, revertableUserMessageIds, skillNames, displayThread, timestampFormat, waiting]);
   // Live timeline is derived from streaming state; avoid re-sorting on every text char by memoizing.
   // Streaming only appends, so a simple length+last-timestamp key is sufficient for memo stability.
   // The live text entry is memoized by reference so WorkDisclosure/WorkTimeline/
@@ -3501,10 +3502,29 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
     if (!streamingEnabled || !live?.text) return undefined;
     return { type: "text" as const, text: live.text, timestamp: Date.now() };
   }, [streamingEnabled, live?.text]);
+  const optimisticQueuedItems = useMemo(() => {
+    if (!queuedFollowUps.length) return [] as RunTimelineItem[];
+    // Dedupe: if a queued prompt already exists as a persisted follow-up, don't show it twice.
+    const persistedPrompts = new Set(streamingFollowUps.map((m) => m.content.trim()));
+    const seen = new Set<string>();
+    return queuedFollowUps
+      .filter((item) => {
+        const key = item.prompt.trim();
+        if (persistedPrompts.has(key) || seen.has(item.id)) return false;
+        seen.add(item.id);
+        return true;
+      })
+      .map((item) => ({
+        type: "user-context" as const,
+        text: item.prompt,
+        ...(item.attachments.length ? { attachments: item.attachments } : {}),
+        timestamp: item.createdAt,
+      }));
+  }, [queuedFollowUps, streamingFollowUps]);
   const liveTimeline = useMemo(() => {
     if (!streamingEnabled) return [] as RunTimelineItem[];
     const base = live?.timeline ?? (liveTextEntry ? [liveTextEntry] : []);
-    const follow = streamingFollowUps.map(followUpContextItem);
+    const follow = [...streamingFollowUps.map(followUpContextItem), ...optimisticQueuedItems];
     if (base.length === 0 && follow.length === 0) return [] as RunTimelineItem[];
     // Merge is already sorted per timestamp; streaming appends are monotonic, so we can avoid full sort
     // when the appended follow-ups are newer than all base entries.
@@ -3514,17 +3534,39 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
       merged.sort((a, b) => a.timestamp - b.timestamp);
     }
     return merged;
-  }, [live?.timeline, liveTextEntry, streamingFollowUps, streamingEnabled]);
+  }, [live?.timeline, liveTextEntry, streamingFollowUps, optimisticQueuedItems, streamingEnabled]);
   const hiddenMessageCount = Math.max(0, renderedMessages.length - visibleMessageCount);
   const displayedMessages = useMemo(() => hiddenMessageCount > 0 ? renderedMessages.slice(-visibleMessageCount) : renderedMessages, [renderedMessages, hiddenMessageCount, visibleMessageCount]);
   // Use displayThread for empty state so stale stays consistent with deferred lines above.
   const emptyCheckThread = displayThread;
   const runningCheckThread = displayThread;
+  const optimisticQueuedMessages = useMemo(() => {
+    if (!queuedFollowUps.length) return [] as ReactNode[];
+    const persisted = new Set(displayThread.messages.filter((m) => m.kind === "follow-up").map((m) => m.content.trim()));
+    const seen = new Set<string>();
+    return queuedFollowUps
+      .filter((item) => {
+        const key = item.prompt.trim();
+        if (persisted.has(key) || seen.has(item.id)) return false;
+        seen.add(item.id);
+        return true;
+      })
+      .map((item) => (
+        <article className="message user follow-up optimistic" id={`message-${item.id}`} data-message-id={item.id} key={`queued-${item.id}`}>
+          <div className="user-turn follow-up-turn">
+            <span className="follow-up-label">Added context</span>
+            {item.attachments.length > 0 ? <AttachmentList attachments={item.attachments} onPreview={onPreviewAttachment} className="message-attachments" /> : null}
+            <MarkdownContent>{item.prompt}</MarkdownContent>
+            <div className="message-actions user-actions"><time>{formatTimestamp(item.createdAt, timestampFormat)}</time><CopyMessageButton content={item.prompt} /></div>
+          </div>
+        </article>
+      ));
+  }, [queuedFollowUps, displayThread.messages, timestampFormat, onPreviewAttachment]);
   return (
     <div className={`chat-transcript-pane ${isStale ? "stale" : ""}`} ref={paneRef} style={isStale ? { opacity: 0.97 } as CSSProperties : undefined}>
       <div className={`conversation-scroll ${waiting ? "waiting" : ""}`} ref={scrollRef} onScroll={handleScroll}>
         <div className={`conversation ${waiting ? "waiting" : ""}`}>
-          {emptyCheckThread.messages.length === 0 && emptyCheckThread.status !== "running" && (
+          {emptyCheckThread.messages.length === 0 && emptyCheckThread.status !== "running" && queuedFollowUps.length === 0 && (
             <div className="thread-empty">
               <Logo compact />
               <h3>What should we build in {project?.name ?? "this project"}?</h3>
@@ -3533,6 +3575,7 @@ function MessageView({ thread, project, git, models, live, waiting, skillNames, 
           )}
           {hiddenMessageCount > 0 && <button type="button" className="conversation-show-older" onClick={() => setVisibleMessageCount((c) => c + 80)}>Show {Math.min(80, hiddenMessageCount)} earlier messages · {hiddenMessageCount} hidden</button>}
           {displayedMessages}
+          {optimisticQueuedMessages}
           {runningCheckThread.status === "running" && (
             <article className="message assistant streaming">
               <div className="message-meta"><span className="message-avatar"><Logo compact /></span><span>Maximo Syntax</span></div>
@@ -3569,7 +3612,8 @@ const MemoizedMessageView = memo(MessageView, (prev, next) =>
   prev.waiting === next.waiting &&
   prev.skillNames === next.skillNames &&
   prev.timestampFormat === next.timestampFormat &&
-  prev.streamingEnabled === next.streamingEnabled
+  prev.streamingEnabled === next.streamingEnabled &&
+  prev.queuedFollowUps === next.queuedFollowUps
 );
 
 function FullAccessConfirm({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
@@ -6429,6 +6473,7 @@ export default function App() {
         model,
         effort,
         permission,
+        createdAt: Date.now(),
       };
       setFollowUpQueues((current) => ({
         ...current,
@@ -6676,7 +6721,7 @@ export default function App() {
                 const safeRenderThread = renderThread ?? currentThread;
                 if (!safeRenderThread) return <EmptyWorkspace project={currentProject} onOpenProject={openProject} onNewThread={() => void newThread(currentProject?.id)} />;
                 return <>
-                 <ThreadErrorBoundary key={`thread-${safeRenderThread.id}`} threadId={safeRenderThread.id}><MemoizedMessageView thread={safeRenderThread} project={currentProject} git={git} models={engineModels} live={liveRuns[safeRenderThread.id]} waiting={pendingQuestion?.threadId === safeRenderThread.id || pendingPermission?.threadId === safeRenderThread.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} onEditResend={editAndResendMessage} onRevert={revertToMessage} /></ThreadErrorBoundary>
+                 <ThreadErrorBoundary key={`thread-${safeRenderThread.id}`} threadId={safeRenderThread.id}><MemoizedMessageView thread={safeRenderThread} project={currentProject} git={git} models={engineModels} live={liveRuns[safeRenderThread.id]} waiting={pendingQuestion?.threadId === safeRenderThread.id || pendingPermission?.threadId === safeRenderThread.id} skillNames={skillNames} timestampFormat={state.settings.timestampFormat} streamingEnabled={state.settings.enableAssistantStreaming} queuedFollowUps={followUpQueues[safeRenderThread.id] ?? EMPTY_QUEUED_FOLLOW_UPS} onPreviewAttachment={openAttachmentPreview} onOpenFile={openDiff} onTogglePin={toggleMessagePin} onEditResend={editAndResendMessage} onRevert={revertToMessage} /></ThreadErrorBoundary>
               <ThreadErrorBoundary key={`trail-${safeRenderThread.id}`} threadId={safeRenderThread.id}><MessageTrail thread={safeRenderThread} onSelect={jumpToMessage} /></ThreadErrorBoundary>
              <ThreadErrorBoundary key={`composer-${currentThread.id}`} threadId={currentThread.id}><MemoizedComposer key={currentThread.id} thread={currentThread} project={currentProject} git={git} live={liveRuns[currentThread.id]} settings={state.settings} models={engineModels} modelOptions={modelOptions} slashCommands={slashCommands} skillCommands={skillCommands} discoveredSkills={discoveredSkills} contextUsage={currentContextUsage} contextLoading={Boolean(contextLoadingByThread[currentThread.id])} onRefreshContext={() => refreshContextUsage(currentThread.id)} onSend={sendPrompt} onPreviewAttachment={openAttachmentPreview} draft={composerDrafts[currentThread.id]} onDraftChange={updateComposerDraft}
               onStop={() => {
