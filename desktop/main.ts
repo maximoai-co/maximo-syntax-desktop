@@ -35,6 +35,7 @@ import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./wor
 import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
 import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 import { launchConfigurationChanged, resolveAsFollowUp, type RunLaunchConfiguration } from "./run-dispatch.js";
+import { taskCompletionNotification } from "./task-notifications.js";
 
 let mainWindow: BrowserWindow | null = null;
 let store: StateStore;
@@ -183,6 +184,57 @@ if (!hasSingleInstanceLock) {
 
 function send(channel: string, payload: unknown): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+function playDesktopNotificationSound(): Promise<boolean> | boolean {
+  if (process.platform !== "darwin") {
+    shell.beep();
+    return true;
+  }
+  return new Promise<boolean>((resolvePromise) => {
+    const audio = spawn("/usr/bin/afplay", ["/System/Library/Sounds/Glass.aiff"], { stdio: "ignore" });
+    audio.once("error", () => resolvePromise(false));
+    audio.once("close", (code) => resolvePromise(code === 0));
+  });
+}
+
+function showDesktopNotification(input: DesktopNotificationInput): boolean {
+  if (!ElectronNotification.isSupported()) return false;
+  try {
+    const title = typeof input?.title === "string" ? input.title.slice(0, 120) : "Maximo Syntax";
+    const body = typeof input?.body === "string" ? input.body.slice(0, 500) : "Activity needs your attention.";
+    const threadId = typeof input?.threadId === "string" && input.threadId.trim() ? input.threadId.slice(0, 200) : undefined;
+    const notification = new ElectronNotification({ title, body, silent: input?.silent === true });
+    const release = () => activeDesktopNotifications.delete(notification);
+    activeDesktopNotifications.add(notification);
+    notification.on("close", release);
+    notification.on("failed", release);
+    if (threadId) notification.on("click", () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+      send("notification:open-thread", threadId);
+    });
+    notification.show();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function notifyTaskCompletion(threadId: string): void {
+  const state = store.taskNotificationSnapshot(threadId);
+  const input = taskCompletionNotification(state, threadId);
+  if (!input || !state.settings.enableSystemTaskCompletionNotifications) return;
+  if (state.settings.enableNotificationSound) void Promise.resolve(playDesktopNotificationSound());
+  showDesktopNotification({ ...input, silent: true });
+}
+
+async function finishRunAndNotify(...args: Parameters<StateStore["finishRun"]>): Promise<void> {
+  await store.finishRun(...args);
+  notifyTaskCompletion(args[0]);
 }
 
 function resolveChangelogPath(): string {
@@ -575,29 +627,8 @@ function registerIpc(): void {
   });
   ipcMain.handle("state:load", () => store.snapshotForRenderer());
   ipcMain.handle("notifications:supported", () => ElectronNotification.isSupported());
-  ipcMain.handle("notifications:sound", () => {
-    if (process.platform !== "darwin") {
-      shell.beep();
-      return true;
-    }
-    return new Promise<boolean>((resolvePromise) => {
-      const audio = spawn("afplay", ["/System/Library/Sounds/Glass.aiff"], { stdio: "ignore" });
-      audio.once("error", () => resolvePromise(false));
-      audio.once("close", (code) => resolvePromise(code === 0));
-    });
-  });
-  ipcMain.handle("notifications:show", (_event, input: DesktopNotificationInput) => {
-    if (!ElectronNotification.isSupported()) return false;
-    const title = typeof input?.title === "string" ? input.title.slice(0, 120) : "Maximo Syntax";
-    const body = typeof input?.body === "string" ? input.body.slice(0, 500) : "Activity needs your attention.";
-    const threadId = typeof input?.threadId === "string" && input.threadId.trim() ? input.threadId.slice(0, 200) : undefined;
-    const notification = new ElectronNotification({ title, body, silent: input?.silent === true });
-    activeDesktopNotifications.add(notification);
-    notification.on("close", () => activeDesktopNotifications.delete(notification));
-    if (threadId) notification.on("click", () => send("notification:open-thread", threadId));
-    notification.show();
-    return true;
-  });
+  ipcMain.handle("notifications:sound", () => playDesktopNotificationSound());
+  ipcMain.handle("notifications:show", (_event, input: DesktopNotificationInput) => showDesktopNotification(input));
   ipcMain.handle("browser:open", (_event, input: BrowserOpenInput) => {
     const threadId = safeText(input?.threadId, 100);
     const initialUrl = typeof input?.initialUrl === "string" ? safeText(input.initialUrl, 8_192) : undefined;
@@ -979,14 +1010,14 @@ function registerIpc(): void {
           }
         },
         onComplete: async (result) => {
-          await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
+          await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
         },
       }, browserHost?.bridgeLaunch(threadId, project.path));
       runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort, permission: safeRequest.permission });
       return { accepted: true, state: startedState };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await store.finishRun(threadId, message, "error", thread.cliSessionId, true);
+      await finishRunAndNotify(threadId, message, "error", thread.cliSessionId, true);
       return { accepted: false, error: message };
     }
   });
@@ -1042,7 +1073,7 @@ function registerIpc(): void {
       const status = await runtime.ensure();
       const engine = runtime.currentLaunch();
       if (!status.available || !engine) {
-        await store.finishRun(threadId, status.message, "error", thread.cliSessionId, true);
+        await finishRunAndNotify(threadId, status.message, "error", thread.cliSessionId, true);
         return { accepted: false, error: status.message };
       }
       // Keep truncating at the fork anchor after edit/revert/file-rewind.
@@ -1064,21 +1095,21 @@ function registerIpc(): void {
             }
           },
           onComplete: async (result) => {
-            await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
+            await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
           },
         }, browserHost?.bridgeLaunch(threadId, project.path));
         runningModel.set(threadId, { model: resumedRequest.model, effort: resumedRequest.effort, permission: resumedRequest.permission });
         return { accepted: true, state: sentState };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await store.finishRun(threadId, message, "error", latestThread?.cliSessionId ?? thread.cliSessionId, true);
+        await finishRunAndNotify(threadId, message, "error", latestThread?.cliSessionId ?? thread.cliSessionId, true);
         return { accepted: false, error: message };
       }
     }
     const sentState = await store.sendRunMessage(threadId, prompt, safeRequest.attachments, safeRequest.model, safeRequest.effort, permission, { asFollowUp });
     const accepted = runner.send(threadId, prompt, safeRequest.attachments);
     if (!accepted) {
-      await store.finishRun(threadId, "Unable to send the message; the run stopped.", "error", thread.cliSessionId, true);
+      await finishRunAndNotify(threadId, "Unable to send the message; the run stopped.", "error", thread.cliSessionId, true);
       return { accepted: false, error: "Unable to send the message; the run stopped." };
     }
     return { accepted: true, state: sentState };
@@ -1186,14 +1217,14 @@ function registerIpc(): void {
           }
         },
         onComplete: async (result) => {
-          await store.finishRun(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
+          await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
         },
       }, browserHost?.bridgeLaunch(threadId, project.path));
       runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort, permission: safeRequest.permission });
       return { accepted: true, state: startedState };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await store.finishRun(threadId, message, "error", thread.cliSessionId, true);
+      await finishRunAndNotify(threadId, message, "error", thread.cliSessionId, true);
       return { accepted: false, error: message };
     }
   });

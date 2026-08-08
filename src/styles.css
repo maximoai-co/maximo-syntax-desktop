@@ -248,7 +248,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .thread-row:hover .thread-actions, .thread-row:focus-within .thread-actions { display: grid; place-items: center; }
 .thread-actions:hover { color: var(--text); background: var(--menu-hover); }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
-.status-dot.running { background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent); animation: pulse 1.5s ease infinite; }
+.status-dot.running { width: 10px; height: 10px; border: 1.5px solid var(--faint); border-right-color: transparent; background: transparent; box-shadow: none; animation: spin .8s linear infinite; }
 .status-dot.complete { background: var(--accent); }
 .status-dot.unread { background: #10b981; box-shadow: 0 0 0 3px color-mix(in srgb, #10b981 20%, transparent); }
 .status-dot.error { background: var(--danger); }
@@ -402,7 +402,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .activity-sidebar-row-meta time { margin-left: auto; flex: 0 0 auto; }
 .activity-sidebar-row-model { max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
 .activity-sidebar-status { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--faint); }
-.activity-sidebar-status.running { background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 16%, transparent); animation: pulse 1.5s ease infinite; }
+.activity-sidebar-status.running { width: 10px; height: 10px; border: 1.5px solid var(--faint); border-right-color: transparent; background: transparent; box-shadow: none; animation: spin .8s linear infinite; }
 .activity-sidebar-status.attention { background: var(--danger); }
 .activity-sidebar-row.unread .activity-sidebar-row-title { color: var(--text-strong); }
 .activity-sidebar-row-actions { position: absolute; top: 5px; right: 5px; display: flex; gap: 1px; opacity: 0; transition: opacity .14s ease; }

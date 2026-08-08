@@ -2,7 +2,7 @@ import { Component, memo, startTransition, useCallback, useDeferredValue, useEff
 import { createPortal } from "react-dom";
 import {
   Activity as ActivityIcon, AlertCircle, Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
-  File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, Image, LogOut, Menu, SquarePen,
+  File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, Image, LogOut, SquarePen,
   GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
   Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Undo2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, X, Zap,
 } from "lucide-react";
@@ -15,6 +15,7 @@ import {
   getAppUpdateButtonTooltip,
   shouldShowAppUpdateButton,
 } from "../desktop/app-updater";
+import { taskCompletionNotification } from "../desktop/task-notifications";
 import { createThemeShareString, buildThemeCssVariables, getAvailableThemePresets, getThemePreset, normalizeFontFamily, normalizeHexColor, parseThemeShareString, resolveThemeVariant } from "../desktop/theme";
 import logoUrl from "./assets/maximoai-logo.svg";
 import modelOpenAiUrl from "./assets/model-openai.svg";
@@ -51,6 +52,7 @@ import { MAXIMO_SHORTCUTS, matchesShortcut, shortcutLabel } from "./shortcuts";
 import { modelProvider, type ModelProvider } from "./utils/modelProvider.js";
 import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollElementNearBottom } from "./utils/chatScroll.js";
 import { resolveComposerRunSelection } from "./utils/composerSelection.js";
+import { matchesSlashCommandQuery } from "./utils/slashCommandMatching.js";
 import { retryWithBackoff, isRetryableError, DEFAULT_MAX_RETRIES, getRetryMessage } from "./utils/retry.js";
 import { observeUserMessageOverflow } from "./utils/userMessageOverflowObserver.js";
 import { splitLiveTimelineTail } from "./utils/liveTimeline.js";
@@ -3959,7 +3961,7 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
     return [...merged.values()];
   }, [discoveredSkills, slashCommands, skillCommands]);
   const commandQuery = slashTriggerAt === null ? null : (activeCursorOffset > prompt.length ? prompt : prompt.slice(slashTriggerAt + 1, activeCursorOffset)).toLowerCase();
-  const visibleMenuItems = commandQuery === null ? [] : menuItems.filter((command) => slashCommandKey(command.name).startsWith(commandQuery));
+  const visibleMenuItems = commandQuery === null ? [] : menuItems.filter((command) => matchesSlashCommandQuery(command.name, commandQuery));
   const visibleSkills = visibleMenuItems.filter((command) => command.kind === "skill");
   const visibleSlashCommands = visibleMenuItems.filter((command) => command.kind === "command");
   const commandPaletteOpen = slashTriggerAt !== null && !commandPaletteDismissed;
@@ -5846,6 +5848,7 @@ export default function App() {
     };
     if (deferForInteraction) scheduleAfterLiveInteraction("app-state-refresh", apply);
     else apply();
+    return next;
   }, [showTransientRetry]);
   const toggleEnvironment = useCallback(() => {
     setEnvironmentOpen((current) => {
@@ -6065,7 +6068,9 @@ export default function App() {
       setPendingQuestion((current) => current?.threadId === event.threadId ? null : current);
       setPendingPermission((current) => current?.threadId === event.threadId ? null : current);
       void refreshContextUsage(event.threadId, true);
-      void refreshState(true).then(() => {
+      void refreshState(true).then((next) => {
+        const notification = taskCompletionNotification(next, event.threadId);
+        if (notification && next.settings.enableTaskCompletionToasts) showToast(`${notification.title}: ${notification.body}`);
         scheduleAfterLiveInteraction(`flush-follow-up:${event.threadId}`, () => {
           void flushQueuedFollowUpRef.current(event.threadId);
         });
@@ -6077,12 +6082,6 @@ export default function App() {
     }
     if (event.type === "finished") {
       setProviderRetry((current) => current?.threadId === event.threadId ? null : current);
-      const latestState = stateRef.current;
-      const finishedThread = latestState?.threads.find((thread) => thread.id === event.threadId);
-      const inBackground = event.threadId !== latestState?.selectedThreadId;
-      if (inBackground) {
-        notifyBackground(finishedThread?.title ?? "Chat", event.status === "complete" ? "Finished successfully." : `Ended with status ${event.status}.`, event.threadId);
-      }
       scheduleAfterLiveInteraction(`thread-finished:${event.threadId}`, () => {
         startTransition(() => setState((current) => current ? { ...current, threads: current.threads.map((thread) => thread.id === event.threadId ? { ...thread, status: event.status } : thread) } : current));
       });
@@ -7147,7 +7146,7 @@ export default function App() {
         onUpdateAction={() => { void openAppUpdateDownload(); }} />
       <section className="workspace">
         <header className="topbar drag-region">
-          <div className="topbar-left"><button className="topbar-button no-drag" onClick={() => window.innerWidth <= 900 ? setSidebarOpen(true) : setSidebarVisible((value) => !value)} title="Toggle sidebar">{sidebarVisible ? <PanelLeft size={16} /> : <Menu size={16} />}</button>{currentProject && <><FolderOpen size={14} /><span>{currentProject.name}</span></>}{currentThread && <><span className="crumb">/</span><strong>{currentThread.title}</strong></>}</div>
+          <div className="topbar-left">{currentProject && <><FolderOpen size={14} /><span>{currentProject.name}</span></>}{currentThread && <><span className="crumb">/</span><strong>{currentThread.title}</strong></>}</div>
           <div className="topbar-right no-drag">
              {engine?.available && <span className="engine-ready"><i />CLI {engine.version}</span>}
                {activeSurface === "chat" && currentProject && <button className={`topbar-button ${environmentOpen && !inspectorVisible ? "active" : ""}`} onClick={toggleEnvironment} title="Toggle environment"><HardDrive size={16} /></button>}

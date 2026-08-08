@@ -1030,6 +1030,18 @@ export class StateStore {
     return this.state.threads.find((thread) => thread.id === threadId);
   }
 
+  taskNotificationSnapshot(threadId: string) {
+    const thread = this.state.threads.find((candidate) => candidate.id === threadId);
+    return {
+      selectedThreadId: this.state.selectedThreadId,
+      threads: thread ? [{ id: thread.id, title: thread.title, status: thread.status, unread: thread.unread }] : [],
+      settings: {
+        enableSystemTaskCompletionNotifications: this.state.settings.enableSystemTaskCompletionNotifications,
+        enableNotificationSound: this.state.settings.enableNotificationSound,
+      },
+    };
+  }
+
   getLastSeenWhatsNewVersion(): string | null {
     return this.state.lastSeenWhatsNewVersion ?? null;
   }
