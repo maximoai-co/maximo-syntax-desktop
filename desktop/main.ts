@@ -5,7 +5,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, release as osRelease } from "node:os";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, shell } from "electron";
 import {
   cancelBrowserLogin,
   clearExtraProviderCredentials,
@@ -1433,6 +1433,13 @@ function registerIpc(): void {
       return "";
     }
     return shell.openPath(target);
+  });
+  ipcMain.handle("clipboard:write-image", (_event, requestedBytes: Uint8Array): boolean => {
+    if (!(requestedBytes instanceof Uint8Array) || requestedBytes.byteLength === 0 || requestedBytes.byteLength > 8 * 1024 * 1024) return false;
+    const image = nativeImage.createFromBuffer(Buffer.from(requestedBytes));
+    if (image.isEmpty()) return false;
+    clipboard.writeImage(image);
+    return true;
   });
   ipcMain.handle("path:editor", async (_event, path: string) => {
     const target = safeText(path, 2_000);

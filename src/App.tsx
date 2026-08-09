@@ -29,6 +29,7 @@ import modelMistralUrl from "./assets/model-mistral.svg";
 import modelMetaUrl from "./assets/model-meta.svg";
 import modelPerplexityUrl from "./assets/model-perplexity.svg";
 import modelOllamaUrl from "./assets/model-ollama.svg";
+import modelKiloUrl from "./assets/model-kilo.svg";
 import CreateProjectModal from "./components/CreateProjectModal";
 import SpaceEditorModal from "./components/SpaceEditorModal";
 import { SpaceIcon } from "./components/SpaceIcon";
@@ -47,6 +48,7 @@ import WorkspaceEnvironment from "./components/WorkspaceEnvironment";
 import WhatsNewDialog from "./components/WhatsNewDialog";
 import WhatsNewPopoutCard from "./components/WhatsNewPopoutCard";
 import NewChatFlow from "./components/NewChatFlow";
+import ProfileShareDialog, { type ProfileShareData } from "./components/ProfileShareDialog";
 import { composerKeyAction, composerSendShortcutLabel } from "./composerKeyboard";
 import { MAXIMO_SHORTCUTS, matchesShortcut, shortcutLabel } from "./shortcuts";
 import { modelProvider, type ModelProvider } from "./utils/modelProvider.js";
@@ -322,6 +324,7 @@ const MODEL_PROVIDER_LOGOS: Partial<Record<ModelProvider, string>> = {
   meta: modelMetaUrl,
   perplexity: modelPerplexityUrl,
   ollama: modelOllamaUrl,
+  kilo: modelKiloUrl,
 };
 
 function ModelLogo({ model, className }: { model?: string | null; className?: string }) {
@@ -4775,6 +4778,7 @@ function SettingsModal({ state, engine, models, modelOptions, account, usage, ap
 type ProfileMeta = { name: string; handle: string; avatarColor: string };
 
 const DEFAULT_PROFILE_AVATAR = "#5dc86b";
+const PROFILE_AVATAR_COLORS = ["#5dc86b", "#4f8ed8", "#8b5cf6", "#d97706", "#db2777"];
 
 function profileDateKey(value: number): string {
   return new Date(value).toISOString().slice(0, 10);
@@ -4828,6 +4832,69 @@ function profileStreaks(activityDates: ReadonlySet<string>): { current: number; 
   return { current, longest };
 }
 
+function ProfileEditDialog({ open, meta, onClose, onSave }: {
+  open: boolean;
+  meta: ProfileMeta;
+  onClose: () => void;
+  onSave: (next: ProfileMeta) => void;
+}) {
+  const [draft, setDraft] = useState(meta);
+  const [showColorEditor, setShowColorEditor] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setDraft(meta);
+    setShowColorEditor(false);
+    nameInputRef.current?.focus();
+  }, [meta, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose, open]);
+
+  if (!open) return null;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const handle = draft.handle.trim().replace(/^@+/, "").replace(/\s+/g, "");
+    onSave({
+      name: draft.name.trim(),
+      handle: handle ? `@${handle}` : "",
+      avatarColor: draft.avatarColor,
+    });
+  };
+
+  return createPortal(
+    <div className="profile-edit-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <form className="profile-edit-modal glass-panel" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="profile-edit-title">
+        <h2 id="profile-edit-title">Edit profile</h2>
+
+        <div className="profile-edit-avatar-section">
+          <div className="profile-edit-avatar-wrap">
+            <span className="profile-edit-avatar" style={{ background: draft.avatarColor }}>{profileInitials(draft.name)}</span>
+            <button type="button" className="profile-edit-avatar-button" onClick={() => setShowColorEditor((value) => !value)} aria-label="Edit avatar color" aria-expanded={showColorEditor} title="Edit avatar color"><Pencil size={12} /></button>
+          </div>
+          {showColorEditor && <div className="profile-edit-color-options" aria-label="Avatar colors">{PROFILE_AVATAR_COLORS.map((color) => <button type="button" aria-label={`Use ${color} avatar color`} className={draft.avatarColor === color ? "selected" : ""} style={{ background: color }} onClick={() => setDraft((current) => ({ ...current, avatarColor: color }))} key={color} />)}</div>}
+        </div>
+
+        <div className="profile-edit-fields">
+          <label className="profile-edit-field"><span>Display name</span><input ref={nameInputRef} value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Your name" /></label>
+          <label className="profile-edit-field"><span>Username</span><span className="profile-edit-handle-input"><b aria-hidden="true">@</b><input value={draft.handle.replace(/^@+/, "")} onChange={(event) => setDraft((current) => ({ ...current, handle: `@${event.target.value.replace(/^@+/, "").replace(/\s+/g, "")}` }))} placeholder="username" /></span></label>
+        </div>
+
+        <footer className="profile-edit-footer"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="submit" className="primary-button compact">Save</button></footer>
+      </form>
+    </div>,
+    document.body,
+  );
+}
+
 function ProfileStatsPanel({ state, account, models, skills }: { state: AppState; account: AccountStatus | null; models: EngineModel[]; skills: SlashCommand[] }) {
   const accountName = account?.displayName || account?.email?.split("@")[0] || "Maximo user";
   const defaultHandle = account?.email ? `@${account.email.split("@")[0]}` : "@maximo-user";
@@ -4843,9 +4910,8 @@ function ProfileStatsPanel({ state, account, models, skills }: { state: AppState
       return { name: accountName, handle: defaultHandle, avatarColor: DEFAULT_PROFILE_AVATAR };
     }
   });
-  const [draft, setDraft] = useState(meta);
   const [editing, setEditing] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
   const [hoveredDay, setHoveredDay] = useState<{ date: Date; tokens: number; activities: number; rect: DOMRect } | null>(null);
   // Heavy derived stats — memoize so opening the profile panel doesn't freeze with many threads.
   const profileStats = useMemo(() => {
@@ -4952,28 +5018,40 @@ function ProfileStatsPanel({ state, account, models, skills }: { state: AppState
   const heatmapCells: Array<Date | null> = [...Array.from({ length: leadingCells }, () => null), ...days];
   const maxActivity = Math.max(1, ...[...activityByDay.values()]);
   const monthLabels = days.flatMap((date, index) => date.getDate() === 1 || index === 0 ? [{ label: date.toLocaleDateString([], { month: "short" }), column: Math.floor((leadingCells + index) / 7) + 1 }] : []);
-  const saveProfile = () => {
+  const shareDays = days.slice(-183);
+  const shareHeatmap: Array<number | null> = [...Array.from({ length: shareDays[0]?.getDay() ?? 0 }, () => null), ...shareDays.map((date) => {
+    const value = activityByDay.get(profileDateKey(date.getTime())) ?? 0;
+    return value === 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((value / maxActivity) * 4)));
+  })];
+  while (shareHeatmap.length % 7 !== 0) shareHeatmap.push(null);
+  const saveProfile = (draft: ProfileMeta) => {
     const next = { name: draft.name.trim() || accountName, handle: draft.handle.trim() || defaultHandle, avatarColor: draft.avatarColor };
     setMeta(next);
     setEditing(false);
     try { window.localStorage.setItem("maximo-syntax:profile:v1", JSON.stringify(next)); } catch { /* local profile is best effort */ }
   };
-  const shareProfile = async () => {
-    const summary = `${meta.name} ${meta.handle}\n${profileCompactNumber(lifetimeTokens)} lifetime tokens · ${promptCount} prompts · ${state.projects.length} projects`;
-    try {
-      await navigator.clipboard.writeText(summary);
-      setNotice("Profile summary copied");
-      window.setTimeout(() => setNotice(null), 2_000);
-    } catch {
-      setNotice("Clipboard access unavailable");
-    }
-  };
   const topProvider = resolvedModelRows[0] ? profileProviderForModel(resolvedModelRows[0].model, account) : account?.loggedIn ? providerLabel(account) : "-";
+  const topProviderModel = resolvedModelRows[0]?.model ?? null;
+  const topProviderLogo = topProviderModel ? MODEL_PROVIDER_LOGOS[modelProvider(topProviderModel)] ?? null : null;
+  const shareData: ProfileShareData = {
+    name: meta.name,
+    handle: meta.handle,
+    initials: profileInitials(meta.name),
+    avatarColor: meta.avatarColor,
+    lifetimeTokens: profileCompactNumber(lifetimeTokens),
+    peakDay: profileCompactNumber(peakDay),
+    currentStreak: `${streaks.current} ${streaks.current === 1 ? "day" : "days"}`,
+    longestStreak: `${streaks.longest} ${streaks.longest === 1 ? "day" : "days"}`,
+    topProvider,
+    topProviderLogo,
+    topProviderPercent: resolvedModelRows.length > 0 ? Math.round((resolvedModelRows[0]!.value / safeModelTotal) * 100) : null,
+    heatmap: shareHeatmap,
+  };
   return <div className="profile-settings-panel">
-    <div className="profile-settings-actions"><button type="button" className="settings-action" onClick={() => void shareProfile()}><Share2 size={13} />Share</button><button type="button" className="settings-action" onClick={() => { setDraft(meta); setEditing((value) => !value); }}><Pencil size={13} />{editing ? "Close" : "Edit"}</button></div>
-    {editing && <section className="profile-edit-card"><label><span>Name</span><input value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label><label><span>Handle</span><input value={draft.handle} onChange={(event) => setDraft((current) => ({ ...current, handle: event.target.value }))} /></label><div><span className="profile-edit-label">Avatar color</span><div className="profile-color-options">{["#5dc86b", "#4f8ed8", "#8b5cf6", "#d97706", "#db2777"].map((color) => <button type="button" aria-label={`Use ${color} avatar color`} className={draft.avatarColor === color ? "selected" : ""} style={{ background: color }} onClick={() => setDraft((current) => ({ ...current, avatarColor: color }))} key={color} />)}</div></div><button type="button" className="primary-button compact" onClick={saveProfile}>Save profile</button></section>}
+    <div className="profile-settings-actions"><button type="button" className="settings-action" onClick={() => setSharing(true)}><Share2 size={13} />Share</button><button type="button" className="settings-action" onClick={() => setEditing(true)}><Pencil size={13} />Edit</button></div>
+    <ProfileEditDialog open={editing} meta={meta} onClose={() => setEditing(false)} onSave={saveProfile} />
+    <ProfileShareDialog open={sharing} data={shareData} onClose={() => setSharing(false)} />
     <header className="profile-settings-identity"><span className="profile-avatar" style={{ background: meta.avatarColor }}>{profileInitials(meta.name)}</span><div><h2>{meta.name}</h2><p>{meta.handle}<span aria-hidden="true"> · </span><span className="profile-badge">Maximo</span></p></div></header>
-    {notice && <p className="profile-notice" role="status">{notice}</p>}
     <div className="profile-stat-grid"><div><strong>{profileCompactNumber(lifetimeTokens)}</strong><span>Lifetime tokens</span></div><div><strong>{profileCompactNumber(peakDay)}</strong><span>Peak day</span></div><div><strong>{promptCount.toLocaleString()}</strong><span>Total prompts</span></div><div><strong>{streaks.current} {streaks.current === 1 ? "day" : "days"}</strong><span>Current streak</span></div><div><strong>{streaks.longest} {streaks.longest === 1 ? "day" : "days"}</strong><span>Longest streak</span></div></div>
     <section className="profile-section"><h3>Activity</h3><div className="profile-heatmap-wrap"><div className="profile-heatmap-months">{monthLabels.map((item) => <span style={{ gridColumn: item.column }} key={`${item.label}-${item.column}`}>{item.label}</span>)}</div><div className="profile-heatmap" onMouseLeave={() => setHoveredDay(null)}>{heatmapCells.map((date, index) => { const dayKey = date ? profileDateKey(date.getTime()) : ""; const value = date ? activityByDay.get(dayKey) ?? 0 : 0; const level = value === 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((value / maxActivity) * 4))); return <span className={`profile-heatmap-cell level-${level}`} onMouseEnter={(event) => date && setHoveredDay({ date, tokens: derivedDailyTokens[dayKey] ?? 0, activities: promptCountByDay.get(dayKey) ?? 0, rect: event.currentTarget.getBoundingClientRect() })} key={`${date?.toISOString() ?? "empty"}-${index}`} />; })}</div></div>{hoveredDay && createPortal(<div className="profile-heatmap-tooltip profile-heatmap-tooltip-fixed" style={{ left: Math.min(window.innerWidth - 12, Math.max(12, hoveredDay.rect.left + hoveredDay.rect.width / 2)), top: hoveredDay.rect.top < 100 ? hoveredDay.rect.bottom + 9 : hoveredDay.rect.top - 9, transform: hoveredDay.rect.top < 100 ? "translate(-50%, 0)" : "translate(-50%, -100%)" }}><strong>{hoveredDay.date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</strong><span><b>{profileCompactNumber(hoveredDay.tokens)}</b> tokens</span><span><b>{hoveredDay.activities}</b> {hoveredDay.activities === 1 ? "activity" : "activities"}</span></div>, document.body)}</section>
     <div className="profile-insights-grid"><section className="profile-section"><h3>Activity insights</h3><dl><div><dt>Most used provider</dt><dd>{topProvider}{resolvedModelRows.length > 0 ? ` · ${Math.round((resolvedModelRows[0]!.value / safeModelTotal) * 100)}%` : ""}</dd></div><div><dt>Most used reasoning</dt><dd>{topEffort ? effortLabel(topEffort[0]) : "-"}</dd></div><div><dt>Most active hour</dt><dd>{topHour === undefined ? "-" : new Date(2000, 0, 1, topHour).toLocaleTimeString([], { hour: "numeric" })}</dd></div><div><dt>Most worked project</dt><dd title={topProject ? state.projects.find((project) => project.id === topProject[0])?.name : undefined}>{topProject ? `${state.projects.find((project) => project.id === topProject[0])?.name ?? "Project"} · ${topProject[1]} prompts` : "-"}</dd></div><div><dt>Skills explored</dt><dd>{skillCounts.size}</dd></div><div><dt>Total skills used</dt><dd>{[...skillCounts.values()].reduce((sum, value) => sum + value, 0)}</dd></div><div><dt>Total threads</dt><dd>{state.threads.length}</dd></div></dl></section><section className="profile-section"><h3>Most used plugins</h3>{skillCounts.size > 0 ? <ul className="profile-plugin-list">{[...skillCounts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 6).map(([skill, count]) => <li key={skill}><span><Sparkles size={13} />{skill}</span><b>{count} runs</b></li>)}</ul> : <p className="profile-muted">No skills or agents used yet.</p>}</section></div>

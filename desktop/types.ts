@@ -940,6 +940,7 @@ export interface DesktopApi {
   terminalStop(sessionId: string): Promise<boolean>;
   revealPath(path: string): Promise<void>;
   openPath(path: string): Promise<string>;
+  copyImageToClipboard(bytes: Uint8Array): Promise<boolean>;
   openInEditor(path: string): Promise<void>;
   browser: BrowserControlApi;
   onRunEvent(callback: (event: RunEvent) => void): () => void;

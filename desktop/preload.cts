@@ -104,6 +104,7 @@ const api: DesktopApi = {
   terminalStop: (sessionId) => ipcRenderer.invoke("terminal:stop", sessionId),
   revealPath: (path) => ipcRenderer.invoke("path:reveal", path),
   openPath: (path) => ipcRenderer.invoke("path:open", path),
+  copyImageToClipboard: (bytes) => ipcRenderer.invoke("clipboard:write-image", bytes),
   openInEditor: (path) => ipcRenderer.invoke("path:editor", path),
   browser: {
     open: (input) => ipcRenderer.invoke("browser:open", input),

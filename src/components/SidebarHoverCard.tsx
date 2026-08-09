@@ -12,6 +12,7 @@ import modelMistralUrl from "../assets/model-mistral.svg";
 import modelMetaUrl from "../assets/model-meta.svg";
 import modelPerplexityUrl from "../assets/model-perplexity.svg";
 import modelOllamaUrl from "../assets/model-ollama.svg";
+import modelKiloUrl from "../assets/model-kilo.svg";
 import { modelProvider } from "../utils/modelProvider.js";
 
 export interface SidebarHoverCardProps {
@@ -61,7 +62,7 @@ function CardRow({ children, className = "" }: { children: ReactNode; className?
 /** Compact model logo for the hover card's model row (shared glyph with the main chat surfaces). */
 function ModelLogo({ model }: { model?: string }) {
   const brand = modelProvider(model);
-  const src = brand === "maximo" ? modelLogoUrl : brand === "openai" ? modelOpenAiUrl : brand === "openai-codex" ? modelOpenAiCodexUrl : brand === "claude" || brand === "anthropic" ? modelClaudeUrl : brand === "grok" ? modelGrokUrl : brand === "google" ? modelGoogleUrl : brand === "deepseek" ? modelDeepSeekUrl : brand === "mistral" ? modelMistralUrl : brand === "meta" ? modelMetaUrl : brand === "perplexity" ? modelPerplexityUrl : brand === "ollama" ? modelOllamaUrl : undefined;
+  const src = brand === "maximo" ? modelLogoUrl : brand === "openai" ? modelOpenAiUrl : brand === "openai-codex" ? modelOpenAiCodexUrl : brand === "claude" || brand === "anthropic" ? modelClaudeUrl : brand === "grok" ? modelGrokUrl : brand === "google" ? modelGoogleUrl : brand === "deepseek" ? modelDeepSeekUrl : brand === "mistral" ? modelMistralUrl : brand === "meta" ? modelMetaUrl : brand === "perplexity" ? modelPerplexityUrl : brand === "ollama" ? modelOllamaUrl : brand === "kilo" ? modelKiloUrl : undefined;
   if (!src) return <Bot size={13} />;
   const isMaximo = brand === "maximo";
   return (

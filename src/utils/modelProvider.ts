@@ -1,4 +1,4 @@
-export type ModelProvider = "maximo" | "openai" | "openai-codex" | "claude" | "anthropic" | "google" | "grok" | "deepseek" | "mistral" | "meta" | "perplexity" | "ollama" | "unknown";
+export type ModelProvider = "maximo" | "openai" | "openai-codex" | "claude" | "anthropic" | "google" | "grok" | "deepseek" | "mistral" | "meta" | "perplexity" | "ollama" | "kilo" | "unknown";
 
 export function modelProvider(modelId: string | undefined | null): ModelProvider {
   const raw = (modelId ?? "").trim();
@@ -16,11 +16,13 @@ export function modelProvider(modelId: string | undefined | null): ModelProvider
   if (id === "maximo" || id === "maximo ai") return "maximo";
   if (id === "perplexity" || id === "pplx") return "perplexity";
   if (id === "ollama") return "ollama";
+  if (id === "kilo") return "kilo";
 
   // Robust substring checks: match anywhere, any delimiter (space, -, _, /, ., :) and case-insensitive.
   // This keeps new GPT/OpenAI model variants (e.g. "gpt-5.5", "GPT-5.6 Luna", "openai/gpt-5.5", "GPT 5.5")
   // correctly mapped without hardcoding each release.
   if (id.includes("maximo")) return "maximo";
+  if (id.includes("kilo")) return "kilo";
   if (id.includes("codex")) return "openai-codex";
   // Any model whose id contains gpt / openai / chatgpt is an OpenAI model, regardless of prefix/delimiter.
   if (id.includes("gpt") || id.includes("openai") || id.includes("chatgpt")) return "openai";
