@@ -1171,6 +1171,7 @@ function WorkspaceDockUnmemoized(props: WorkspaceDockProps) {
   ], [hasChanges, props.git?.isRepository, props.project, props.sideChat]);
 
   return (
+    <>
     <aside className={`workspace-dock ${props.open ? "open" : "closed"} ${menuOpen && activePane?.kind === "browser" ? "browser-menu-open" : ""}`} aria-hidden={!props.open}>
       <header className="workspace-dock-header drag-region">
         <div className="workspace-dock-tabs no-drag">{dock.panes.map((pane) => <div className={`workspace-dock-tab ${pane.id === dock.activePaneId ? "active" : ""}`} key={pane.id}><button type="button" className="workspace-dock-tab-main" onClick={() => setDock((current) => ({ ...current, activePaneId: pane.id }))} title={paneLabel(pane)}><PaneIcon kind={pane.kind} size={13} /><span>{paneLabel(pane)}</span></button><button type="button" className="workspace-dock-tab-close" onClick={() => closePane(pane.id)} title={`Close ${paneLabel(pane)}`}><X size={12} /></button></div>)}</div>
@@ -1190,8 +1191,9 @@ function WorkspaceDockUnmemoized(props: WorkspaceDockProps) {
                         : <div className="workspace-empty-state"><CircleHelp size={18} /><span>This panel is unavailable.</span></div>}
         </div>)}
       </div>
-       <div className="resize-handle resize-handle-inspector" role="separator" aria-orientation="vertical" aria-label="Resize workspace panel" onPointerDown={props.onResize} />
     </aside>
+    {props.open && <div className="resize-handle resize-handle-inspector workspace-dock-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize workspace panel" onPointerDown={props.onResize} />}
+    </>
   );
 }
 

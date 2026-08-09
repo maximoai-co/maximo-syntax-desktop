@@ -235,7 +235,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .project-toggle[draggable="true"]:active { cursor: grabbing; }
 .project-group.selected .project-toggle { color: var(--text-strong); }
 .project-toggle:hover { background: var(--menu-hover); }
-.project-toggle span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-toggle > svg { flex: 0 0 auto; }
+.project-toggle > span { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-toggle svg:last-child { margin-left: auto; color: var(--faint); }
 .thread-list { padding-left: 12px; content-visibility: auto; contain-intrinsic-size: auto 200px; }
 .thread-row { position: relative; display: flex; height: 31px; border-radius: 8px; margin: 1px 0; }
@@ -642,6 +643,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .user-message-content { overflow: hidden; min-width: 0; transition: max-height .22s cubic-bezier(.4, 0, .2, 1), mask-image .22s ease; }
 .user-message-show-more { display: block; margin: 8px 0 0; padding: 0; align-self: flex-start; background: none; border: 0; color: color-mix(in srgb, var(--muted) 55%, transparent); cursor: pointer; line-height: 1.68; transition: color .15s ease; }
 .user-message-show-more:hover, .user-message-show-more:focus-visible { color: var(--text-strong); }
+.added-context-collapsible { width: fit-content; max-width: 100%; padding: 7px 10px 5px; border-radius: 12px 12px 4px 12px; background: color-mix(in srgb, var(--surface-solid) 88%, var(--accent-soft)); border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border)); color: var(--text-strong); }
+.added-context-collapsible .user-message-content { font-size: 11px; line-height: 1.4; }
+.added-context-collapsible .markdown { color: inherit; font-size: 11px; line-height: 1.4; text-align: left; }
+.added-context-collapsible .markdown p { margin: 3px 0; }
+.added-context-collapsible .user-message-show-more { margin-top: 5px; }
 .message.assistant .markdown { padding-top: 5px; }
 /* Only the final assistant body goes red on error — not timeline partials / earlier answers. */
 .message.error > .message-error-body { color: var(--text); border-left: 2px solid color-mix(in srgb, var(--danger) 44%, var(--border-strong)); padding-left: 10px; }
@@ -1368,9 +1374,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .work-user-context { min-width: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; margin: 5px 0 8px; }
 .work-user-context-label { padding: 0 3px; color: var(--faint); font-size: 8px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
 .work-user-context-bubble { width: fit-content; max-width: min(76%, 540px); padding: 7px 10px 5px; display: flex; flex-direction: column; align-items: stretch; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border)); border-radius: 12px 12px 4px 12px; background: color-mix(in srgb, var(--surface-solid) 88%, var(--accent-soft)); color: var(--text-strong); }
-.work-user-context-bubble > .markdown { color: inherit; font-size: 11px; line-height: 1.4; text-align: left; }
-.work-user-context-bubble > .markdown p { margin: 3px 0; }
-.work-user-context-bubble > time { display: block; margin-top: 3px; color: var(--faint); font-size: 8px; text-align: right; }
+.work-user-context-bubble .added-context-collapsible { width: 100%; max-width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.work-user-context-bubble .markdown { color: inherit; font-size: 11px; line-height: 1.4; text-align: left; }
+.work-user-context-bubble .markdown p { margin: 3px 0; }
+.work-user-context .added-context-actions { opacity: 0; }
+.work-user-context:hover .added-context-actions,
+.work-user-context .added-context-actions:focus-within { opacity: 1; }
 .work-user-context-attachments { justify-content: flex-start; align-self: stretch; width: 100%; margin-bottom: 8px; }
 .work-user-context-attachments .attachment-card { width: min(205px, 100%); }
 .work-event { min-width: 0; content-visibility: auto; contain-intrinsic-size: auto 27px; }
@@ -1559,7 +1568,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .message.user.follow-up { margin-top: 10px; margin-bottom: 4px; }
 .user-turn.follow-up-turn { max-width: min(58%, 460px); align-items: flex-end; }
 .follow-up-label { align-self: flex-end; padding: 0 2px 3px; color: var(--faint); font-size: 8px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
-.user-turn.follow-up-turn .markdown { padding: 7px 10px; border-radius: 12px 12px 4px 12px; font-size: 11px; line-height: 1.4; background: color-mix(in srgb, var(--surface-solid) 88%, var(--accent-soft)); border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border)); }
+.user-turn.follow-up-turn > .markdown { padding: 7px 10px; border-radius: 12px 12px 4px 12px; font-size: 11px; line-height: 1.4; background: color-mix(in srgb, var(--surface-solid) 88%, var(--accent-soft)); border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border)); }
 /* Same hover chrome as normal user turns: time + copy */
 .message.user.follow-up .message-actions { opacity: 0; }
 .message.user.follow-up:hover .message-actions,
@@ -1568,7 +1577,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .inline-progress i, .run-progress-pill i { width: 7px; height: 7px; flex: 0 0 auto; border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 .inline-progress.waiting i, .run-progress-pill.waiting i { border: 0; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); animation: none; }
 .inline-progress small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
-@media (max-width: 620px) { .message-actions { opacity: 1; } }
+@media (max-width: 620px) { .message-actions { opacity: 1; } .work-user-context .added-context-actions { opacity: 1; } }
 
 .composer-wrap { position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; padding: var(--app-density-composer-wrap-padding-top, 8px) var(--app-density-composer-wrap-padding-x, 18px) var(--app-density-composer-wrap-padding-bottom, 12px); background: linear-gradient(180deg, transparent, var(--bg) 33%, var(--bg)); }
 /* Keep transcript faintly dimmed while the deferred thread catches up — avoids the
@@ -3319,6 +3328,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .workspace-inline-error { min-width: 0; margin: 8px 10px 0; padding: 7px 8px; display: flex; align-items: flex-start; gap: 6px; border-radius: 7px; background: color-mix(in srgb, var(--danger) 9%, transparent); color: var(--danger); font-size: 9px; line-height: 1.4; }
 .workspace-inline-error svg { flex: 0 0 auto; margin-top: 1px; }
 .resize-handle-inspector { left: -4px; }
+.workspace-dock-resize-handle {
+  /* WebContentsView owns the dock's browser surface, so keep the hit target
+     completely in the renderer-owned strip beside the native view. */
+  right: var(--inspector-width);
+  left: auto;
+  width: 14px;
+  z-index: 13;
+}
+.workspace-dock-resize-handle::before { left: auto; right: 0; }
 
 /* Explorer and the shared read-only/editable file surface. */
 .workspace-explorer-pane { min-width: 0; min-height: 0; flex: 1; display: flex; }

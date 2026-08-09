@@ -1623,12 +1623,22 @@ function TodoTimelineEvent({ todos, data }: { todos: TodoItem[]; data?: string }
 const MemoizedTodoTimelineEvent = memo(TodoTimelineEvent);
 
 function UserContextTimelineEvent({ entry, onPreviewAttachment }: { entry: Extract<RunTimelineItem, { type: "user-context" }>; onPreviewAttachment?: (attachment: Attachment) => void }) {
+  const [expanded, setExpanded] = useState(false);
   return <div className="work-user-context">
     <span className="work-user-context-label">Added context</span>
     <div className="work-user-context-bubble">
       {entry.attachments?.length && onPreviewAttachment ? <AttachmentList attachments={entry.attachments} onPreview={onPreviewAttachment} className="work-user-context-attachments" /> : null}
-      <MarkdownContent>{entry.text}</MarkdownContent>
-      <time>{new Date(entry.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>
+      <AddedContextText
+        text={entry.text}
+        expanded={expanded}
+        chatFontSizePx={11}
+        onToggle={() => setExpanded((value) => !value)}
+        className="user-message-bubble added-context-collapsible"
+      />
+      <div className="message-actions user-actions added-context-actions">
+        <time>{new Date(entry.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>
+        <CopyMessageButton content={entry.text} />
+      </div>
     </div>
   </div>;
 }
@@ -2407,12 +2417,12 @@ function AccountLoadingGate({ theme }: { theme: ThemeMode }) {
 
 
 
-function Sidebar({ state, currentThread, account, timestampFormat, activeSurface, onNavigateSurface, onOpenProject, onCreateProject, onNewThread, onSelectProject, onSelectThread, onOpenSearch, onToggleSidebar, onBack, onForward, canGoBack, canGoForward, onSettings, onAccount, onUsage, onLogout, onMarkThreadRead, onMarkAllNotificationsRead, onDeleteThread, onRenameThread, onToggleThreadPinned, onArchiveThread, onRenameProject, onToggleProjectPinned, onArchiveProjectThreads, onRemoveProject, onReorderProject, onSelectSpace, onCreateSpace, onResize, open, onClose, updateState, onUpdateAction }: {
+function Sidebar({ state, currentThread, account, timestampFormat, activeSurface, onNavigateSurface, onOpenProject, onCreateProject, onNewThread, onSelectThread, onOpenSearch, onToggleSidebar, onBack, onForward, canGoBack, canGoForward, onSettings, onAccount, onUsage, onLogout, onMarkThreadRead, onMarkAllNotificationsRead, onDeleteThread, onRenameThread, onToggleThreadPinned, onArchiveThread, onRenameProject, onToggleProjectPinned, onArchiveProjectThreads, onRemoveProject, onReorderProject, onSelectSpace, onCreateSpace, onResize, open, onClose, updateState, onUpdateAction }: {
   state: AppState; currentThread?: Thread; onOpenProject: () => void; onCreateProject: () => void;
   account: AccountStatus | null;
   timestampFormat: TimestampFormat;
   activeSurface: WorkspaceSurface; onNavigateSurface: (surface: WorkspaceSurface) => void;
-  onNewThread: (projectId?: string) => void; onSelectProject: (id: string) => void; onSelectThread: (id: string, surface?: WorkspaceSurface) => void; onOpenSearch: () => void; onToggleSidebar: () => void; onBack: () => void; onForward: () => void; canGoBack: boolean; canGoForward: boolean; onSettings: () => void; onAccount: () => void; onUsage: () => void; onLogout: () => void;
+  onNewThread: (projectId?: string) => void; onSelectThread: (id: string, surface?: WorkspaceSurface) => void; onOpenSearch: () => void; onToggleSidebar: () => void; onBack: () => void; onForward: () => void; canGoBack: boolean; canGoForward: boolean; onSettings: () => void; onAccount: () => void; onUsage: () => void; onLogout: () => void;
   onMarkThreadRead: (id: string) => void; onMarkAllNotificationsRead: () => void;
   onDeleteThread: (id: string) => void; onRenameThread: (id: string) => void; onToggleThreadPinned: (id: string) => void; onArchiveThread: (id: string) => void;
   onRenameProject: (id: string) => void; onToggleProjectPinned: (id: string) => void; onArchiveProjectThreads: (id: string) => void; onRemoveProject: (id: string) => void;
@@ -2495,6 +2505,9 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
     if (next.has(projectId)) next.delete(projectId); else next.add(projectId);
     return next;
   });
+  const startProjectChat = (projectId: string) => {
+    onNewThread(projectId);
+  };
   const toggleSection = (section: string) => setExpandedSections((current) => {
     const next = new Set(current);
     if (next.has(section)) next.delete(section); else next.add(section);
@@ -2766,7 +2779,7 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
                      onDragOver={(event) => handleProjectDragOver(event, project.id)}
                      onDrop={(event) => handleProjectDrop(event, project.id)}>
                    <div className="project-heading" onMouseEnter={(event) => showHoverCard("project", project.id, event.currentTarget)} onMouseLeave={scheduleHoverCardClose} onFocus={(event) => showHoverCard("project", project.id, event.currentTarget)} onBlur={scheduleHoverCardClose}>
-                     <button className="project-toggle" draggable onDragStart={(event) => handleProjectDragStart(event, project.id)} onDragEnd={handleProjectDragEnd} onClick={() => { if (suppressProjectClickRef.current) return; if (project.id !== selectedProjectId) onSelectProject(project.id); toggleProject(project.id); }} title={`${isExpanded ? "Collapse" : "Open"} ${project.name}`} aria-expanded={isExpanded}>{isExpanded ? <FolderOpen size={15} /> : <Folder size={15} />}<span>{project.name}</span>{project.pinned && <Pin size={11} />}</button>
+                     <button className="project-toggle" draggable onDragStart={(event) => handleProjectDragStart(event, project.id)} onDragEnd={handleProjectDragEnd} onClick={() => { if (suppressProjectClickRef.current) return; startProjectChat(project.id); toggleProject(project.id); }} title={`${isExpanded ? "Collapse" : "Open"} ${project.name}`} aria-expanded={isExpanded}>{isExpanded ? <FolderOpen size={15} /> : <Folder size={15} />}<span>{project.name}</span>{project.pinned && <Pin size={11} />}</button>
                     <button className="project-more" onClick={(event) => openProjectMenu(event, project.id)} title={`Project options for ${project.name}`}><MoreHorizontal size={15} /></button>
                     <button className="project-plus" onClick={() => onNewThread(project.id)} title={`New chat in ${project.name}`}><SquarePen size={13} /></button>
                   </div>
@@ -3214,7 +3227,7 @@ function UserMessagePastedTextCard({ text, metrics }: { text: string; metrics: {
   );
 }
 
-function UserMessageCollapsibleText({ text, expanded, chatFontSizePx, onToggle, children }: { text: string; expanded: boolean; chatFontSizePx: number; onToggle: () => void; children: ReactNode }) {
+function UserMessageCollapsibleText({ text, expanded, chatFontSizePx, onToggle, children, className = "user-message-bubble" }: { text: string; expanded: boolean; chatFontSizePx: number; onToggle: () => void; children: ReactNode; className?: string }) {
   const contentRef = useRef<HTMLDivElement>(null);
   const contentId = useRef<string>(`user-message-${Math.random().toString(36).slice(2, 9)}`).current;
   const [overflowing, setOverflowing] = useState(() => userMessageLikelyOverflows(text));
@@ -3255,7 +3268,7 @@ function UserMessageCollapsibleText({ text, expanded, chatFontSizePx, onToggle, 
     : clampHeightPx;
 
   return (
-    <div className="user-message-bubble">
+    <div className={className}>
       <div
         id={contentId}
         ref={contentRef}
@@ -3286,6 +3299,58 @@ function UserMessageCollapsibleText({ text, expanded, chatFontSizePx, onToggle, 
       )}
     </div>
   );
+}
+
+function AddedContextText({ text, expanded, chatFontSizePx, onToggle, className }: {
+  text: string;
+  expanded: boolean;
+  chatFontSizePx: number;
+  onToggle: () => void;
+  className: string;
+}) {
+  const { promptText, pastedTexts } = extractTrailingPastedTexts(text);
+  return <>
+    {pastedTexts.length > 0 && (
+      <div className="pasted-text-strip pasted-text-strip-transcript added-context-pasted-text">
+        {pastedTexts.map((pasted) => (
+          <UserMessagePastedTextCard
+            key={pasted.index}
+            text={pasted.text}
+            metrics={{ lineCount: pasted.lineCount, charCount: pasted.charCount }}
+          />
+        ))}
+      </div>
+    )}
+    {promptText.trim().length > 0 && (
+      <UserMessageCollapsibleText
+        text={promptText}
+        expanded={expanded}
+        chatFontSizePx={chatFontSizePx}
+        onToggle={onToggle}
+        className={className}
+      >
+        <MarkdownContent>{promptText}</MarkdownContent>
+      </UserMessageCollapsibleText>
+    )}
+  </>;
+}
+
+function OptimisticAddedContextMessage({ item, timestampFormat, onPreviewAttachment }: { item: QueuedFollowUp; timestampFormat: TimestampFormat; onPreviewAttachment: (attachment: Attachment) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  return <article className="message user follow-up optimistic" id={`message-${item.id}`} data-message-id={item.id}>
+    <div className="user-turn follow-up-turn">
+      <span className="follow-up-label">Added context</span>
+      {item.attachments.length > 0 ? <AttachmentList attachments={item.attachments} onPreview={onPreviewAttachment} className="message-attachments" /> : null}
+      <AddedContextText
+        text={item.prompt}
+        expanded={expanded}
+        chatFontSizePx={11}
+        onToggle={() => setExpanded((value) => !value)}
+        className="user-message-bubble added-context-collapsible"
+      />
+      <div className="message-actions user-actions"><time>{formatTimestamp(item.createdAt, timestampFormat)}</time><CopyMessageButton content={item.prompt} /></div>
+    </div>
+  </article>;
 }
 
 function useStableIdentityArray<T>(items: T[]): T[] {
@@ -3669,7 +3734,18 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
               <div className="user-turn follow-up-turn">
                 <span className="follow-up-label">Added context</span>
                 {message.attachments?.length ? <AttachmentList attachments={message.attachments} onPreview={onPreviewAttachment} className="message-attachments" /> : null}
-                <MarkdownContent>{extractTrailingPastedTexts(message.content).promptText}</MarkdownContent>
+                <AddedContextText
+                  text={message.content}
+                  expanded={Boolean(expandedUserMessagesById[message.id])}
+                  chatFontSizePx={11}
+                  onToggle={() => {
+                    setExpandedUserMessagesById((previous) => ({
+                      ...previous,
+                      [message.id]: !(previous[message.id] ?? false),
+                    }));
+                  }}
+                  className="user-message-bubble added-context-collapsible"
+                />
                 <div className="message-actions user-actions"><time>{formatTimestamp(message.createdAt, timestampFormat)}</time><MessageEnvironmentActions message={message} pinned={Boolean(displayThread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
               </div>
             </article>,
@@ -3785,16 +3861,7 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
         seen.add(item.id);
         return true;
       })
-      .map((item) => (
-        <article className="message user follow-up optimistic" id={`message-${item.id}`} data-message-id={item.id} key={`queued-${item.id}`}>
-          <div className="user-turn follow-up-turn">
-            <span className="follow-up-label">Added context</span>
-            {item.attachments.length > 0 ? <AttachmentList attachments={item.attachments} onPreview={onPreviewAttachment} className="message-attachments" /> : null}
-            <MarkdownContent>{item.prompt}</MarkdownContent>
-            <div className="message-actions user-actions"><time>{formatTimestamp(item.createdAt, timestampFormat)}</time><CopyMessageButton content={item.prompt} /></div>
-          </div>
-        </article>
-      ));
+      .map((item) => <OptimisticAddedContextMessage key={`queued-${item.id}`} item={item} timestampFormat={timestampFormat} onPreviewAttachment={onPreviewAttachment} />);
   }, [queuedFollowUps, displayThread.messages, timestampFormat, onPreviewAttachment]);
   return (
     <div className={`chat-transcript-pane ${isStale || stale ? "stale" : ""}`} ref={paneRef} style={isStale || stale ? { opacity: 0.97 } as CSSProperties : undefined}>
@@ -7266,7 +7333,7 @@ export default function App() {
     <div className={`app-shell theme-${state.settings.theme} density-${state.settings.uiDensity} ${state.settings.useSystemUiFont ? "system-ui-font" : ""} ${sidebarVisible ? "" : "sidebar-hidden"} ${inspectorVisible ? "" : "inspector-hidden"}`} style={{ ...appearanceVariables, "--sidebar-width": `${sidebarWidth}px`, "--inspector-width": `${inspectorWidth}px` } as CSSProperties}>
 
        <MemoizedSidebar state={state} currentThread={currentThread} account={account} timestampFormat={state.settings.timestampFormat} activeSurface={activeSurface} onNavigateSurface={navigateSurface} onOpenProject={openProject} onCreateProject={() => setCreateProjectOpen(true)} onNewThread={newThread}
-         onSelectProject={(id) => void selectProject(id)} onSelectThread={(id, surface) => void selectThread(id, surface)} onOpenSearch={() => setSearchOpen(true)} onToggleSidebar={() => window.innerWidth <= 900 ? setSidebarOpen(false) : setSidebarVisible((value) => !value)} onBack={() => void goBack()} onForward={() => void goForward()} canGoBack={navigation.index > 0} canGoForward={navigation.index >= 0 && navigation.index < navigation.ids.length - 1} onSettings={() => setSettingsOpen(true)} onAccount={openAccount}
+         onSelectThread={(id, surface) => void selectThread(id, surface)} onOpenSearch={() => setSearchOpen(true)} onToggleSidebar={() => window.innerWidth <= 900 ? setSidebarOpen(false) : setSidebarVisible((value) => !value)} onBack={() => void goBack()} onForward={() => void goForward()} canGoBack={navigation.index > 0} canGoForward={navigation.index >= 0 && navigation.index < navigation.ids.length - 1} onSettings={() => setSettingsOpen(true)} onAccount={openAccount}
          onUsage={() => { setAccountOpen(true); void refreshUsage(); }} onLogout={() => void logoutAccount()} onMarkThreadRead={(id) => void markThreadRead(id)} onMarkAllNotificationsRead={() => void markAllNotificationsRead()}
           onDeleteThread={deleteThread}
           onRenameThread={requestThreadRename}
@@ -7401,7 +7468,7 @@ export default function App() {
         }}
         onOpenBrowser={(url) => requestDockPane("browser", undefined, url)}
       />}
-      {createProjectOpen && <CreateProjectModal onClose={() => setCreateProjectOpen(false)} onChooseSources={() => window.maximoDesktop.chooseProjectSources()} onCreate={createProject} spaces={state.spaces} selectedSpaceId={state.selectedSpaceId} onCreateSpace={createSpace} />}
+      {createProjectOpen && <CreateProjectModal onClose={() => setCreateProjectOpen(false)} onChooseSources={() => window.maximoDesktop.chooseProjectSources()} onCreate={createProject} />}
       {renameThreadTarget && <RenameThreadModal key={renameThreadTarget.id} thread={renameThreadTarget} theme={state.settings.theme} onClose={() => setRenameThreadId(null)} onRename={(title) => renameThread(renameThreadTarget.id, title)} />}
       {settingsOpen && <EnhancedSettingsModal state={state} engine={engine} models={engineModels} modelOptions={modelOptions} account={account} usage={usage} appVersion={appVersion} appDataPath={appDataPath} skills={[...discoveredSkills, ...skillCommands]} initialSection={settingsSectionRequest} onClose={() => { setSettingsOpen(false); setSettingsSectionRequest("general"); }} onSave={async (patch) => { const next = await window.maximoDesktop.updateSettings(patch); setState(next); setInspectorVisible(next.settings.showInspector); setEnvironmentOpen(next.settings.environmentPanelDefaultOpen); }} onRepair={async () => { const next = await window.maximoDesktop.updateEngine(); setEngine(next); if (next.available) await refreshEngineModels(); }} onAccount={() => { setSettingsOpen(false); openAccount(); }} onUsage={() => void refreshUsage()} onRefreshSkills={() => refreshDiscoveredSkills(currentProject?.path)} onResetProvider={resetProviderState} onRevealDataPath={() => { if (appDataPath) void window.maximoDesktop.revealPath(appDataPath); }} onRestoreThread={async (threadId) => { setState(await window.maximoDesktop.unarchiveThread(threadId)); }} onDeleteArchivedThread={async (threadId) => { const thread = state.threads.find((item) => item.id === threadId); if (!thread || !window.confirm(`Permanently delete "${thread.title}"? This removes the chat history forever.`)) return; setState(await window.maximoDesktop.deleteThread(threadId)); }} updateState={updateState} onCheckForUpdates={checkForAppUpdates} onOpenUpdateDownload={openAppUpdateDownload} onOpenWhatsNew={() => { void refreshWhatsNew({ forceDialog: true }); }} />}
       {accountOpen && <AccountModal account={account} usage={usage} usageBusy={usageBusy} busy={accountBusy} onClose={() => setAccountOpen(false)} onRefresh={() => void refreshAccount()} onLogin={(method, apiKey, openCodePlan) => loginAccount(method, apiKey, openCodePlan)} onCancelLogin={() => void cancelLoginAccount()} onLogout={() => void logoutAccount()} onUsage={() => void refreshUsage()} />}
