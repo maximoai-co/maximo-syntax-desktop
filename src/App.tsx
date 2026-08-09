@@ -5804,13 +5804,16 @@ export default function App() {
   const currentProject = useMemo(() => state ? state.projects.find((project) => project.id === (currentThread?.projectId ?? state.selectedProjectId)) : undefined, [state?.projects, state?.selectedProjectId, currentThread?.projectId]);
   const topbarMenuThread = useMemo(() => topbarThreadMenu && state ? state.threads.find((thread) => thread.id === topbarThreadMenu.threadId) : undefined, [state?.threads, topbarThreadMenu]);
   const renameThreadTarget = useMemo(() => renameThreadId && state ? state.threads.find((thread) => thread.id === renameThreadId) : undefined, [renameThreadId, state?.threads]);
-  const sidebarActivityKind = useMemo<"active" | "unread" | null>(() => {
-    const threads = state?.threads ?? [];
-    const visibleThreads = threads.filter((thread) => !thread.archived && thread.messages.length > 0);
-    if (pendingQuestion || pendingPermission || visibleThreads.some((thread) => thread.status === "running" || liveSessions.has(thread.id))) return "active";
-    if (visibleThreads.some((thread) => thread.unread)) return "unread";
-    return null;
-  }, [liveSessions, pendingPermission, pendingQuestion, state?.threads]);
+  const sidebarNotificationKind = useMemo<"active" | "unread" | null>(() => {
+    let hasActive = false;
+    let hasUnread = false;
+    for (const thread of state?.threads ?? []) {
+      if (thread.archived || thread.messages.length === 0) continue;
+      if (thread.status === "running") hasActive = true;
+      else if (thread.unread) hasUnread = true;
+    }
+    return hasUnread ? "unread" : hasActive ? "active" : null;
+  }, [state?.threads]);
 
   useEffect(() => {
     setTopbarThreadMenu(null);
@@ -7283,7 +7286,7 @@ export default function App() {
       <section className="workspace">
         <header className="topbar drag-region">
           <div className="topbar-left">
-            <button className={`topbar-button no-drag sidebar-reopen-button ${sidebarVisible ? "sidebar-visible" : ""}`} onClick={() => window.innerWidth <= 900 ? setSidebarOpen(true) : setSidebarVisible(true)} title={sidebarActivityKind === "active" ? "Show sidebar · Activity in progress" : sidebarActivityKind === "unread" ? "Show sidebar · Unread activity" : "Show sidebar"} aria-label={sidebarActivityKind === "active" ? "Show sidebar, activity in progress" : sidebarActivityKind === "unread" ? "Show sidebar, unread activity" : "Show sidebar"}><PanelLeftOpen size={16} />{sidebarActivityKind && <span className={`nav-bell-badge ${sidebarActivityKind === "active" ? "has-active" : "has-unread"}`} aria-hidden="true" />}</button>
+            <button className={`topbar-button no-drag sidebar-reopen-button ${sidebarVisible ? "sidebar-visible" : ""}`} onClick={() => window.innerWidth <= 900 ? setSidebarOpen(true) : setSidebarVisible(true)} title={sidebarNotificationKind === "active" ? "Show sidebar · Activity in progress" : sidebarNotificationKind === "unread" ? "Show sidebar · Unread notification" : "Show sidebar"} aria-label={sidebarNotificationKind === "active" ? "Show sidebar, activity in progress" : sidebarNotificationKind === "unread" ? "Show sidebar, unread notification" : "Show sidebar"}><PanelLeftOpen size={16} />{sidebarNotificationKind && <span className={`nav-bell-badge ${sidebarNotificationKind === "active" ? "has-active" : "has-unread"}`} aria-hidden="true" />}</button>
             {currentProject && <><FolderOpen size={14} /><span>{currentProject.name}</span></>}
             {currentThread && <><span className="crumb">/</span><strong>{currentThread.title}</strong><button type="button" className={`topbar-button no-drag topbar-thread-options-button ${topbarThreadMenu?.threadId === currentThread.id ? "active" : ""}`} onClick={(event) => toggleTopbarThreadMenu(event, currentThread.id)} title="Chat options" aria-label={`Options for ${currentThread.title}`} aria-haspopup="menu" aria-expanded={topbarThreadMenu?.threadId === currentThread.id}><MoreHorizontal size={16} /></button></>}
           </div>
