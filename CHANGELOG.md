@@ -4,13 +4,22 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.9] - Unreleased
+## [0.1.9] - 2026-08-09
 
-- Upgraded the bundled CLI engine to **v0.1.32** (from v0.1.28): adds **ImageGeneration** (`Maximo AI → /v1/api/image-generation`, `MyTabulon → /v1/image-generation`) with verbatim URL handling (`Image 1 URL:`) and a fully generic prompt (no hard-coded domains, blocks `https://example.com` and other placeholders, forbids any `![...](https://...)` on empty results); fixes Extra High effort crash (`--effort xhigh`); adds Image icon and "Generated image" activity label.
-- Fixed generated images not rendering in chat: `Content-Security-Policy` now allows `img-src 'self' data: https: http: blob:` and `connect-src` includes both backends, so remote `https://.../uploads/ai-images/...` URLs load inline.
+- **Profile sharing**: a Share button on the profile stats panel renders a shareable stat card (lifetime tokens, peak day, streaks, top provider, activity heatmap) to a PNG via canvas, with Copy to clipboard (native Electron clipboard for real image paste), Save to downloads, and one-click share intents for X, LinkedIn, and Reddit.
+- Added a profile **Edit dialog** (display name, username, avatar color) replacing the inline edit card.
 - **Generated image card — 2026 Liquid Glass restyle**: markdown images now render as a rounded 20px squircle card with soft layered shadows, shimmer skeleton, hover-revealed liquid-glass action bar (caption + Preview/Copy/Share/Download/Open), and a full-screen glass lightbox (blurred backdrop, radial glow, 22px rounded image, floating control pill) — Liquid Glass / Glassmorphism 2.0, squircle corners.
 - Removed `AI generated` top badge and fixed Preview pill centering: single `transform: translate(-50%,-50%)` at `left:50% top:50%` and transparent image background for perfect centering.
 - Fixed long prompts pushing image action buttons inward: caption truncated to 72 chars and CSS `flex:1 1 0` + `min-width:0` + `text-overflow:ellipsis` with `flex-shrink:0` on buttons.
+- Upgraded the bundled CLI engine to **v0.1.32** (from v0.1.28): adds **ImageGeneration** (`Maximo AI → /v1/api/image-generation`, `MyTabulon → /v1/image-generation`) with verbatim URL handling (`Image 1 URL:`) and a fully generic prompt (no hard-coded domains, blocks `https://example.com` and other placeholders, forbids any `![...](https://...)` on empty results); fixes Extra High effort crash (`--effort xhigh`); adds Image icon and "Generated image" activity label.
+- Fixed generated images not rendering in chat: `Content-Security-Policy` now allows `img-src 'self' data: https: http: blob:` and `connect-src` includes both backends, so remote `https://.../uploads/ai-images/...` URLs load inline.
+- Added a **Kilo model logo** (and provider detection) alongside the existing brand logos, with tests.
+- Isolated live streaming from the app shell with an external live-run store to cut renderer churn, dispatch runs by real CLI turn state, keep live markdown formatted while streaming, and defer visual reduction during interaction.
+- Ship **summary/full thread detail** with a selection checkpoint, new-chat starter flows, and compact history.
+- Moved **task-completion notifications** to the main process (survive renderer churn) and made slash-command search match any part of the name.
+- Added a **topbar chat options menu**, thread rename dialog, and sidebar reopen button with an activity badge (unread prioritized over running).
+- Start a chat straight from **project rows**, style added-context as collapsible bubbles, and drop the space picker from project creation.
+- Flush the persistent browser session on quit and keep panel resize callbacks stable.
 
 
 ## [0.1.8] - 2026-08-06
