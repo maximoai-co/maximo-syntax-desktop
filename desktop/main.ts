@@ -45,6 +45,8 @@ let browserManager: BrowserManager;
 let browserHost: BrowserHostServer;
 let appUpdater: AppUpdater | null = null;
 let isQuitting = false;
+let quitCleanupFinished = false;
+let quitCleanupPromise: Promise<void> | null = null;
 const activeDesktopNotifications = new Set<ElectronNotification>();
 const runner = new CliRunner();
 const pendingRunEvents: RunEvent[] = [];
@@ -1614,12 +1616,31 @@ const quitApplication = () => {
 
 process.on("SIGINT", quitApplication);
 process.on("SIGTERM", quitApplication);
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   isQuitting = true;
+  if (quitCleanupFinished) return;
+
+  event.preventDefault();
+  if (quitCleanupPromise) return;
+
   appUpdater?.dispose();
   runner.stopAll();
   terminalManager?.stopAll();
-  void browserHost?.dispose();
-  browserManager?.dispose();
+  quitCleanupPromise = (async () => {
+    try {
+      await browserManager?.flushPersistentStorage();
+    } catch (error) {
+      console.error("[browser] failed to flush persistent session:", error);
+    }
+    try {
+      await browserHost?.dispose();
+    } catch (error) {
+      console.error("[browser] failed to stop browser host:", error);
+    } finally {
+      browserManager?.dispose();
+      quitCleanupFinished = true;
+      app.quit();
+    }
+  })();
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

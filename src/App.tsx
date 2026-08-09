@@ -5704,6 +5704,17 @@ export default function App() {
   const [sideChatThreadId, setSideChatThreadId] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(() => Math.min(340, Math.max(270, Math.round(window.innerWidth * 0.18))));
   const [inspectorWidth, setInspectorWidth] = useState(() => Math.min(365, Math.max(290, Math.round(window.innerWidth * 0.2))));
+  // The sidebar and workspace dock intentionally ignore callback identity in
+  // their memo comparators. Keep the resize callbacks stable while still
+  // starting every drag from the latest rendered layout values.
+  const sidebarWidthRef = useRef(sidebarWidth);
+  const inspectorWidthRef = useRef(inspectorWidth);
+  const sidebarVisibleRef = useRef(sidebarVisible);
+  const inspectorVisibleRef = useRef(inspectorVisible);
+  sidebarWidthRef.current = sidebarWidth;
+  inspectorWidthRef.current = inspectorWidth;
+  sidebarVisibleRef.current = sidebarVisible;
+  inspectorVisibleRef.current = inspectorVisible;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSectionRequest, setSettingsSectionRequest] = useState<EnhancedSettingsSectionId>("general");
   const [systemDark, setSystemDark] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -6767,9 +6778,9 @@ export default function App() {
   const resizeSidebar = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = sidebarWidth;
+    const startWidth = sidebarWidthRef.current;
     const move = (moveEvent: globalThis.PointerEvent) => {
-      const maxWidth = Math.max(260, Math.min(500, window.innerWidth - (inspectorVisible ? inspectorWidth : 0) - 420));
+      const maxWidth = Math.max(260, Math.min(500, window.innerWidth - (inspectorVisibleRef.current ? inspectorWidthRef.current : 0) - 420));
       setSidebarWidth(Math.max(260, Math.min(maxWidth, startWidth + moveEvent.clientX - startX)));
     };
     const stop = () => {
@@ -6784,14 +6795,14 @@ export default function App() {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
     window.addEventListener("pointercancel", stop);
-  }, [inspectorWidth, inspectorVisible, sidebarWidth]);
+  }, []);
 
   const resizeInspector = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = inspectorWidth;
+    const startWidth = inspectorWidthRef.current;
     const move = (moveEvent: globalThis.PointerEvent) => {
-      const maxWidth = Math.max(310, Math.min(680, window.innerWidth - (sidebarVisible ? sidebarWidth : 0) - 420));
+      const maxWidth = Math.max(310, Math.min(680, window.innerWidth - (sidebarVisibleRef.current ? sidebarWidthRef.current : 0) - 420));
       setInspectorWidth(Math.max(310, Math.min(maxWidth, startWidth - (moveEvent.clientX - startX))));
     };
     const stop = () => {
@@ -6806,7 +6817,7 @@ export default function App() {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
     window.addEventListener("pointercancel", stop);
-  }, [inspectorWidth, sidebarVisible, sidebarWidth]);
+  }, []);
 
   useEffect(() => {
     if (!currentProject) { setGit(null); return; }

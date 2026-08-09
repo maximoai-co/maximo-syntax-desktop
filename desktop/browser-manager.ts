@@ -21,6 +21,7 @@ import type {
   BrowserThreadInput,
   BrowserNavigateInput,
 } from "./types.js";
+import { flushPersistentBrowserSession } from "./browser-session-persistence.js";
 import { collapseDuplicateBrowserScheme } from "./browser-url.js";
 
 export const BROWSER_SESSION_PARTITION = "persist:maximo-browser";
@@ -492,6 +493,10 @@ export class BrowserManager {
       webContents: runtime.webContents,
       expectAgentInput: (signal) => this.expectAgentInput(threadId, tab.id, signal),
     };
+  }
+
+  flushPersistentStorage(): Promise<void> {
+    return flushPersistentBrowserSession(this.session);
   }
 
   dispose(): void {
