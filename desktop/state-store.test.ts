@@ -502,6 +502,32 @@ describe("StateStore", () => {
     expect(archived.threads[0]?.archived).toBe(true);
   });
 
+  it("persists project appearance and edits without changing project identity", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    const secondary = await mkdtemp(join(tmpdir(), "maximo-desktop-source-"));
+    const replacement = await mkdtemp(join(tmpdir(), "maximo-desktop-replacement-"));
+    temporaryDirectories.push(directory, secondary, replacement);
+    const store = new StateStore(join(directory, "state"), createInitialState());
+    await store.initialize();
+
+    const created = await store.createProject("Workspace", [directory, secondary], null, "rocket", "blue");
+    const project = created.projects[0]!;
+    const updated = await store.updateProject(project.id, "Renamed workspace", [replacement], "database", "purple");
+    const saved = updated.projects.find((candidate) => candidate.id === project.id)!;
+
+    expect(saved.id).toBe(project.id);
+    expect(saved.name).toBe("Renamed workspace");
+    expect(saved.path).toBe(replacement);
+    expect(saved.sourcePaths).toEqual([replacement]);
+    expect(saved.icon).toBe("database");
+    expect(saved.color).toBe("purple");
+    expect(JSON.parse(await readFile(join(directory, "state", "state.json"))).projects[0]).toMatchObject({
+      id: project.id,
+      icon: "database",
+      color: "purple",
+    });
+  });
+
   it("reorders projects without changing their identity", async () => {
     const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
     temporaryDirectories.push(directory);

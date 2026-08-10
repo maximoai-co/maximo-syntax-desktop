@@ -34,7 +34,7 @@ import {
 } from "./whats-new.js";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
 import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
-import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
+import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, ProjectColorName, ProjectIconName, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 import { launchConfigurationChanged, resolveAsFollowUp, RUN_ALREADY_RUNNING_ERROR, RUN_NOT_RUNNING_ERROR, type RunLaunchConfiguration } from "./run-dispatch.js";
 import { taskCompletionNotification } from "./task-notifications.js";
 
@@ -833,14 +833,22 @@ function registerIpc(): void {
     });
       return result.canceled ? [] : result.filePaths.slice(0, MAX_PROJECT_SOURCE_COUNT).map((path) => resolve(path));
   });
-  ipcMain.handle("project:create", (_event, requestedName: string, requestedPaths: unknown, requestedSpaceId?: unknown) => {
+  ipcMain.handle("project:create", (_event, requestedName: string, requestedPaths: unknown, requestedSpaceId?: unknown, requestedIcon?: unknown, requestedColor?: unknown) => {
     const paths = Array.isArray(requestedPaths) ? requestedPaths.filter((path): path is string => typeof path === "string").slice(0, MAX_PROJECT_SOURCE_COUNT) : [];
     const spaceId = typeof requestedSpaceId === "string" ? safeText(requestedSpaceId, 100) : null;
-    return store.createProject(safeText(requestedName, 100), paths.map((path) => safeText(path, 2_000)), spaceId);
+    const icon = typeof requestedIcon === "string" ? requestedIcon as ProjectIconName : "folder";
+    const color = typeof requestedColor === "string" ? requestedColor as ProjectColorName : "default";
+    return store.createProject(safeText(requestedName, 100), paths.map((path) => safeText(path, 2_000)), spaceId, icon, color);
   });
   ipcMain.handle("project:add", (_event, projectPath: string) => store.addProject(safeText(projectPath, 2_000)));
   ipcMain.handle("project:select", (_event, projectId: string) => store.selectProject(safeText(projectId, 100)));
   ipcMain.handle("project:rename", (_event, projectId: string, name: string) => store.renameProject(safeText(projectId, 100), safeText(name, 100)));
+  ipcMain.handle("project:update", (_event, projectId: string, requestedName: string, requestedPaths: unknown, requestedIcon: unknown, requestedColor: unknown) => {
+    const paths = Array.isArray(requestedPaths) ? requestedPaths.filter((path): path is string => typeof path === "string").slice(0, MAX_PROJECT_SOURCE_COUNT) : [];
+    const icon = typeof requestedIcon === "string" ? requestedIcon as ProjectIconName : "folder";
+    const color = typeof requestedColor === "string" ? requestedColor as ProjectColorName : "default";
+    return store.updateProject(safeText(projectId, 100), safeText(requestedName, 100), paths.map((path) => safeText(path, 2_000)), icon, color);
+  });
   ipcMain.handle("project:toggle-pinned", (_event, projectId: string) => store.toggleProjectPinned(safeText(projectId, 100)));
   ipcMain.handle("project:reorder", (_event, sourceProjectId: string, targetProjectId: string) => store.reorderProjects(safeText(sourceProjectId, 100), safeText(targetProjectId, 100)));
   ipcMain.handle("project:archive-chats", (_event, projectId: string) => store.archiveProjectThreads(safeText(projectId, 100)));

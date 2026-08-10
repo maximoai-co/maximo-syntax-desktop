@@ -14,6 +14,7 @@ import modelPerplexityUrl from "../assets/model-perplexity.svg";
 import modelOllamaUrl from "../assets/model-ollama.svg";
 import modelKiloUrl from "../assets/model-kilo.svg";
 import { modelProvider } from "../utils/modelProvider.js";
+import { ProjectIcon } from "./ProjectIcon";
 
 export interface SidebarHoverCardProps {
   kind: "project" | "thread";
@@ -104,7 +105,7 @@ export default function SidebarHoverCard({
         onBlur={onBlur}
       >
         <CardRow className="sidebar-hover-card-title">
-          <RowIcon><FolderOpen size={14} /></RowIcon>
+          <RowIcon><ProjectIcon icon={project.icon ?? "folder"} color={project.color ?? "default"} size={14} /></RowIcon>
           <strong>{project.name}</strong>
           {onToggleProjectPin && (
             <button

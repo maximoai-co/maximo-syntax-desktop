@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT } from "../desktop/types";
 import type {
-  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AppUpdateState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserClearDataInput, BrowserProfileSettingsInput, BrowserProfileSnapshot, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, ThreadGoalState, TimestampFormat, TodoItem, UsageSnapshot, WhatsNewSnapshot,
+  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AppUpdateState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserClearDataInput, BrowserProfileSettingsInput, BrowserProfileSnapshot, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, ProjectColorName, ProjectIconName, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, ThreadGoalState, TimestampFormat, TodoItem, UsageSnapshot, WhatsNewSnapshot,
 } from "../desktop/types";
 import {
   getAppUpdateButtonLabel,
@@ -32,7 +32,9 @@ import modelPerplexityUrl from "./assets/model-perplexity.svg";
 import modelOllamaUrl from "./assets/model-ollama.svg";
 import modelKiloUrl from "./assets/model-kilo.svg";
 import CreateProjectModal from "./components/CreateProjectModal";
+import ProjectEditorModal from "./components/ProjectEditorModal";
 import SpaceEditorModal from "./components/SpaceEditorModal";
+import { ProjectIcon } from "./components/ProjectIcon";
 import { SpaceIcon } from "./components/SpaceIcon";
 import DiffReview, { DiffCode, patchStats } from "./components/DiffReview";
 import ActivitySidebar from "./components/ActivitySidebar";
@@ -2783,7 +2785,7 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
                      onDragOver={(event) => handleProjectDragOver(event, project.id)}
                      onDrop={(event) => handleProjectDrop(event, project.id)}>
                    <div className="project-heading" onMouseEnter={(event) => showHoverCard("project", project.id, event.currentTarget)} onMouseLeave={scheduleHoverCardClose} onFocus={(event) => showHoverCard("project", project.id, event.currentTarget)} onBlur={scheduleHoverCardClose}>
-                     <button className="project-toggle" draggable onDragStart={(event) => handleProjectDragStart(event, project.id)} onDragEnd={handleProjectDragEnd} onClick={() => { if (suppressProjectClickRef.current) return; startProjectChat(project.id); toggleProject(project.id); }} title={`${isExpanded ? "Collapse" : "Open"} ${project.name}`} aria-expanded={isExpanded}>{isExpanded ? <FolderOpen size={15} /> : <Folder size={15} />}<span>{project.name}</span>{project.pinned && <Pin size={11} />}</button>
+                     <button className="project-toggle" draggable onDragStart={(event) => handleProjectDragStart(event, project.id)} onDragEnd={handleProjectDragEnd} onClick={() => { if (suppressProjectClickRef.current) return; startProjectChat(project.id); toggleProject(project.id); }} title={`${isExpanded ? "Collapse" : "Open"} ${project.name}`} aria-expanded={isExpanded}><ProjectIcon icon={project.icon ?? "folder"} color={project.color ?? "default"} size={15} /><span>{project.name}</span>{project.pinned && <Pin size={11} />}</button>
                     <button className="project-more" onClick={(event) => openProjectMenu(event, project.id)} title={`Project options for ${project.name}`}><MoreHorizontal size={15} /></button>
                     <button className="project-plus" onClick={() => onNewThread(project.id)} title={`New chat in ${project.name}`}><SquarePen size={13} /></button>
                   </div>
@@ -5849,6 +5851,7 @@ export default function App() {
   const [git, setGit] = useState<GitStatus | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
+  const [editProjectId, setEditProjectId] = useState<string | null>(null);
   const [reviewFile, setReviewFile] = useState<string | null>(null);
   const [reviewDiff, setReviewDiff] = useState<GitDiff | null>(null);
   useEffect(() => {
@@ -6098,6 +6101,7 @@ export default function App() {
     }
   }, [currentThread, rememberThreadDetail]);
   const currentProject = useMemo(() => state ? state.projects.find((project) => project.id === (currentThread?.projectId ?? state.selectedProjectId)) : undefined, [state?.projects, state?.selectedProjectId, currentThread?.projectId]);
+  const projectBeingEdited = useMemo(() => editProjectId && state ? state.projects.find((project) => project.id === editProjectId) : undefined, [editProjectId, state?.projects]);
   const topbarMenuThread = useMemo(() => topbarThreadMenu && state ? state.threads.find((thread) => thread.id === topbarThreadMenu.threadId) : undefined, [state?.threads, topbarThreadMenu]);
   const renameThreadTarget = useMemo(() => renameThreadId && state ? state.threads.find((thread) => thread.id === renameThreadId) : undefined, [renameThreadId, state?.threads]);
   const sidebarNotificationKind = useMemo<"active" | "unread" | null>(() => {
@@ -6596,8 +6600,8 @@ export default function App() {
     if (!created) throw new Error("The new space could not be selected.");
     return created;
   }, [withSmallRetry]);
-  const createProject = useCallback(async (name: string, sourcePaths: string[], spaceId: string | null) => {
-    const next = await withSmallRetry(() => window.maximoDesktop.createProject(name, sourcePaths, spaceId));
+  const createProject = useCallback(async (name: string, sourcePaths: string[], spaceId: string | null, icon: ProjectIconName, color: ProjectColorName) => {
+    const next = await withSmallRetry(() => window.maximoDesktop.createProject(name, sourcePaths, spaceId, icon, color));
     setState(next);
     const project = next.projects.find((candidate) => candidate.id === next.selectedProjectId);
     if (project) {
@@ -6608,6 +6612,10 @@ export default function App() {
     }
     setSidebarOpen(false);
   }, [rememberThread, withSmallRetry]);
+  const updateProject = useCallback(async (projectId: string, name: string, sourcePaths: string[], icon: ProjectIconName, color: ProjectColorName) => {
+    const next = await withSmallRetry(() => window.maximoDesktop.updateProject(projectId, name, sourcePaths, icon, color));
+    setState(next);
+  }, [withSmallRetry]);
   const newThread = useCallback(async (projectId?: string) => {
     let id = projectId;
     if (!id) { await openProject(); return; }
@@ -7579,7 +7587,7 @@ export default function App() {
           onRenameThread={requestThreadRename}
           onToggleThreadPinned={toggleThreadPinned}
           onArchiveThread={archiveThread}
-         onRenameProject={(id) => { const project = state.projects.find((item) => item.id === id); const name = window.prompt("Rename project", project?.name ?? ""); if (name?.trim()) void window.maximoDesktop.renameProject(id, name).then(setState); }}
+         onRenameProject={(id) => setEditProjectId(id)}
           onToggleProjectPinned={(id) => void window.maximoDesktop.toggleProjectPinned(id).then(setState)}
           onReorderProject={(sourceId, targetId) => void window.maximoDesktop.reorderProjects(sourceId, targetId).then(setState).catch(() => showToast("Unable to reorder projects."))}
           onSelectSpace={selectSpace}
@@ -7709,6 +7717,7 @@ export default function App() {
         onOpenBrowser={(url) => requestDockPane("browser", undefined, url)}
       />}
       {createProjectOpen && <CreateProjectModal onClose={() => setCreateProjectOpen(false)} onChooseSources={() => window.maximoDesktop.chooseProjectSources()} onCreate={createProject} />}
+      {projectBeingEdited && <ProjectEditorModal key={projectBeingEdited.id} mode="edit" project={projectBeingEdited} onClose={() => setEditProjectId(null)} onChooseSources={() => window.maximoDesktop.chooseProjectSources()} onSave={({ name, sourcePaths, icon, color }) => updateProject(projectBeingEdited.id, name, sourcePaths, icon, color)} />}
       {renameThreadTarget && <RenameThreadModal key={renameThreadTarget.id} thread={renameThreadTarget} theme={state.settings.theme} onClose={() => setRenameThreadId(null)} onRename={(title) => renameThread(renameThreadTarget.id, title)} />}
       {settingsOpen && <EnhancedSettingsModal state={state} engine={engine} models={engineModels} modelOptions={modelOptions} account={account} usage={usage} appVersion={appVersion} appDataPath={appDataPath} skills={[...discoveredSkills, ...skillCommands]} initialSection={settingsSectionRequest} onClose={() => { setSettingsOpen(false); setSettingsSectionRequest("general"); }} onSave={async (patch) => { const next = await window.maximoDesktop.updateSettings(patch); setState(next); setInspectorVisible(next.settings.showInspector); setEnvironmentOpen(next.settings.environmentPanelDefaultOpen); }} onRepair={async () => { const next = await window.maximoDesktop.updateEngine(); setEngine(next); if (next.available) await refreshEngineModels(); }} onAccount={() => { setSettingsOpen(false); openAccount(); }} onUsage={() => void refreshUsage()} onRefreshSkills={() => refreshDiscoveredSkills(currentProject?.path)} onResetProvider={resetProviderState} onRevealDataPath={() => { if (appDataPath) void window.maximoDesktop.revealPath(appDataPath); }} onRestoreThread={async (threadId) => { setState(await window.maximoDesktop.unarchiveThread(threadId)); }} onDeleteArchivedThread={async (threadId) => { const thread = state.threads.find((item) => item.id === threadId); if (!thread || !window.confirm(`Permanently delete "${thread.title}"? This removes the chat history forever.`)) return; setState(await window.maximoDesktop.deleteThread(threadId)); }} updateState={updateState} onCheckForUpdates={checkForAppUpdates} onOpenUpdateDownload={openAppUpdateDownload} onOpenWhatsNew={() => { void refreshWhatsNew({ forceDialog: true }); }} />}
       {accountOpen && <AccountModal account={account} usage={usage} usageBusy={usageBusy} busy={accountBusy} onClose={() => setAccountOpen(false)} onRefresh={() => void refreshAccount()} onLogin={(method, apiKey, openCodePlan) => loginAccount(method, apiKey, openCodePlan)} onCancelLogin={() => void cancelLoginAccount()} onLogout={() => void logoutAccount()} onUsage={() => void refreshUsage()} />}

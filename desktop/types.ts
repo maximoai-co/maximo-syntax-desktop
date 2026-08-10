@@ -79,6 +79,48 @@ export const DEFAULT_THEME_PACKS: Record<ThemeVariant, ThemePack> = {
 export const MAX_ATTACHMENT_COUNT = 10;
 export const MAX_PROJECT_SOURCE_COUNT = 5;
 
+export type ProjectColorName = "default" | "red" | "orange" | "yellow" | "green" | "blue" | "purple" | "pink";
+
+export type ProjectIconName =
+  | "folder"
+  | "circle"
+  | "briefcase"
+  | "box"
+  | "code"
+  | "file"
+  | "file-text"
+  | "terminal"
+  | "pen"
+  | "braces"
+  | "bug"
+  | "sparkles"
+  | "rocket"
+  | "target"
+  | "star"
+  | "heart"
+  | "home"
+  | "globe"
+  | "cloud"
+  | "database"
+  | "cpu"
+  | "monitor"
+  | "calendar"
+  | "clock"
+  | "check"
+  | "list"
+  | "bookmark"
+  | "tag"
+  | "link"
+  | "lock"
+  | "shield"
+  | "wrench"
+  | "hammer"
+  | "palette"
+  | "camera"
+  | "music"
+  | "gamepad"
+  | "coffee";
+
 export type SpaceIconName =
   | "briefcase"
   | "home"
@@ -198,6 +240,10 @@ export interface Project {
   sourcePaths?: string[];
   spaceId?: string | null;
   pinned?: boolean;
+  /** Optional for backwards compatibility with state files from before project appearance settings. */
+  icon?: ProjectIconName;
+  /** Optional for backwards compatibility with state files from before project appearance settings. */
+  color?: ProjectColorName;
   createdAt: number;
   lastOpenedAt: number;
 }
@@ -990,10 +1036,11 @@ export interface DesktopApi {
   selectSpace(spaceId: string | null): Promise<AppState>;
   chooseProject(): Promise<Project | null>;
   chooseProjectSources(): Promise<string[]>;
-  createProject(name: string, sourcePaths: string[], spaceId?: string | null): Promise<AppState>;
+  createProject(name: string, sourcePaths: string[], spaceId?: string | null, icon?: ProjectIconName, color?: ProjectColorName): Promise<AppState>;
   addProject(path: string): Promise<AppState>;
   selectProject(projectId: string): Promise<AppState>;
   renameProject(projectId: string, name: string): Promise<AppState>;
+  updateProject(projectId: string, name: string, sourcePaths: string[], icon: ProjectIconName, color: ProjectColorName): Promise<AppState>;
   toggleProjectPinned(projectId: string): Promise<AppState>;
   reorderProjects(sourceProjectId: string, targetProjectId: string): Promise<AppState>;
   archiveProjectThreads(projectId: string): Promise<AppState>;

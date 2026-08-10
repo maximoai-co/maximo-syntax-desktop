@@ -3,11 +3,18 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { DEFAULT_SETTINGS, DEFAULT_THEME_PACKS, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
 import { normalizeThemePack } from "./theme.js";
-import type { AppState, AskUserAnswer, Attachment, ChatMessage, ContextUsage, FileChange, PermissionMode, ProfileUsage, Project, RunActivity, RunTimelineItem, Settings, Space, SpaceIconName, ThemeVariant, Thread, ThreadStatus } from "./types.js";
+import type { AppState, AskUserAnswer, Attachment, ChatMessage, ContextUsage, FileChange, PermissionMode, ProfileUsage, Project, ProjectColorName, ProjectIconName, RunActivity, RunTimelineItem, Settings, Space, SpaceIconName, ThemeVariant, Thread, ThreadStatus } from "./types.js";
 
 const validSpaceIcons = new Set<SpaceIconName>([
   "briefcase", "home", "code", "rocket", "lightbulb", "palette", "file", "flask", "heart", "star",
   "globe", "cloud", "hammer", "gamepad", "camera", "target", "tree", "chart", "toolbox",
+]);
+
+const validProjectColors = new Set<ProjectColorName>(["default", "red", "orange", "yellow", "green", "blue", "purple", "pink"]);
+const validProjectIcons = new Set<ProjectIconName>([
+  "folder", "circle", "briefcase", "box", "code", "file", "file-text", "terminal", "pen", "braces", "bug", "sparkles",
+  "rocket", "target", "star", "heart", "home", "globe", "cloud", "database", "cpu", "monitor", "calendar", "clock",
+  "check", "list", "bookmark", "tag", "link", "lock", "shield", "wrench", "hammer", "palette", "camera", "music", "gamepad", "coffee",
 ]);
 
 const emptyProfileUsage: ProfileUsage = {
@@ -121,6 +128,8 @@ export function createInitialState(suggestedProjectPath?: string): AppState {
         id: randomUUID(),
         name: basename(suggestedProjectPath),
         path: resolve(suggestedProjectPath),
+        icon: "folder" as const,
+        color: "default" as const,
         createdAt: now,
         lastOpenedAt: now,
       }
@@ -160,6 +169,8 @@ function normalizeState(input: unknown, fallback: AppState): AppState {
         ...project,
         ...(sourcePaths.length > 0 ? { path: sourcePaths[0], sourcePaths } : {}),
         spaceId: typeof project.spaceId === "string" && spaceIds.has(project.spaceId) ? project.spaceId : null,
+        icon: typeof project.icon === "string" && validProjectIcons.has(project.icon as ProjectIconName) ? project.icon as ProjectIconName : "folder",
+        color: typeof project.color === "string" && validProjectColors.has(project.color as ProjectColorName) ? project.color as ProjectColorName : "default",
       };
     })
     : fallback.projects;
@@ -446,10 +457,12 @@ export class StateStore {
     return this.createProject(basename(absolutePath), [absolutePath]);
   }
 
-  async createProject(name: string, sourcePaths: string[], spaceId: string | null = null): Promise<AppState> {
+  async createProject(name: string, sourcePaths: string[], spaceId: string | null = null, icon: ProjectIconName = "folder", color: ProjectColorName = "default"): Promise<AppState> {
     const paths = [...new Set(sourcePaths.map((path) => resolve(path)).filter(Boolean))].slice(0, MAX_PROJECT_SOURCE_COUNT);
     if (paths.length === 0) throw new Error("Choose at least one source folder.");
     if (spaceId !== null && !this.state.spaces.some((space) => space.id === spaceId)) throw new Error("Space not found.");
+    if (!validProjectIcons.has(icon)) throw new Error("Choose a valid project icon.");
+    if (!validProjectColors.has(color)) throw new Error("Choose a valid project color.");
     for (const path of paths) {
       const info = await stat(path);
       if (!info.isDirectory()) throw new Error("Every project source must be a folder.");
@@ -461,6 +474,9 @@ export class StateStore {
       if (existing) {
         existing.name = projectName;
         existing.sourcePaths = paths;
+        existing.path = paths[0]!;
+        existing.icon = icon;
+        existing.color = color;
         existing.lastOpenedAt = Date.now();
         draft.selectedProjectId = existing.id;
         draft.selectedThreadId = undefined;
@@ -474,6 +490,8 @@ export class StateStore {
         path: primaryPath,
         sourcePaths: paths,
         spaceId,
+        icon,
+        color,
         createdAt: now,
         lastOpenedAt: now,
       };
@@ -502,6 +520,32 @@ export class StateStore {
       const project = draft.projects.find((candidate) => candidate.id === projectId);
       if (!project) throw new Error("Project not found.");
       project.name = name.trim().slice(0, 100) || basename(project.path);
+      project.lastOpenedAt = Date.now();
+    });
+  }
+
+  async updateProject(projectId: string, name: string, sourcePaths: string[], icon: ProjectIconName, color: ProjectColorName): Promise<AppState> {
+    const existing = this.state.projects.find((project) => project.id === projectId);
+    if (!existing) throw new Error("Project not found.");
+    const paths = [...new Set(sourcePaths.map((path) => resolve(path)).filter(Boolean))].slice(0, MAX_PROJECT_SOURCE_COUNT);
+    if (paths.length === 0) throw new Error("Choose at least one source folder.");
+    if (!validProjectIcons.has(icon)) throw new Error("Choose a valid project icon.");
+    if (!validProjectColors.has(color)) throw new Error("Choose a valid project color.");
+    const duplicate = this.state.projects.find((project) => project.id !== projectId && project.path === paths[0]);
+    if (duplicate) throw new Error("Another project already uses that primary folder.");
+    for (const path of paths) {
+      const info = await stat(path);
+      if (!info.isDirectory()) throw new Error("Every project source must be a folder.");
+    }
+    const projectName = name.trim().slice(0, 100) || basename(paths[0]!);
+    return this.update((draft) => {
+      const project = draft.projects.find((candidate) => candidate.id === projectId);
+      if (!project) throw new Error("Project not found.");
+      project.name = projectName;
+      project.path = paths[0]!;
+      project.sourcePaths = paths;
+      project.icon = icon;
+      project.color = color;
       project.lastOpenedAt = Date.now();
     });
   }
