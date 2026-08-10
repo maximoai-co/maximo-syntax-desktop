@@ -4,6 +4,12 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-08-10
+
+- **Project editor**: projects now support a name, icon, and accent color, chosen in a unified Project Editor dialog used for both creating (replacing the old create form) and editing (replacing the prompt-based rename) — project icons appear in the sidebar and hover card.
+- **Persistent browser profile**: the in-app browser now keeps a shared profile backed by an atomic JSON file — encrypted password manager (via `safeStorage`), searchable history, site permissions, and never-save origins, wired into autofill, credential/permission prompts, downloads (ask-where + auto-save with unique names), find-in-page, zoom, and history address suggestions, plus keyboard shortcuts (Cmd+L/F/T/W/R). A new Settings → Browser panel manages passwords, downloads, and browsing data.
+- **Stale-session run recovery**: when dispatching chat runs, the desktop now recovers when the renderer missed a warm session's started event or still remembers a process that has already exited — retrying the complementary action instead of failing — while genuine run errors are never redelivered.
+
 ## [0.1.9] - 2026-08-09
 
 - **Profile sharing**: a Share button on the profile stats panel renders a shareable stat card (lifetime tokens, peak day, streaks, top provider, activity heatmap) to a PNG via canvas, with Copy to clipboard (native Electron clipboard for real image paste), Save to downloads, and one-click share intents for X, LinkedIn, and Reddit.
