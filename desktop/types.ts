@@ -656,6 +656,43 @@ export interface BrowserTabState {
   faviconUrl: string | null;
   lastCommittedUrl: string | null;
   lastError: string | null;
+  zoomFactor: number;
+}
+
+export interface BrowserCredentialPrompt {
+  id: string;
+  origin: string;
+  host: string;
+  username: string;
+  mode: "save" | "update";
+}
+
+export interface BrowserPermissionPrompt {
+  id: string;
+  origin: string;
+  host: string;
+  permission: string;
+  label: string;
+}
+
+export interface BrowserFindState {
+  query: string;
+  activeMatch: number;
+  matches: number;
+}
+
+export type BrowserDownloadStatus = "progressing" | "completed" | "cancelled" | "interrupted";
+
+export interface BrowserDownloadState {
+  id: string;
+  filename: string;
+  path: string | null;
+  url: string;
+  receivedBytes: number;
+  totalBytes: number;
+  status: BrowserDownloadStatus;
+  startedAt: number;
+  canResume: boolean;
 }
 
 export interface BrowserState {
@@ -665,6 +702,83 @@ export interface BrowserState {
   activeTabId: string | null;
   tabs: BrowserTabState[];
   lastError: string | null;
+  credentialPrompt: BrowserCredentialPrompt | null;
+  permissionPrompt: BrowserPermissionPrompt | null;
+  find: BrowserFindState | null;
+  downloads: BrowserDownloadState[];
+}
+
+export interface BrowserHistoryEntry {
+  url: string;
+  title: string;
+  lastVisitedAt: number;
+  visitCount: number;
+}
+
+export interface BrowserProfileSettings {
+  savePasswords: boolean;
+  askWhereToSaveDownloads: boolean;
+  downloadDirectory: string | null;
+}
+
+export interface BrowserProfileSnapshot extends BrowserProfileSettings {
+  persistent: boolean;
+  passwordStorageAvailable: boolean;
+  historyCount: number;
+  credentialCount: number;
+  permissionCount: number;
+  storagePath: string | null;
+  defaultDownloadDirectory: string;
+}
+
+export interface BrowserProfileSettingsInput {
+  savePasswords?: boolean;
+  askWhereToSaveDownloads?: boolean;
+  downloadDirectory?: string | null;
+}
+
+export interface BrowserHistorySearchInput {
+  query: string;
+  limit?: number;
+}
+
+export interface BrowserClearDataInput {
+  history?: boolean;
+  passwords?: boolean;
+  permissions?: boolean;
+  cookiesAndSiteData?: boolean;
+  cache?: boolean;
+}
+
+export interface BrowserCredentialPromptResponse extends BrowserThreadInput {
+  promptId: string;
+  action: "save" | "never" | "not-now";
+}
+
+export interface BrowserPermissionPromptResponse extends BrowserThreadInput {
+  promptId: string;
+  action: "allow-once" | "allow-always" | "block";
+}
+
+export interface BrowserFindInput extends BrowserTabInput {
+  query: string;
+  forward?: boolean;
+  findNext?: boolean;
+}
+
+export interface BrowserZoomInput extends BrowserTabInput {
+  action: "in" | "out" | "reset";
+}
+
+export interface BrowserDownloadActionInput {
+  downloadId: string;
+  action: "open" | "show" | "cancel" | "resume" | "remove";
+}
+
+export type BrowserCommand = "focus-address" | "toggle-find";
+
+export interface BrowserCommandEvent extends BrowserThreadInput {
+  command: BrowserCommand;
 }
 
 export interface BrowserPanelBounds {
@@ -735,9 +849,21 @@ export interface BrowserControlApi {
   copyScreenshotToClipboard(input: BrowserTabInput): Promise<void>;
   copyLink(input: BrowserTabInput): Promise<void>;
   openDevTools(input: BrowserTabInput): Promise<void>;
+  searchHistory(input: BrowserHistorySearchInput): Promise<BrowserHistoryEntry[]>;
+  getProfile(): Promise<BrowserProfileSnapshot>;
+  updateProfileSettings(input: BrowserProfileSettingsInput): Promise<BrowserProfileSnapshot>;
+  chooseDownloadDirectory(): Promise<string | null>;
+  clearData(input: BrowserClearDataInput): Promise<BrowserProfileSnapshot>;
+  respondToCredentialPrompt(input: BrowserCredentialPromptResponse): Promise<BrowserState>;
+  respondToPermissionPrompt(input: BrowserPermissionPromptResponse): Promise<BrowserState>;
+  findInPage(input: BrowserFindInput): Promise<BrowserState>;
+  stopFindInPage(input: BrowserTabInput): Promise<BrowserState>;
+  zoom(input: BrowserZoomInput): Promise<BrowserState>;
+  downloadAction(input: BrowserDownloadActionInput): Promise<void>;
   onState(callback: (state: BrowserState) => void): () => void;
   onOpenPanelRequest(callback: (request: BrowserOpenPanelRequest) => void): () => void;
   onCopyLink(callback: (event: BrowserCopyLinkEvent) => void): () => void;
+  onCommand(callback: (event: BrowserCommandEvent) => void): () => void;
 }
 
 export interface TerminalSession {

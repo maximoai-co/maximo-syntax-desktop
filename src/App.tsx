@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT } from "../desktop/types";
 import type {
-  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AppUpdateState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, ThreadGoalState, TimestampFormat, TodoItem, UsageSnapshot, WhatsNewSnapshot,
+  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AppUpdateState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserClearDataInput, BrowserProfileSettingsInput, BrowserProfileSnapshot, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, ThreadGoalState, TimestampFormat, TodoItem, UsageSnapshot, WhatsNewSnapshot,
 } from "../desktop/types";
 import {
   getAppUpdateButtonLabel,
@@ -16,6 +16,7 @@ import {
   shouldShowAppUpdateButton,
 } from "../desktop/app-updater";
 import { taskCompletionNotification } from "../desktop/task-notifications";
+import { dispatchRunRequest } from "../desktop/run-dispatch";
 import { createThemeShareString, buildThemeCssVariables, getAvailableThemePresets, getThemePreset, normalizeFontFamily, normalizeHexColor, parseThemeShareString, resolveThemeVariant } from "../desktop/theme";
 import logoUrl from "./assets/maximoai-logo.svg";
 import modelOpenAiUrl from "./assets/model-openai.svg";
@@ -5172,7 +5173,7 @@ function RetentionCard({ threads }: { threads: Thread[] }) {
   return <section className="settings-card"><h2>Conversation storage</h2><p>Keep the app fast when you have many chats. Archiving hides chats from the sidebar but keeps them restorable.</p><div className="settings-row"><span><strong>Inactive chats</strong><small>{inactiveCount === 0 ? "No chats older than 30 days." : `${inactiveCount} chat${inactiveCount === 1 ? "" : "s"} older than 30 days · not running`}</small></span><button type="button" className="settings-action" disabled={busy || inactiveCount === 0} onClick={() => void run()}><Archive size={12} />{busy ? "Archiving…" : "Archive inactive"}</button></div>{notice && <p className="settings-notification-status" role="status">{notice}</p>}</section>;
 }
 
-type EnhancedSettingsSectionId = "general" | "profile" | "appearance" | "behavior" | "shortcuts" | "defaults" | "models" | "skills" | "notifications" | "account" | "integrations" | "engine" | "advanced" | "archived";
+type EnhancedSettingsSectionId = "general" | "profile" | "appearance" | "behavior" | "shortcuts" | "defaults" | "models" | "skills" | "notifications" | "account" | "browser" | "integrations" | "engine" | "advanced" | "archived";
 
 function EnhancedSettingsModal({ state, engine, models, modelOptions, account, usage, appVersion, appDataPath, skills, initialSection = "general", onClose, onSave, onRepair, onAccount, onUsage, onRefreshSkills, onResetProvider, onRevealDataPath, onRestoreThread, onDeleteArchivedThread, updateState, onCheckForUpdates, onOpenUpdateDownload, onOpenWhatsNew }: {
   state: AppState;
@@ -5207,6 +5208,10 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
   const [notificationStatus, setNotificationStatus] = useState<string | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [customModelDraft, setCustomModelDraft] = useState("");
+  const [browserProfile, setBrowserProfile] = useState<BrowserProfileSnapshot | null>(null);
+  const [browserSettings, setBrowserSettings] = useState<BrowserProfileSettingsInput | null>(null);
+  const [browserBusy, setBrowserBusy] = useState(false);
+  const [browserStatus, setBrowserStatus] = useState<string | null>(null);
   const [systemDark, setSystemDark] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   const sendShortcutLabel = composerSendShortcutLabel();
   const selectedModel = models.find((item) => (item.value === "default" ? "" : item.value) === values.defaultModel);
@@ -5224,6 +5229,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     { id: "models" as const, group: "Coding", label: "Models & writing", description: "Review the live catalog and save custom model slugs.", icon: <Sparkles size={14} /> },
     { id: "skills" as const, group: "Coding", label: "Agent skills", description: "Review reusable workflows discovered on this computer.", icon: <Box size={14} /> },
     { id: "account" as const, group: "Integrations", label: "Account & usage", description: "Signed-in provider and current usage limits.", icon: <Gauge size={14} /> },
+    { id: "browser" as const, group: "Integrations", label: "Browser", description: "Manage the shared browser profile, passwords, downloads, permissions, and browsing data.", icon: <Globe2 size={14} /> },
     { id: "integrations" as const, group: "Integrations", label: "Workspace integrations", description: "See which local tools are available to your chats.", icon: <Plug size={14} /> },
     { id: "engine" as const, group: "System", label: "Syntax CLI", description: "Engine health and local CLI configuration.", icon: <TerminalSquare size={14} /> },
     { id: "advanced" as const, group: "System", label: "System tools", description: "App updates, recovery, provider reset, data location, and version details.", icon: <Wrench size={14} /> },
@@ -5253,6 +5259,10 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     { section: "models", title: "Saved model slugs", keywords: "custom model catalog provider" },
     { section: "skills", title: "Discovered skills", keywords: "SKILL.md workflows commands" },
     { section: "account", title: "Account and usage", keywords: "sign in provider billing limits" },
+    { section: "browser", title: "Persistent browser profile", keywords: "browser login signed in sessions cookies across chats remember" },
+    { section: "browser", title: "Saved website passwords", keywords: "browser password manager autofill keychain encrypted credentials" },
+    { section: "browser", title: "Browsing data", keywords: "browser history cookies cache site data clear privacy permissions" },
+    { section: "browser", title: "Downloads", keywords: "browser downloads folder ask where save files" },
     { section: "integrations", title: "Workspace integrations", keywords: "browser terminal git editor local tools" },
     { section: "engine", title: "Syntax CLI", keywords: "repair update runtime path" },
     { section: "advanced", title: "System tools", keywords: "data path reset diagnostics" },
@@ -5274,11 +5284,33 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     media.addEventListener?.("change", onChange);
     return () => media.removeEventListener?.("change", onChange);
   }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void window.maximoDesktop.browser.getProfile().then((profile) => {
+      if (cancelled) return;
+      setBrowserProfile(profile);
+      setBrowserSettings({
+        savePasswords: profile.savePasswords,
+        askWhereToSaveDownloads: profile.askWhereToSaveDownloads,
+        downloadDirectory: profile.downloadDirectory,
+      });
+    }).catch((error: unknown) => {
+      if (!cancelled) setBrowserStatus(error instanceof Error ? error.message : "Could not load the browser profile.");
+    });
+    return () => { cancelled = true; };
+  }, []);
   const resolvedThemeVariant = resolveThemeVariant(values.theme, systemDark);
   const updateThemePack = (variant: ThemeVariant, theme: ThemePack) => update("themePacks", { ...values.themePacks, [variant]: theme });
   const resetToDefaults = () => {
     if (!window.confirm("Restore all Maximo Syntax settings to their defaults?")) return;
     setValues({ ...DEFAULT_SETTINGS, customModelSlugs: [...DEFAULT_SETTINGS.customModelSlugs] });
+    if (browserProfile) {
+      setBrowserSettings({
+        savePasswords: browserProfile.passwordStorageAvailable,
+        askWhereToSaveDownloads: false,
+        downloadDirectory: null,
+      });
+    }
   };
   const addCustomModel = () => {
     const slug = customModelDraft.trim().replace(/\s+/g, " ").slice(0, 200);
@@ -5295,6 +5327,32 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
       silent: true,
     }).catch(() => false);
     setNotificationStatus(shown ? "Test notification sent to macOS Notification Center." : supported ? "Notification was not shown. Check macOS System Settings > Notifications for Maximo Syntax." : "Desktop notifications are unavailable in this build.");
+  };
+  const clearBrowserData = async (input: BrowserClearDataInput, confirmation: string | null, success: string) => {
+    if (confirmation && !window.confirm(confirmation)) return;
+    setBrowserBusy(true);
+    setBrowserStatus(null);
+    try {
+      const profile = await window.maximoDesktop.browser.clearData(input);
+      setBrowserProfile(profile);
+      setBrowserStatus(success);
+    } catch (error) {
+      setBrowserStatus(error instanceof Error ? error.message : "Could not clear the selected browser data.");
+    } finally {
+      setBrowserBusy(false);
+    }
+  };
+  const chooseBrowserDownloadDirectory = async () => {
+    setBrowserBusy(true);
+    setBrowserStatus(null);
+    try {
+      const directory = await window.maximoDesktop.browser.chooseDownloadDirectory();
+      if (directory) setBrowserSettings((current) => ({ ...current, downloadDirectory: directory }));
+    } catch (error) {
+      setBrowserStatus(error instanceof Error ? error.message : "Could not choose a download folder.");
+    } finally {
+      setBrowserBusy(false);
+    }
   };
   const booleanRow = (key: keyof AppState["settings"], title: string, description: string) => (
     <label className="settings-row">
@@ -5380,6 +5438,76 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
 
     if (activeSection === "account") return <div className="settings-panel-stack"><section className="settings-card"><h2>Signed in account</h2><div className="settings-account-row"><span className={`account-state ${account?.loggedIn ? "online" : ""}`}><UserRound size={16} /></span><span><strong>{account?.email || account?.displayName || "Not signed in"}</strong><small>{accountDetailText(account)}</small></span><button type="button" onClick={onAccount}>Manage account</button></div></section><section className="settings-card"><h2>Usage and billing</h2><div className="settings-row"><span><strong>{usage?.planName || "Current plan usage"}</strong><small>{usage ? usage.message || `${usage.limits.length} live usage limit${usage.limits.length === 1 ? "" : "s"}` : "View limits and reset times without leaving the app."}</small></span><button type="button" className="settings-action" onClick={onUsage}>{usage ? "Refresh usage" : "View usage"}</button></div>{usage?.limits.map((limit) => <div className="settings-usage-row" key={limit.id}><span>{limit.label}</span><div><i style={{ width: `${limit.utilization ?? 0}%` }} /></div><strong>{limit.utilization === null ? "-" : `${Math.round(limit.utilization)}%`}</strong></div>)}{usage?.provider === "maximoai" && (usage.walletBalance !== undefined || usage.totalSpent !== undefined || usage.totalDeposited !== undefined || usage.balance !== undefined) && <div className="settings-billing"><strong>Billing</strong><div className="settings-billing-grid"><div><span>Billing Wallet Balance:</span><strong>{formatBillingAmount(usage.walletBalance ?? usage.balance, usage.currency)}</strong></div><div><span>Total Spent:</span><strong>{formatBillingAmount(usage.totalSpent, usage.currency)}</strong></div><div><span>Total Deposited:</span><strong>{formatBillingAmount(usage.totalDeposited, usage.currency)}</strong></div></div>{isUsageLowBalance(usage) && <div className="settings-billing-actions"><button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_CREDITS_URL)}>Top up</button><button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_SUBSCRIBE_URL)}>Upgrade</button></div>}</div>}</section></div>;
 
+    if (activeSection === "browser") return <div className="settings-panel-stack">
+      <section className="settings-card">
+        <h2>Shared browser profile</h2>
+        <p>Every chat uses this same persistent profile, so website cookies, local storage, and sign-ins continue when you open another chat or restart Maximo Syntax.</p>
+        <div className="settings-row">
+          <span><strong>Cross-chat website sessions</strong><small>{browserProfile?.persistent ? "The persistent browser partition is active." : "The browser profile is still loading."}</small></span>
+          <span className="setting-value">{browserProfile?.persistent ? "Enabled" : "Checking…"}</span>
+        </div>
+        {browserProfile?.storagePath && <div className="settings-row browser-settings-path-row">
+          <span><strong>Profile location</strong><small>Chromium keeps cookies and website storage in this local app directory.</small></span>
+          <code className="browser-settings-path" title={browserProfile.storagePath}>{browserProfile.storagePath}</code>
+        </div>}
+      </section>
+
+      <section className="settings-card">
+        <h2>Passwords and autofill</h2>
+        <p>Maximo Syntax asks before saving a password. Saved passwords are encrypted by your operating system and are only offered back to the exact website origin.</p>
+        <label className="settings-row">
+          <span><strong>Offer to save website passwords</strong><small>{browserProfile?.passwordStorageAvailable ? "Show Save, Never, and Not now after a sign-in form is submitted." : "Secure operating-system password encryption is unavailable on this computer."}</small></span>
+          <input
+            type="checkbox"
+            checked={Boolean(browserSettings?.savePasswords)}
+            disabled={!browserProfile?.passwordStorageAvailable}
+            onChange={(event) => setBrowserSettings((current) => ({ ...(current ?? {}), savePasswords: event.target.checked }))}
+          />
+        </label>
+        <div className="settings-row">
+          <span><strong>Saved website passwords</strong><small>Clearing these removes encrypted browser credentials and sites marked Never save.</small></span>
+          <div className="settings-row-actions"><span className="setting-value">{browserProfile?.credentialCount ?? 0} saved</span><button type="button" className="settings-action danger" disabled={browserBusy || !browserProfile?.credentialCount} onClick={() => void clearBrowserData({ passwords: true }, "Clear every saved website password? This cannot be undone.", "Saved website passwords were cleared.")}><Trash2 size={12} />Clear</button></div>
+        </div>
+      </section>
+
+      <section className="settings-card">
+        <h2>Downloads</h2>
+        <label className="settings-row">
+          <span><strong>Ask where to save each file</strong><small>When off, downloads go to the folder selected below.</small></span>
+          <input
+            type="checkbox"
+            checked={Boolean(browserSettings?.askWhereToSaveDownloads)}
+            onChange={(event) => setBrowserSettings((current) => ({ ...(current ?? {}), askWhereToSaveDownloads: event.target.checked }))}
+          />
+        </label>
+        <div className="settings-row browser-download-folder-row">
+          <span><strong>Download folder</strong><small className="browser-settings-folder">{browserSettings?.downloadDirectory || browserProfile?.defaultDownloadDirectory || "System Downloads folder"}</small></span>
+          <div className="settings-row-actions"><button type="button" className="settings-action" disabled={browserBusy} onClick={() => void chooseBrowserDownloadDirectory()}><FolderOpen size={12} />Choose</button><button type="button" className="settings-action" disabled={browserBusy || !browserSettings?.downloadDirectory} onClick={() => setBrowserSettings((current) => ({ ...(current ?? {}), downloadDirectory: null }))}>Use default</button></div>
+        </div>
+      </section>
+
+      <section className="settings-card">
+        <h2>Browsing data and site access</h2>
+        <div className="settings-row">
+          <span><strong>Browsing history</strong><small>Used for suggestions when you type in the browser address bar.</small></span>
+          <div className="settings-row-actions"><span className="setting-value">{browserProfile?.historyCount ?? 0} pages</span><button type="button" className="settings-action danger" disabled={browserBusy || !browserProfile?.historyCount} onClick={() => void clearBrowserData({ history: true }, "Clear all browsing history? This cannot be undone.", "Browsing history was cleared.")}><Trash2 size={12} />Clear</button></div>
+        </div>
+        <div className="settings-row">
+          <span><strong>Remembered site permissions</strong><small>Camera, microphone, notifications, and other sensitive access always ask first unless you chose Always.</small></span>
+          <div className="settings-row-actions"><span className="setting-value">{browserProfile?.permissionCount ?? 0} decisions</span><button type="button" className="settings-action" disabled={browserBusy || !browserProfile?.permissionCount} onClick={() => void clearBrowserData({ permissions: true }, "Reset every remembered website permission? Sites will ask again when needed.", "Remembered site permissions were reset.")}><RotateCcw size={12} />Reset</button></div>
+        </div>
+        <div className="settings-row">
+          <span><strong>Cookies and site data</strong><small>Clearing this signs you out of websites in every chat and removes offline website storage.</small></span>
+          <button type="button" className="settings-action danger" disabled={browserBusy} onClick={() => void clearBrowserData({ cookiesAndSiteData: true }, "Clear cookies and site data? You will be signed out of websites in every chat.", "Cookies and site data were cleared.")}><Trash2 size={12} />Clear site data</button>
+        </div>
+        <div className="settings-row">
+          <span><strong>Cached files</strong><small>Clear temporary website resources if a page looks stale or broken.</small></span>
+          <button type="button" className="settings-action" disabled={browserBusy} onClick={() => void clearBrowserData({ cache: true }, null, "Browser cache was cleared.")}><RefreshCw size={12} />Clear cache</button>
+        </div>
+        {browserStatus && <p className="settings-notification-status" role="status">{browserStatus}</p>}
+      </section>
+    </div>;
+
     if (activeSection === "integrations") return <div className="settings-panel-stack"><section className="settings-card"><h2>Built-in workspace tools</h2><div className="settings-integration-row"><Globe2 size={15} /><span><strong>Browser</strong><small>Open web pages, search, and capture links inside a chat workspace.</small></span><span className="setting-value">Available</span></div><div className="settings-integration-row"><TerminalSquare size={15} /><span><strong>Terminal</strong><small>Run commands in the selected project with a managed PTY session.</small></span><span className="setting-value">Available</span></div><div className="settings-integration-row"><GitBranch size={15} /><span><strong>Git</strong><small>Review changes, stage files, commit, push, and inspect branches.</small></span><span className="setting-value">Available</span></div><div className="settings-integration-row"><Code2 size={15} /><span><strong>External editor</strong><small>Open project files through the system editor integration.</small></span><span className="setting-value">Available</span></div></section><section className="settings-card"><h2>Local-first access</h2><div className="settings-row"><span><strong>Permission model</strong><small>Tool access remains controlled by each chat's approval mode and Full Access confirmation.</small></span><span className="setting-value">Per chat</span></div><div className="settings-row"><span><strong>Credentials</strong><small>Provider credentials stay in the Maximo Syntax CLI's secure local auth storage.</small></span><span className="setting-value">On device</span></div></section></div>;
 
     if (activeSection === "engine") return <div className="settings-panel-stack"><section className="settings-card"><h2>Maximo Syntax CLI</h2><div className="engine-settings"><div><span className={`engine-dot ${engine?.phase ?? "checking"}`} /><p><strong>{engine?.available ? `Ready · ${engine.version}` : "Needs attention"}</strong><small>{engine?.message}{engine?.available && engine?.latestVersion ? (engine.version === engine.latestVersion ? " Up to date with the latest CLI." : ` Latest available: ${engine.latestVersion}.`) : ""}</small></p></div><button type="button" onClick={() => void onRepair()}><RefreshCw size={13} />Repair / update</button></div><label className="settings-engine-path"><span><strong>Custom CLI path</strong><small>Optional. The bundled CLI is used automatically when this is blank.</small></span><input value={values.cliPath} onChange={(event) => update("cliPath", event.target.value)} placeholder="/path/to/maximo-syntax-cli" /></label></section><section className="settings-card"><h2>Runtime details</h2><div className="settings-row"><span><strong>Desktop version</strong><small>Installed Maximo Syntax application.</small></span><span className="setting-value">{appVersion || "Unknown"}</span></div><div className="settings-row"><span><strong>CLI version</strong><small>Currently selected runtime engine.</small></span><span className="setting-value">{engine?.version || "Unknown"}</span></div></section></div>;
@@ -5392,8 +5520,20 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (values.defaultPermission === "full" && state.settings.defaultPermission !== "full" && !window.confirm("Make Full access the default for every new chat? Commands and edits can run without approval prompts.")) return;
-    await onSave(values);
-    onClose();
+    setBrowserBusy(true);
+    try {
+      await onSave(values);
+      if (browserSettings) {
+        const profile = await window.maximoDesktop.browser.updateProfileSettings(browserSettings);
+        setBrowserProfile(profile);
+      }
+      onClose();
+    } catch (error) {
+      setBrowserStatus(error instanceof Error ? error.message : "Could not save all settings.");
+      setSection("browser");
+    } finally {
+      setBrowserBusy(false);
+    }
   };
 
   return <form className="settings-page" onSubmit={(event) => void submit(event)}>
@@ -5405,7 +5545,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
       <nav className="settings-section-nav">{["Personal", "Integrations", "Coding", "System", "Archived"].map((group) => { const items = visibleSections.filter((item) => item.group === group); return items.length ? <div className="settings-nav-group" key={group}><span className="settings-group-label">{group}</span>{items.map((item) => <button type="button" key={item.id} className={activeSection === item.id ? "active" : ""} onClick={() => setSection(item.id)}>{item.icon}<span>{item.label}</span></button>)}</div> : null; })}</nav>
       <div className="settings-sidebar-foot"><Logo compact /><span><strong>Maximo Syntax</strong><small>Desktop {appVersion || "-"}{engine?.version ? ` · CLI ${engine.version}` : ""}</small></span></div>
     </aside>
-    <main className="settings-page-main"><div className="settings-page-content"><header><span className="eyebrow">MAXIMO SYNTAX</span><div className="settings-heading-row"><div><h1>{activeNav.label}</h1><p className="settings-page-description">{activeNav.description}</p></div><button type="button" className="settings-reset-all" onClick={resetToDefaults}><RotateCcw size={12} />Restore defaults</button></div></header>{renderPanel()}</div><footer className="settings-page-footer"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button compact" type="submit">Save changes</button></footer></main>
+    <main className="settings-page-main"><div className="settings-page-content"><header><span className="eyebrow">MAXIMO SYNTAX</span><div className="settings-heading-row"><div><h1>{activeNav.label}</h1><p className="settings-page-description">{activeNav.description}</p></div><button type="button" className="settings-reset-all" onClick={resetToDefaults}><RotateCcw size={12} />Restore defaults</button></div></header>{renderPanel()}</div><footer className="settings-page-footer"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button compact" type="submit" disabled={browserBusy}>{browserBusy ? "Working…" : "Save changes"}</button></footer></main>
   </form>;
 }
 
@@ -6333,9 +6473,18 @@ export default function App() {
           void flushQueuedFollowUpRef.current(event.threadId);
         });
       });
-      if (currentProject) void retryWithBackoff(() => window.maximoDesktop.gitStatus(currentProject.id), { retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((v) => {
+      const latestState = stateRef.current;
+      const selectedThread = latestState?.threads.find((thread) => thread.id === latestState.selectedThreadId);
+      const selectedProjectId = selectedThread?.projectId ?? latestState?.selectedProjectId;
+      const selectedProject = latestState?.projects.find((project) => project.id === selectedProjectId);
+      if (selectedProject) void retryWithBackoff(() => window.maximoDesktop.gitStatus(selectedProject.id), { retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((v) => {
         setTransientRetry(null);
-        scheduleAfterLiveInteraction(`git-status:${currentProject.id}`, () => startTransition(() => setGit(v)));
+        scheduleAfterLiveInteraction(`git-status:${selectedProject.id}`, () => {
+          const currentState = stateRef.current;
+          const currentThread = currentState?.threads.find((thread) => thread.id === currentState.selectedThreadId);
+          if ((currentThread?.projectId ?? currentState?.selectedProjectId) !== selectedProject.id) return;
+          startTransition(() => setGit(v));
+        });
       }).catch(() => setTransientRetry(null));
     }
     if (event.type === "finished") {
@@ -6429,7 +6578,7 @@ export default function App() {
       pendingVisualEvents.length = 0;
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
-  }, [refreshContextUsage, refreshState, currentProject, showToast]);
+  }, [refreshContextUsage, refreshState, showToast]);
 
   const openProject = useCallback(async () => {
     const project = await window.maximoDesktop.chooseProject();
@@ -7243,9 +7392,11 @@ export default function App() {
     }
     const sessionAlive = liveSessionsRef.current.has(thread.id);
     try {
-      const result = await retryWithBackoff(() => sessionAlive
-        ? window.maximoDesktop.sendToRun({ threadId: thread.id, prompt, attachments, model, effort, permission, contextWindow })
-        : window.maximoDesktop.startRun({ threadId: thread.id, prompt, attachments, model, effort, permission, contextWindow }), {
+      const request = { threadId: thread.id, prompt, attachments, model, effort, permission, contextWindow };
+      const result = await retryWithBackoff(() => dispatchRunRequest(request, sessionAlive, {
+        start: window.maximoDesktop.startRun,
+        send: window.maximoDesktop.sendToRun,
+      }), {
         retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
       });
       setTransientRetry(null);

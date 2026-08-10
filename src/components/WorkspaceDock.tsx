@@ -18,6 +18,7 @@ import {
   Code2,
   Copy,
   Diff,
+  Download,
   Ellipsis,
   ExternalLink,
   File,
@@ -31,6 +32,8 @@ import {
   GitBranch,
   GitCommitHorizontal,
   HardDrive,
+  KeyRound,
+  LockKeyhole,
   Maximize2,
   MessageCircle,
   Minus,
@@ -41,17 +44,21 @@ import {
   Save,
   Search,
   Send,
+  ShieldCheck,
   Square,
   TerminalSquare,
   Trash2,
   Upload,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import type {
   AppState,
+  BrowserHistoryEntry,
   BrowserState,
   GitDiff,
   GitFile,
@@ -698,6 +705,14 @@ function normalizeBrowserUrl(value: string): string {
   }
 }
 
+function formatBrowserBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
+  const amount = value / (1024 ** index);
+  return `${amount >= 10 || index === 0 ? Math.round(amount) : amount.toFixed(1)} ${units[index]}`;
+}
+
 const WorkspaceBrowserPane = memo(function WorkspaceBrowserPane({
   initialUrl,
   threadId,
@@ -717,17 +732,34 @@ const WorkspaceBrowserPane = memo(function WorkspaceBrowserPane({
   const [browser, setBrowser] = useState<BrowserState | null>(null);
   const [address, setAddress] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  const [addressFocused, setAddressFocused] = useState(false);
+  const [history, setHistory] = useState<BrowserHistoryEntry[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [downloadsOpen, setDownloadsOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [popoverFreezeFrameUrl, setPopoverFreezeFrameUrl] = useState<string | null>(null);
+  const [popoverFreezeReady, setPopoverFreezeReady] = useState(false);
   const [freezeFrameUrl, setFreezeFrameUrl] = useState<string | null>(null);
   // false while capture is in flight — keeps the native view up until we have pixels.
   const [freezeReady, setFreezeReady] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const addressRef = useRef<HTMLInputElement>(null);
+  const findRef = useRef<HTMLInputElement>(null);
   const lastRequestedUrlRef = useRef<string | undefined>(undefined);
   const active = browser?.tabs.find((tab) => tab.id === browser.activeTabId) ?? browser?.tabs[0] ?? null;
   const activeTabId = active?.id;
   const activeUrl = active?.url;
+  const historyPopupOpen = addressFocused && history.length > 0;
+  const permissionPopupOpen = Boolean(browser?.permissionPrompt);
+  const credentialPopupOpen = Boolean(browser?.credentialPrompt && !browser.permissionPrompt);
+  const blockingPromptOpen = permissionPopupOpen || credentialPopupOpen;
+  const popoverOpen = blockingPromptOpen || downloadsOpen || moreOpen || historyPopupOpen || findOpen;
   // Stay live until freeze-frame is ready (or when not suspending at all).
-  const nativeLive = Boolean(paneActive && threadId && (!suspendNative || !freezeReady));
-  const showFreezeFrame = Boolean(suspendNative && freezeReady && freezeFrameUrl);
+  const nativeLive = Boolean(paneActive && threadId && (!suspendNative || !freezeReady) && (!popoverOpen || !popoverFreezeReady));
+  const visibleFreezeFrameUrl = suspendNative && freezeReady ? freezeFrameUrl : popoverOpen && popoverFreezeReady ? popoverFreezeFrameUrl : null;
+  const showFreezeFrame = Boolean(visibleFreezeFrameUrl);
   const mergeBrowser = (next: BrowserState) => setBrowser((current) => current && current.version > next.version ? current : next);
 
   useEffect(() => {
@@ -739,8 +771,9 @@ const WorkspaceBrowserPane = memo(function WorkspaceBrowserPane({
     const unsubscribe = window.maximoDesktop.browser.onState((state) => {
       if (!cancelled && state.threadId === threadId) mergeBrowser(state);
     });
-    const requestedUrl = initialUrl && initialUrl !== lastRequestedUrlRef.current ? normalizeBrowserUrl(initialUrl) : undefined;
-    if (initialUrl) lastRequestedUrlRef.current = initialUrl;
+    const requestKey = initialUrl ? `${threadId}\n${initialUrl}` : undefined;
+    const requestedUrl = requestKey && initialUrl && requestKey !== lastRequestedUrlRef.current ? normalizeBrowserUrl(initialUrl) : undefined;
+    if (requestKey) lastRequestedUrlRef.current = requestKey;
     void window.maximoDesktop.browser.open({ threadId, ...(requestedUrl ? { initialUrl: requestedUrl } : {}) }).then((state) => {
       if (!cancelled) mergeBrowser(state);
     }).catch(() => {
@@ -752,6 +785,62 @@ const WorkspaceBrowserPane = memo(function WorkspaceBrowserPane({
       void window.maximoDesktop.browser.setPanelBounds({ threadId, bounds: null });
     };
   }, [initialUrl, threadId]);
+
+  useEffect(() => {
+    if (!threadId) return;
+    return window.maximoDesktop.browser.onCommand((event) => {
+      if (event.threadId !== threadId) return;
+      if (event.command === "focus-address") {
+        setDownloadsOpen(false);
+        setMoreOpen(false);
+        setAddressFocused(true);
+        window.setTimeout(() => {
+          addressRef.current?.focus();
+          addressRef.current?.select();
+        }, 0);
+      } else {
+        setMoreOpen(false);
+        setFindOpen((open) => {
+          if (open) {
+            if (activeTabId) void window.maximoDesktop.browser.stopFindInPage({ threadId, tabId: activeTabId });
+          } else {
+            window.setTimeout(() => findRef.current?.focus(), 0);
+          }
+          return !open;
+        });
+      }
+    });
+  }, [activeTabId, threadId]);
+
+  useEffect(() => {
+    if (!popoverOpen) return;
+    const closePopover = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      if (threadId && browser?.permissionPrompt) void window.maximoDesktop.browser.respondToPermissionPrompt({ threadId, promptId: browser.permissionPrompt.id, action: "block" });
+      else if (threadId && browser?.credentialPrompt) void window.maximoDesktop.browser.respondToCredentialPrompt({ threadId, promptId: browser.credentialPrompt.id, action: "not-now" });
+      if (findOpen && threadId && activeTabId) void window.maximoDesktop.browser.stopFindInPage({ threadId, tabId: activeTabId });
+      setFindOpen(false);
+      setDownloadsOpen(false);
+      setMoreOpen(false);
+      setAddressFocused(false);
+      addressRef.current?.blur();
+    };
+    window.addEventListener("keydown", closePopover);
+    return () => window.removeEventListener("keydown", closePopover);
+  }, [activeTabId, browser?.credentialPrompt, browser?.permissionPrompt, findOpen, popoverOpen, threadId]);
+
+  useEffect(() => {
+    if (!blockingPromptOpen) return;
+    setDownloadsOpen(false);
+    setMoreOpen(false);
+    setAddressFocused(false);
+    addressRef.current?.blur();
+    if (findOpen) {
+      setFindOpen(false);
+      if (threadId && activeTabId) void window.maximoDesktop.browser.stopFindInPage({ threadId, tabId: activeTabId });
+    }
+  }, [activeTabId, blockingPromptOpen, findOpen, threadId]);
 
   useEffect(() => {
     if (!threadId || !nativeLive) return;
@@ -766,6 +855,80 @@ const WorkspaceBrowserPane = memo(function WorkspaceBrowserPane({
   useEffect(() => {
     setAddress(activeUrl === "about:blank" ? "" : activeUrl ?? "");
   }, [activeTabId, activeUrl]);
+
+  useEffect(() => {
+    if (!addressFocused) {
+      setHistory([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const query = address === activeUrl ? "" : address;
+      void window.maximoDesktop.browser.searchHistory({ query, limit: 7 }).then((entries) => {
+        if (!cancelled) {
+          setHistory(entries);
+          setHistoryIndex(0);
+        }
+      }).catch(() => {
+        if (!cancelled) setHistory([]);
+      });
+    }, 80);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeUrl, address, addressFocused]);
+
+  useEffect(() => {
+    if (!findOpen || !threadId || !activeTabId) return;
+    if (!findQuery) {
+      void window.maximoDesktop.browser.stopFindInPage({ threadId, tabId: activeTabId }).then(mergeBrowser);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void window.maximoDesktop.browser.findInPage({
+        threadId,
+        tabId: activeTabId,
+        query: findQuery,
+        findNext: false,
+      }).then(mergeBrowser);
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [activeTabId, findOpen, findQuery, threadId]);
+
+  useEffect(() => {
+    if (!suspendNative) return;
+    setDownloadsOpen(false);
+    setMoreOpen(false);
+  }, [suspendNative]);
+
+  // Native WebContentsView surfaces always paint above renderer HTML. Capture
+  // the live page before opening a popover, then detach the native surface so
+  // the anchored menu can float over an unchanged page viewport.
+  useEffect(() => {
+    if (!popoverOpen || suspendNative) {
+      setPopoverFreezeReady(false);
+      setPopoverFreezeFrameUrl(null);
+      return;
+    }
+    if (!paneActive || !threadId || !activeTabId || !activeUrl || activeUrl === "about:blank") {
+      setPopoverFreezeFrameUrl(null);
+      setPopoverFreezeReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    setPopoverFreezeReady(false);
+    void window.maximoDesktop.browser.captureScreenshot({ threadId, tabId: activeTabId }).then((shot) => {
+      if (cancelled) return;
+      setPopoverFreezeFrameUrl(typeof shot.dataUrl === "string" && shot.dataUrl.startsWith("data:image/") ? shot.dataUrl : null);
+    }).catch(() => {
+      if (!cancelled) setPopoverFreezeFrameUrl(null);
+    }).finally(() => {
+      if (!cancelled) setPopoverFreezeReady(true);
+    });
+    return () => { cancelled = true; };
+  }, [activeTabId, activeUrl, paneActive, popoverOpen, suspendNative, threadId]);
 
   // Phase 1: when a modal asks to suspend, capture first while native is still live.
   useEffect(() => {
@@ -840,12 +1003,20 @@ const WorkspaceBrowserPane = memo(function WorkspaceBrowserPane({
     };
   }, [freezeReady, nativeLive, paneActive, suspendNative, threadId]);
 
-  const navigate = async () => {
+  const navigateTo = async (value: string) => {
     if (!threadId || !active || suspendNative) return;
-    const next = normalizeBrowserUrl(address);
+    const next = normalizeBrowserUrl(value);
     setAddress(next === "about:blank" ? "" : next);
+    setAddressFocused(false);
+    setHistory([]);
+    setMoreOpen(false);
     const state = await window.maximoDesktop.browser.navigate({ threadId, tabId: active.id, url: next });
     mergeBrowser(state);
+  };
+
+  const navigate = async () => {
+    const suggestion = addressFocused ? history[historyIndex] : undefined;
+    await navigateTo(suggestion?.url ?? address);
   };
 
   const newTab = () => {
@@ -858,16 +1029,113 @@ const WorkspaceBrowserPane = memo(function WorkspaceBrowserPane({
     void window.maximoDesktop.browser.closeTab({ threadId, tabId: id }).then(mergeBrowser);
   };
 
+  const closeFind = () => {
+    setFindOpen(false);
+    if (threadId && activeTabId) void window.maximoDesktop.browser.stopFindInPage({ threadId, tabId: activeTabId }).then(mergeBrowser);
+  };
+
+  const openFind = () => {
+    setAddressFocused(false);
+    addressRef.current?.blur();
+    setDownloadsOpen(false);
+    setMoreOpen(false);
+    setFindOpen(true);
+    window.setTimeout(() => findRef.current?.focus(), 0);
+  };
+
+  const nextFind = (forward: boolean) => {
+    if (!threadId || !activeTabId || !findQuery) return;
+    void window.maximoDesktop.browser.findInPage({ threadId, tabId: activeTabId, query: findQuery, forward, findNext: true }).then(mergeBrowser);
+  };
+
+  const respondToCredential = (action: "save" | "never" | "not-now") => {
+    const prompt = browser?.credentialPrompt;
+    if (!threadId || !prompt) return;
+    void window.maximoDesktop.browser.respondToCredentialPrompt({ threadId, promptId: prompt.id, action }).then((state) => {
+      mergeBrowser(state);
+      setNotice(action === "save" ? "Password saved securely" : action === "never" ? "Password saving blocked for this site" : null);
+      if (action !== "not-now") window.setTimeout(() => setNotice(null), 2_000);
+    });
+  };
+
+  const respondToPermission = (action: "allow-once" | "allow-always" | "block") => {
+    const prompt = browser?.permissionPrompt;
+    if (!threadId || !prompt) return;
+    void window.maximoDesktop.browser.respondToPermissionPrompt({ threadId, promptId: prompt.id, action }).then(mergeBrowser);
+  };
+
+  const zoom = (action: "in" | "out" | "reset") => {
+    if (!threadId || !activeTabId) return;
+    void window.maximoDesktop.browser.zoom({ threadId, tabId: activeTabId, action }).then(mergeBrowser);
+  };
+
+  const activeDownloads = browser?.downloads ?? [];
+  const progressingDownloads = activeDownloads.filter((download) => download.status === "progressing").length;
+
   if (!paneActive) return <div className="workspace-empty-state compact"><Globe2 size={17} /><span>Panel paused</span><small>Activate this pane to resume the browser.</small></div>;
   if (!threadId) return <div className="workspace-empty-state"><Globe2 size={20} /><span>Select a chat to use the browser.</span></div>;
 
   return (
     <div className={`workspace-browser-pane ${suspendNative ? "suspended" : ""} ${showFreezeFrame ? "has-freeze-frame" : ""}`}>
-      <header className="workspace-browser-toolbar"><button type="button" onClick={() => active && void window.maximoDesktop.browser.goBack({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={suspendNative || !active?.canGoBack} title="Back"><ChevronRight size={14} className="rotate-180" /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.goForward({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={suspendNative || !active?.canGoForward} title="Forward"><ChevronRight size={14} /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.reload({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={suspendNative || !active} title="Reload">{active?.isLoading ? <RefreshCw size={13} className="spin" /> : <RefreshCw size={13} />}</button><form onSubmit={(event) => { event.preventDefault(); void navigate(); }}><Globe2 size={13} /><input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Search or enter web address" spellCheck={false} disabled={suspendNative} /></form>{notice && <span className="workspace-browser-notice">{notice}</span>}<button type="button" onClick={() => { if (active?.url && active.url !== "about:blank") void window.maximoDesktop.openPath(active.url); }} title="Open in system browser" disabled={suspendNative}><ExternalLink size={13} /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.copyScreenshotToClipboard({ threadId, tabId: active.id }).then(() => { setNotice("Screenshot copied"); window.setTimeout(() => setNotice(null), 1_400); })} disabled={suspendNative || !active || active.url === "about:blank"} title="Copy screenshot"><Camera size={13} /></button><button type="button" onClick={() => active && void window.maximoDesktop.browser.copyLink({ threadId, tabId: active.id })} disabled={suspendNative || !active || active.url === "about:blank"} title="Copy link"><Copy size={13} /></button></header>
-      <div className="workspace-browser-tabs">{browser?.tabs.map((tab) => <div className={`workspace-browser-tab ${tab.id === active?.id ? "active" : ""}`} key={tab.id}><button type="button" onClick={() => void window.maximoDesktop.browser.selectTab({ threadId, tabId: tab.id }).then(mergeBrowser)} disabled={suspendNative}><Globe2 size={11} /><span>{tab.title}</span></button><button type="button" onClick={() => closeTab(tab.id)} title="Close tab" disabled={suspendNative}><X size={11} /></button></div>)}<button type="button" className="workspace-browser-new-tab" onClick={newTab} title="New tab" disabled={suspendNative}><Plus size={13} /></button></div>
-      <div ref={viewportRef} className={`workspace-browser-surface ${showFreezeFrame ? "freeze" : nativeLive ? "live" : "idle"}`}>
+      <header className="workspace-browser-chrome">
+        <div className="workspace-browser-toolbar">
+          <button type="button" onClick={() => active && void window.maximoDesktop.browser.goBack({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={suspendNative || !active?.canGoBack} title="Back"><ChevronRight size={14} className="rotate-180" /></button>
+          <button type="button" onClick={() => active && void window.maximoDesktop.browser.goForward({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={suspendNative || !active?.canGoForward} title="Forward"><ChevronRight size={14} /></button>
+          <button type="button" onClick={() => active && void window.maximoDesktop.browser.reload({ threadId, tabId: active.id }).then(mergeBrowser)} disabled={suspendNative || !active} title="Reload">{active?.isLoading ? <RefreshCw size={13} className="spin" /> : <RefreshCw size={13} />}</button>
+          <form onSubmit={(event) => { event.preventDefault(); void navigate(); }}>
+            {activeUrl?.startsWith("https://") ? <LockKeyhole size={12} aria-label="Secure connection" /> : <Globe2 size={13} />}
+            <input
+              ref={addressRef}
+              value={address}
+              onFocus={(event) => { setDownloadsOpen(false); setMoreOpen(false); setAddressFocused(true); event.currentTarget.select(); }}
+              onBlur={() => window.setTimeout(() => setAddressFocused(false), 120)}
+              onChange={(event) => { setAddress(event.target.value); setHistoryIndex(0); }}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown" && history.length > 0) { event.preventDefault(); setHistoryIndex((index) => (index + 1) % history.length); }
+                if (event.key === "ArrowUp" && history.length > 0) { event.preventDefault(); setHistoryIndex((index) => (index - 1 + history.length) % history.length); }
+                if (event.key === "Escape") { event.preventDefault(); setAddressFocused(false); event.currentTarget.blur(); }
+              }}
+              placeholder="Search or enter web address"
+              spellCheck={false}
+              disabled={suspendNative}
+              aria-label="Address and search"
+              aria-expanded={addressFocused && history.length > 0}
+            />
+          </form>
+          {notice && <span className="workspace-browser-notice">{notice}</span>}
+          <button type="button" className={downloadsOpen ? "active" : ""} onClick={() => { setAddressFocused(false); addressRef.current?.blur(); setMoreOpen(false); setDownloadsOpen((open) => !open); }} title="Downloads" disabled={suspendNative}><Download size={13} />{progressingDownloads > 0 && <i>{progressingDownloads}</i>}</button>
+          <button type="button" className={moreOpen ? "active" : ""} onClick={() => { setAddressFocused(false); addressRef.current?.blur(); setDownloadsOpen(false); setMoreOpen((open) => !open); }} title="Browser menu" disabled={suspendNative}><MoreHorizontal size={14} /></button>
+        </div>
+        {historyPopupOpen && !blockingPromptOpen && popoverFreezeReady && <div className="workspace-browser-history" role="listbox" aria-label="Browsing history">{history.map((entry, index) => <button type="button" role="option" aria-selected={index === historyIndex} className={index === historyIndex ? "active" : ""} key={entry.url} onMouseDown={(event) => event.preventDefault()} onClick={() => void navigateTo(entry.url)}><span className="workspace-browser-history-icon"><Globe2 size={12} /></span><span><strong>{entry.title || new URL(entry.url).hostname}</strong><small>{entry.url}</small></span><time>{entry.visitCount > 1 ? `${entry.visitCount} visits` : "Recent"}</time></button>)}</div>}
+        {moreOpen && !blockingPromptOpen && popoverFreezeReady && <div className="workspace-browser-menu" role="dialog" aria-label="Browser options">
+          <button type="button" onClick={openFind}><Search size={13} /><span><strong>Find in page</strong><small>⌘F</small></span></button>
+          <div className="workspace-browser-menu-zoom"><span><ZoomIn size={13} /><strong>Zoom</strong></span><button type="button" onClick={() => zoom("out")} disabled={!active || active.zoomFactor <= 0.5} title="Zoom out"><ZoomOut size={13} /></button><button type="button" onClick={() => zoom("reset")} disabled={!active} title="Reset zoom">{Math.round((active?.zoomFactor ?? 1) * 100)}%</button><button type="button" onClick={() => zoom("in")} disabled={!active || active.zoomFactor >= 2} title="Zoom in"><ZoomIn size={13} /></button></div>
+          <button type="button" disabled={!active || active.url === "about:blank"} onClick={() => { setMoreOpen(false); if (active?.url && active.url !== "about:blank") void window.maximoDesktop.openPath(active.url); }}><ExternalLink size={13} /><span><strong>Open in system browser</strong></span></button>
+          <button type="button" disabled={!active || active.url === "about:blank"} onClick={() => { setMoreOpen(false); if (active) void window.maximoDesktop.browser.copyScreenshotToClipboard({ threadId, tabId: active.id }).then(() => { setNotice("Screenshot copied"); window.setTimeout(() => setNotice(null), 1_400); }); }}><Camera size={13} /><span><strong>Copy page screenshot</strong></span></button>
+          <button type="button" disabled={!active || active.url === "about:blank"} onClick={() => { setMoreOpen(false); if (active) void window.maximoDesktop.browser.copyLink({ threadId, tabId: active.id }); }}><Copy size={13} /><span><strong>Copy page link</strong></span></button>
+        </div>}
+        {findOpen && !blockingPromptOpen && popoverFreezeReady && <div className="workspace-browser-findbar" role="dialog" aria-label="Find in page"><Search size={12} /><input ref={findRef} value={findQuery} onChange={(event) => setFindQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); nextFind(!event.shiftKey); } else if (event.key === "Escape") closeFind(); }} placeholder="Find in page" aria-label="Find in page" /><span>{findQuery ? `${browser?.find?.activeMatch ?? 0}/${browser?.find?.matches ?? 0}` : ""}</span><button type="button" onClick={() => nextFind(false)} title="Previous match"><ChevronDown size={12} className="rotate-180" /></button><button type="button" onClick={() => nextFind(true)} title="Next match"><ChevronDown size={12} /></button><button type="button" onClick={closeFind} title="Close find"><X size={12} /></button></div>}
+        {credentialPopupOpen && popoverFreezeReady && browser?.credentialPrompt && <div className="workspace-browser-infobar credential" role="dialog" aria-modal="true" aria-label="Save password">
+          <div className="workspace-browser-infobar-copy">
+            <span className="workspace-browser-infobar-icon"><KeyRound size={14} /></span>
+            <span><strong>{browser.credentialPrompt.mode === "update" ? "Update saved password" : "Save password"} for {browser.credentialPrompt.host}?</strong><small>{browser.credentialPrompt.username} · Encrypted with your operating system key store</small></span>
+          </div>
+          <div className="workspace-browser-infobar-actions"><button type="button" onClick={() => respondToCredential("never")}>Never</button><button type="button" onClick={() => respondToCredential("not-now")}>Not now</button><button type="button" className="primary" onClick={() => respondToCredential("save")}>{browser.credentialPrompt.mode === "update" ? "Update" : "Save"}</button></div>
+        </div>}
+        {permissionPopupOpen && popoverFreezeReady && browser?.permissionPrompt && <div className="workspace-browser-infobar permission" role="dialog" aria-modal="true" aria-label="Site permission">
+          <div className="workspace-browser-infobar-copy">
+            <span className="workspace-browser-infobar-icon"><ShieldCheck size={14} /></span>
+            <span><strong>Allow {browser.permissionPrompt.host} to {browser.permissionPrompt.label}?</strong><small>You can reset this permission in Settings → Browser.</small></span>
+          </div>
+          <div className="workspace-browser-infobar-actions"><button type="button" onClick={() => respondToPermission("block")}>Block</button><button type="button" onClick={() => respondToPermission("allow-always")}>Always</button><button type="button" className="primary" onClick={() => respondToPermission("allow-once")}>Allow once</button></div>
+        </div>}
+        {downloadsOpen && !blockingPromptOpen && popoverFreezeReady && <div className="workspace-browser-downloads" role="dialog" aria-label="Downloads"><div className="workspace-browser-downloads-title"><span><Download size={13} /><strong>Downloads</strong></span>{activeDownloads.length === 0 && <small>No downloads yet</small>}</div>{activeDownloads.slice(0, 6).map((download) => { const percent = download.totalBytes > 0 ? Math.min(100, Math.round(download.receivedBytes / download.totalBytes * 100)) : 0; return <div className="workspace-browser-download" key={download.id}><span className={`workspace-browser-download-icon ${download.status}`}><Download size={12} /></span><span><strong title={download.filename}>{download.filename}</strong><small>{download.status === "progressing" ? `${formatBrowserBytes(download.receivedBytes)}${download.totalBytes > 0 ? ` of ${formatBrowserBytes(download.totalBytes)}` : ""}` : download.status}</small>{download.status === "progressing" && <i><b style={{ width: `${percent}%` }} /></i>}</span><div>{download.status === "completed" && <button type="button" onClick={() => void window.maximoDesktop.browser.downloadAction({ downloadId: download.id, action: "open" })}>Open</button>}{download.path && <button type="button" onClick={() => void window.maximoDesktop.browser.downloadAction({ downloadId: download.id, action: "show" })}>Show</button>}{download.status === "progressing" && <button type="button" onClick={() => void window.maximoDesktop.browser.downloadAction({ downloadId: download.id, action: "cancel" })}>Cancel</button>}{download.status === "interrupted" && download.canResume && <button type="button" onClick={() => void window.maximoDesktop.browser.downloadAction({ downloadId: download.id, action: "resume" })}>Resume</button>}<button type="button" onClick={() => void window.maximoDesktop.browser.downloadAction({ downloadId: download.id, action: "remove" })} title="Remove from list"><X size={11} /></button></div></div>; })}</div>}
+      </header>
+      {popoverOpen && popoverFreezeReady && <button type="button" className="workspace-browser-popover-scrim" onClick={() => { if (browser?.permissionPrompt) respondToPermission("block"); else if (browser?.credentialPrompt) respondToCredential("not-now"); else if (findOpen) closeFind(); setDownloadsOpen(false); setMoreOpen(false); setAddressFocused(false); addressRef.current?.blur(); }} aria-label="Close browser popup" />}
+      <div className="workspace-browser-tabs">{browser?.tabs.map((tab) => <div className={`workspace-browser-tab ${tab.id === active?.id ? "active" : ""}`} key={tab.id}><button type="button" onClick={() => void window.maximoDesktop.browser.selectTab({ threadId, tabId: tab.id }).then(mergeBrowser)} disabled={suspendNative}>{tab.faviconUrl ? <img src={tab.faviconUrl} alt="" /> : <Globe2 size={11} />}<span>{tab.title}</span></button><button type="button" onClick={() => closeTab(tab.id)} title="Close tab" disabled={suspendNative}><X size={11} /></button></div>)}<button type="button" className="workspace-browser-new-tab" onClick={newTab} title="New tab" disabled={suspendNative}><Plus size={13} /></button></div>
+      <div ref={viewportRef} className={`workspace-browser-surface ${showFreezeFrame ? "freeze" : nativeLive ? "live" : "idle"} ${popoverOpen && popoverFreezeReady ? "popover-frozen" : ""}`}>
         {showFreezeFrame
-          ? <img className="workspace-browser-freeze-frame" src={freezeFrameUrl!} alt="" draggable={false} />
+          ? <img className="workspace-browser-freeze-frame" src={visibleFreezeFrameUrl!} alt="" draggable={false} />
           : <div className="workspace-browser-native-placeholder" aria-hidden="true" />}
       </div>
     </div>

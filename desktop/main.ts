@@ -5,7 +5,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, release as osRelease } from "node:os";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, safeStorage, shell } from "electron";
 import {
   cancelBrowserLogin,
   clearExtraProviderCredentials,
@@ -21,6 +21,7 @@ import { CliRunner, restoreFilesFromChanges } from "./cli-runner.js";
 import { RuntimeManager } from "./runtime-manager.js";
 import { BrowserHostServer } from "./browser-host.js";
 import { BrowserManager } from "./browser-manager.js";
+import { BrowserProfileStore } from "./browser-profile-store.js";
 import { discoverSkills } from "./skill-discovery.js";
 import { createInitialState, StateStore } from "./state-store.js";
 import { fetchAccountUsage } from "./usage-service.js";
@@ -33,8 +34,8 @@ import {
 } from "./whats-new.js";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
 import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
-import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserNewTabInput, BrowserOpenInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
-import { launchConfigurationChanged, resolveAsFollowUp, type RunLaunchConfiguration } from "./run-dispatch.js";
+import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
+import { launchConfigurationChanged, resolveAsFollowUp, RUN_ALREADY_RUNNING_ERROR, RUN_NOT_RUNNING_ERROR, type RunLaunchConfiguration } from "./run-dispatch.js";
 import { taskCompletionNotification } from "./task-notifications.js";
 
 let mainWindow: BrowserWindow | null = null;
@@ -701,6 +702,73 @@ function registerIpc(): void {
   ipcMain.handle("browser:devtools", (_event, input: BrowserTabInput) => {
     browserManager.openDevTools({ threadId: safeText(input?.threadId, 100), tabId: safeText(input?.tabId, 200) });
   });
+  ipcMain.handle("browser:history-search", (_event, input: BrowserHistorySearchInput) =>
+    browserManager.searchHistory({
+      query: safeText(input?.query, 2_000),
+      limit: typeof input?.limit === "number" ? Math.max(1, Math.min(50, Math.round(input.limit))) : 8,
+    }),
+  );
+  ipcMain.handle("browser:profile", () => browserManager.getProfile());
+  ipcMain.handle("browser:profile-update", (_event, input: BrowserProfileSettingsInput) =>
+    browserManager.updateProfileSettings({
+      ...(typeof input?.savePasswords === "boolean" ? { savePasswords: input.savePasswords } : {}),
+      ...(typeof input?.askWhereToSaveDownloads === "boolean" ? { askWhereToSaveDownloads: input.askWhereToSaveDownloads } : {}),
+      ...(input?.downloadDirectory === null
+        ? { downloadDirectory: null }
+        : typeof input?.downloadDirectory === "string"
+          ? { downloadDirectory: safeText(input.downloadDirectory, 4_096) }
+          : {}),
+    }),
+  );
+  ipcMain.handle("browser:choose-download-directory", () => browserManager.chooseDownloadDirectory());
+  ipcMain.handle("browser:clear-data", (_event, input: BrowserClearDataInput) =>
+    browserManager.clearData({
+      history: input?.history === true,
+      passwords: input?.passwords === true,
+      permissions: input?.permissions === true,
+      cookiesAndSiteData: input?.cookiesAndSiteData === true,
+      cache: input?.cache === true,
+    }),
+  );
+  ipcMain.handle("browser:credential-response", (_event, input: BrowserCredentialPromptResponse) =>
+    browserManager.respondToCredentialPrompt({
+      threadId: safeText(input?.threadId, 100),
+      promptId: safeText(input?.promptId, 200),
+      action: input?.action === "save" || input?.action === "never" ? input.action : "not-now",
+    }),
+  );
+  ipcMain.handle("browser:permission-response", (_event, input: BrowserPermissionPromptResponse) =>
+    browserManager.respondToPermissionPrompt({
+      threadId: safeText(input?.threadId, 100),
+      promptId: safeText(input?.promptId, 200),
+      action: input?.action === "allow-once" || input?.action === "allow-always" ? input.action : "block",
+    }),
+  );
+  ipcMain.handle("browser:find", (_event, input: BrowserFindInput) =>
+    browserManager.findInPage({
+      threadId: safeText(input?.threadId, 100),
+      tabId: safeText(input?.tabId, 200),
+      query: safeText(input?.query, 1_000),
+      forward: input?.forward !== false,
+      findNext: input?.findNext === true,
+    }),
+  );
+  ipcMain.handle("browser:find-stop", (_event, input: BrowserTabInput) =>
+    browserManager.stopFindInPage({ threadId: safeText(input?.threadId, 100), tabId: safeText(input?.tabId, 200) }),
+  );
+  ipcMain.handle("browser:zoom", (_event, input: BrowserZoomInput) =>
+    browserManager.zoom({
+      threadId: safeText(input?.threadId, 100),
+      tabId: safeText(input?.tabId, 200),
+      action: input?.action === "in" || input?.action === "out" ? input.action : "reset",
+    }),
+  );
+  ipcMain.handle("browser:download-action", (_event, input: BrowserDownloadActionInput) =>
+    browserManager.downloadAction({
+      downloadId: safeText(input?.downloadId, 200),
+      action: input?.action === "open" || input?.action === "show" || input?.action === "cancel" || input?.action === "resume" ? input.action : "remove",
+    }),
+  );
   ipcMain.handle("skills:list", async (_event, requestedProjectPath?: string) => {
     const projectPath = typeof requestedProjectPath === "string" && requestedProjectPath
       ? requestedProjectPath
@@ -976,7 +1044,7 @@ function registerIpc(): void {
     const threadId = safeText(request.threadId, 100);
     const thread = store.getThread(threadId);
     if (!thread) return { accepted: false, error: "Chat not found." };
-    if (runner.isRunning(threadId)) return { accepted: false, error: "This chat is already running." };
+    if (runner.isRunning(threadId)) return { accepted: false, error: RUN_ALREADY_RUNNING_ERROR };
     const project = store.getProject(thread.projectId);
     if (!project || !existsSync(project.path)) return { accepted: false, error: "The project folder is unavailable." };
     const prompt = safeText(request.prompt, 100_000).trim();
@@ -1027,7 +1095,7 @@ function registerIpc(): void {
     const threadId = safeText(request.threadId, 100);
     const thread = store.getThread(threadId);
     if (!thread) return { accepted: false, error: "Chat not found." };
-    if (!runner.isRunning(threadId)) return { accepted: false, error: "This chat is not running." };
+    if (!runner.isRunning(threadId)) return { accepted: false, error: RUN_NOT_RUNNING_ERROR };
     const project = store.getProject(thread.projectId);
     if (!project || !existsSync(project.path)) return { accepted: false, error: "The project folder is unavailable." };
     const prompt = safeText(request.prompt, 100_000).trim();
@@ -1590,11 +1658,20 @@ app.whenReady().then(async () => {
     onStatus: (status) => send("engine:status-changed", status),
   });
   terminalManager = new TerminalManager((event) => send("terminal:event", event));
+  const browserProfile = new BrowserProfileStore(app.getPath("userData"), {
+    available: () => safeStorage.isAsyncEncryptionAvailable(),
+    encrypt: (plainText) => safeStorage.encryptStringAsync(plainText),
+    decrypt: (encrypted) => safeStorage.decryptStringAsync(encrypted),
+  });
+  await browserProfile.initialize();
   browserManager = new BrowserManager({
+    profile: browserProfile,
+    defaultDownloadDirectory: app.getPath("downloads"),
     onRequestOpenPanel: (threadId) => send("browser:open-panel-request", { threadId }),
   });
   browserManager.subscribe((state) => send("browser:state", state));
   browserManager.subscribeCopyLink((event) => send("browser:copy-link", event));
+  browserManager.subscribeCommand((event) => send("browser:command", event));
   browserHost = new BrowserHostServer(
     browserManager,
     resolveBrowserBridgePath(),

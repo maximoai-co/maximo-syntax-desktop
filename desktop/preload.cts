@@ -123,6 +123,17 @@ const api: DesktopApi = {
     copyScreenshotToClipboard: (input) => ipcRenderer.invoke("browser:copy-screenshot", input),
     copyLink: (input) => ipcRenderer.invoke("browser:copy-link", input),
     openDevTools: (input) => ipcRenderer.invoke("browser:devtools", input),
+    searchHistory: (input) => ipcRenderer.invoke("browser:history-search", input),
+    getProfile: () => ipcRenderer.invoke("browser:profile"),
+    updateProfileSettings: (input) => ipcRenderer.invoke("browser:profile-update", input),
+    chooseDownloadDirectory: () => ipcRenderer.invoke("browser:choose-download-directory"),
+    clearData: (input) => ipcRenderer.invoke("browser:clear-data", input),
+    respondToCredentialPrompt: (input) => ipcRenderer.invoke("browser:credential-response", input),
+    respondToPermissionPrompt: (input) => ipcRenderer.invoke("browser:permission-response", input),
+    findInPage: (input) => ipcRenderer.invoke("browser:find", input),
+    stopFindInPage: (input) => ipcRenderer.invoke("browser:find-stop", input),
+    zoom: (input) => ipcRenderer.invoke("browser:zoom", input),
+    downloadAction: (input) => ipcRenderer.invoke("browser:download-action", input),
     onState: (callback) => {
       const listener = (_event: Electron.IpcRendererEvent, value: BrowserState) => callback(value);
       ipcRenderer.on("browser:state", listener);
@@ -141,6 +152,15 @@ const api: DesktopApi = {
       };
       ipcRenderer.on("browser:copy-link", listener);
       return () => ipcRenderer.removeListener("browser:copy-link", listener);
+    },
+    onCommand: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, value: { threadId?: unknown; command?: unknown }) => {
+        if (typeof value?.threadId !== "string") return;
+        if (value.command !== "focus-address" && value.command !== "toggle-find") return;
+        callback({ threadId: value.threadId, command: value.command });
+      };
+      ipcRenderer.on("browser:command", listener);
+      return () => ipcRenderer.removeListener("browser:command", listener);
     },
   },
   onRunEvent: (callback) => {

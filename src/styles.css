@@ -2663,6 +2663,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .settings-action:disabled { cursor: default; opacity: .45; }
 .settings-action.danger { color: var(--danger); }
 .settings-notification-status { margin: 0; padding: 8px 13px 11px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.browser-settings-path-row { align-items: flex-start; }
+.browser-settings-path { max-width: 54%; padding: 5px 7px; overflow-wrap: anywhere; border-radius: 6px; background: var(--bg-soft); color: var(--muted); font-family: var(--theme-code-font-family, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 8px; line-height: 1.45; }
+.browser-settings-folder { max-width: 500px; overflow-wrap: anywhere; }
 .settings-custom-model-list, .settings-skill-list, .settings-archive-list { border-top: 1px solid var(--border); }
 .settings-custom-model-row, .settings-skill-row, .settings-archive-row { min-height: 42px; padding: 8px 13px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid var(--border); }
 .settings-custom-model-row:last-child, .settings-skill-row:last-child, .settings-archive-row:last-child { border-bottom: 0; }
@@ -3604,6 +3607,7 @@ html[data-theme-variant="dark"] .workspace-diff-code .diff-line .diff-number { c
 
 /* Terminal and browser panes. */
 .workspace-terminal-pane, .workspace-browser-pane, .workspace-sidechat-pane { min-width: 0; min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.workspace-browser-pane { position: relative; container-type: inline-size; container-name: workspace-browser; }
 .workspace-terminal-tabs, .workspace-browser-tabs { min-height: 31px; padding: 3px 7px; display: flex; align-items: center; gap: 3px; overflow-x: auto; border-bottom: 1px solid var(--border); scrollbar-width: thin; }
 .workspace-terminal-tabs button { min-height: 24px; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; background: transparent; color: var(--faint); font-size: 8px; }
 .workspace-terminal-tab { min-width: 0; display: flex; align-items: center; border-radius: 6px; }
@@ -3633,15 +3637,61 @@ html[data-theme-variant="dark"] .workspace-diff-code .diff-line .diff-number { c
   .topbar-left strong { max-width: 34vw; }
 }
 .workspace-browser-toolbar { min-height: 42px; padding: 0 7px; display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--border); }
-.workspace-browser-toolbar > button { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 6px; background: transparent; color: var(--muted); }
-.workspace-browser-toolbar > button:hover { background: var(--surface-hover); color: var(--text); }
-.workspace-browser-toolbar form { min-width: 0; flex: 1; height: 27px; padding: 0 7px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-soft); color: var(--faint); }
+.workspace-browser-chrome { position: relative; z-index: 4; flex: 0 0 auto; min-width: 0; }
+.workspace-browser-toolbar > button { position: relative; width: 26px; height: 26px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 6px; background: transparent; color: var(--muted); }
+.workspace-browser-toolbar > button:hover:not(:disabled), .workspace-browser-toolbar > button.active { background: var(--surface-hover); color: var(--text); }
+.workspace-browser-toolbar > button > i { position: absolute; top: -2px; right: -2px; min-width: 13px; height: 13px; padding: 0 3px; display: grid; place-items: center; border: 1px solid var(--surface-solid); border-radius: 999px; background: var(--accent); color: var(--on-accent, #04251f); font-size: 7px; font-style: normal; font-weight: 800; }
+.workspace-browser-toolbar > button.workspace-browser-zoom-label { width: 34px; font-size: 7px; font-weight: 700; }
+.workspace-browser-toolbar form { min-width: 110px; flex: 1 1 180px; height: 27px; padding: 0 7px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-soft); color: var(--faint); }
 .workspace-browser-toolbar form:focus-within { border-color: var(--accent); color: var(--accent-strong); }
 .workspace-browser-toolbar input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 9px; }
 .workspace-browser-notice { max-width: 96px; overflow: hidden; color: var(--accent-strong); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-browser-history { position: absolute; z-index: 6; top: 36px; right: 6px; left: 6px; max-height: 240px; padding: 4px 6px 6px; display: grid; gap: 2px; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-solid); box-shadow: var(--shadow); scrollbar-width: thin; }
+.workspace-browser-history > button { min-width: 0; min-height: 34px; padding: 4px 7px; display: flex; align-items: center; gap: 8px; border-radius: 7px; background: transparent; color: var(--muted); text-align: left; }
+.workspace-browser-history > button:hover, .workspace-browser-history > button.active { background: var(--surface-hover); color: var(--text); }
+.workspace-browser-history-icon { width: 20px; height: 20px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 6px; background: var(--bg-soft); color: var(--faint); }
+.workspace-browser-history > button > span:nth-child(2) { min-width: 0; flex: 1; display: grid; gap: 1px; }
+.workspace-browser-history strong, .workspace-browser-history small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-browser-history strong { color: inherit; font-size: 9px; font-weight: 650; }
+.workspace-browser-history small, .workspace-browser-history time { color: var(--faint); font-size: 7px; }
+.workspace-browser-history time { flex: 0 0 auto; }
+.workspace-browser-menu { position: absolute; z-index: 6; top: 36px; right: 6px; width: min(268px, calc(100% - 12px)); padding: 5px 6px 7px; display: grid; gap: 2px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-solid); box-shadow: var(--shadow); }
+.workspace-browser-menu > button, .workspace-browser-menu-zoom { min-height: 31px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border-radius: 7px; background: transparent; color: var(--muted); text-align: left; }
+.workspace-browser-menu > button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.workspace-browser-menu > button:disabled { opacity: .42; }
+.workspace-browser-menu > button > span { min-width: 0; flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.workspace-browser-menu strong { color: inherit; font-size: 8px; font-weight: 650; }.workspace-browser-menu small { color: var(--faint); font-size: 7px; }
+.workspace-browser-menu-zoom { border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--border) 75%, transparent); }
+.workspace-browser-menu-zoom > span { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; }
+.workspace-browser-menu-zoom > button { min-width: 27px; height: 23px; padding: 0 5px; display: grid; place-items: center; border-radius: 5px; background: var(--bg-soft); color: var(--muted); font-size: 7px; }
+.workspace-browser-menu-zoom > button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }.workspace-browser-menu-zoom > button:disabled { opacity: .42; }
+.workspace-browser-findbar { position: absolute; z-index: 6; top: 36px; right: 6px; width: min(274px, calc(100% - 12px)); min-height: 34px; padding: 4px 7px; display: flex; align-items: center; gap: 5px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg-soft); box-shadow: var(--shadow); color: var(--faint); }
+.workspace-browser-findbar input { min-width: 0; flex: 1; height: 24px; padding: 0 7px; border: 1px solid var(--border); border-radius: 6px; outline: 0; background: var(--surface-solid); color: var(--text); font-size: 9px; }
+.workspace-browser-findbar input:focus { border-color: var(--accent); }
+.workspace-browser-findbar > span { min-width: 30px; color: var(--faint); font-size: 8px; text-align: center; }
+.workspace-browser-findbar button { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 5px; background: transparent; color: var(--muted); }
+.workspace-browser-findbar button:hover { background: var(--surface-hover); color: var(--text); }
+.workspace-browser-infobar { position: absolute; z-index: 6; top: 36px; right: 6px; width: min(330px, calc(100% - 12px)); padding: 10px; display: grid; gap: 9px; isolation: isolate; border: 1px solid var(--border-strong); border-radius: 11px; background: var(--surface-solid); box-shadow: var(--shadow), 0 0 0 1px color-mix(in srgb, var(--text-strong) 5%, transparent); color: var(--muted); opacity: 1; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.workspace-browser-infobar-copy { min-width: 0; display: grid; grid-template-columns: 27px minmax(0, 1fr); align-items: start; gap: 8px; }
+.workspace-browser-infobar-icon { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--accent) 13%, var(--surface-solid)); color: var(--accent-strong); }
+.workspace-browser-infobar-copy > span:last-child { min-width: 0; display: grid; gap: 3px; padding-top: 1px; }
+.workspace-browser-infobar strong, .workspace-browser-infobar small { overflow-wrap: anywhere; white-space: normal; }
+.workspace-browser-infobar strong { color: var(--text-strong); font-size: 9px; line-height: 1.35; }.workspace-browser-infobar small { color: var(--muted); font-size: 7px; line-height: 1.45; }
+.workspace-browser-infobar-actions { min-width: 0; padding-top: 8px; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 5px; border-top: 1px solid var(--border); }
+.workspace-browser-infobar button { min-height: 25px; padding: 0 8px; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-soft); color: var(--muted); font-size: 8px; }
+.workspace-browser-infobar button:hover { border-color: var(--border-strong); background: var(--surface-hover); color: var(--text); }.workspace-browser-infobar button.primary { border-color: color-mix(in srgb, var(--accent) 78%, var(--border)); background: var(--accent); color: var(--on-accent, #04251f); font-weight: 700; }
+.workspace-browser-downloads { position: absolute; z-index: 6; top: 36px; right: 6px; width: min(300px, calc(100% - 12px)); max-height: 260px; padding: 5px 7px 7px; display: grid; gap: 3px; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-solid); box-shadow: var(--shadow); scrollbar-width: thin; }
+.workspace-browser-downloads-title { min-height: 25px; display: flex; align-items: center; justify-content: space-between; color: var(--faint); }
+.workspace-browser-downloads-title > span { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 9px; }.workspace-browser-downloads-title small { font-size: 8px; }
+.workspace-browser-download { min-width: 0; min-height: 40px; padding: 5px 6px; display: flex; align-items: center; gap: 7px; border-radius: 7px; background: var(--bg-soft); }
+.workspace-browser-download-icon { width: 23px; height: 23px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 6px; background: var(--surface-hover); color: var(--muted); }.workspace-browser-download-icon.completed { color: var(--accent-strong); }.workspace-browser-download-icon.interrupted { color: var(--danger); }
+.workspace-browser-download > span:nth-child(2) { min-width: 0; flex: 1; display: grid; gap: 2px; }.workspace-browser-download strong, .workspace-browser-download small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.workspace-browser-download strong { color: var(--text); font-size: 8px; }.workspace-browser-download small { color: var(--faint); font-size: 7px; text-transform: capitalize; }
+.workspace-browser-download > span:nth-child(2) > i { height: 2px; overflow: hidden; border-radius: 999px; background: var(--border); }.workspace-browser-download > span:nth-child(2) > i b { height: 100%; display: block; border-radius: inherit; background: var(--accent); transition: width .15s ease; }
+.workspace-browser-download > div { display: flex; align-items: center; gap: 2px; }.workspace-browser-download > div button { min-height: 22px; padding: 0 5px; display: grid; place-items: center; border-radius: 5px; background: transparent; color: var(--muted); font-size: 7px; }.workspace-browser-download > div button:hover { background: var(--surface-hover); color: var(--text); }
 .workspace-browser-tab { min-width: 90px; max-width: 160px; height: 25px; padding-left: 6px; display: flex; align-items: center; gap: 2px; border-radius: 6px; color: var(--faint); }
 .workspace-browser-tab:hover, .workspace-browser-tab.active { background: var(--surface-hover); color: var(--text); }
 .workspace-browser-tab > button:first-child { min-width: 0; flex: 1; height: 23px; padding: 0 3px; display: flex; align-items: center; gap: 5px; overflow: hidden; border-radius: 5px; background: transparent; color: inherit; text-align: left; }
+.workspace-browser-tab > button:first-child img { width: 11px; height: 11px; flex: 0 0 auto; border-radius: 2px; object-fit: contain; }
 .workspace-browser-tab > button:first-child span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
 .workspace-browser-tab > button:last-child { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 5px; background: transparent; color: var(--faint); }
 .workspace-browser-tab > button:last-child:hover { background: var(--surface-active); color: var(--text); }
@@ -3650,6 +3700,8 @@ html[data-theme-variant="dark"] .workspace-diff-code .diff-line .diff-number { c
 .workspace-browser-surface { min-height: 0; flex: 1; position: relative; overflow: hidden; background: var(--surface-solid); }
 .workspace-browser-surface.live { background: #fff; }
 .workspace-browser-surface.freeze { background: transparent; }
+.workspace-browser-surface.popover-frozen:not(.freeze) { background: #fff; }
+.workspace-browser-popover-scrim { position: absolute; z-index: 3; inset: 42px 0 0; background: transparent; cursor: default; }
 .workspace-browser-freeze-frame {
   position: absolute;
   inset: 0;
