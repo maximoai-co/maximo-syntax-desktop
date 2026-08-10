@@ -3680,6 +3680,7 @@ html[data-theme-variant="dark"] .workspace-diff-code .diff-line .diff-number { c
 .workspace-browser-history > button { min-width: 0; min-height: 34px; padding: 4px 7px; display: flex; align-items: center; gap: 8px; border-radius: 7px; background: transparent; color: var(--muted); text-align: left; }
 .workspace-browser-history > button:hover, .workspace-browser-history > button.active { background: var(--surface-hover); color: var(--text); }
 .workspace-browser-history-icon { width: 20px; height: 20px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 6px; background: var(--bg-soft); color: var(--faint); }
+.workspace-browser-history-icon img { width: 14px; height: 14px; display: block; border-radius: 3px; object-fit: contain; }
 .workspace-browser-history > button > span:nth-child(2) { min-width: 0; flex: 1; display: grid; gap: 1px; }
 .workspace-browser-history strong, .workspace-browser-history small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-browser-history strong { color: inherit; font-size: 9px; font-weight: 650; }

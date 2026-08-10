@@ -757,6 +757,7 @@ export interface BrowserState {
 export interface BrowserHistoryEntry {
   url: string;
   title: string;
+  faviconUrl: string | null;
   lastVisitedAt: number;
   visitCount: number;
 }

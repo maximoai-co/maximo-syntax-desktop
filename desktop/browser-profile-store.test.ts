@@ -34,19 +34,33 @@ describe("browser profile store", () => {
     const directory = await temporaryDirectory();
     const store = new BrowserProfileStore(directory, encryption);
     await store.initialize();
-    await store.recordVisit("https://docs.example.com/guide#install", "Install guide");
+    await store.recordVisit("https://docs.example.com/guide#install", "Install guide", "https://docs.example.com/favicon.png");
     await store.recordVisit("https://docs.example.com/guide#usage", "Usage guide");
 
     expect(store.historyCount()).toBe(1);
     expect(store.searchHistory("docs", 5)[0]).toMatchObject({
       url: "https://docs.example.com/guide",
       title: "Usage guide",
+      faviconUrl: "https://docs.example.com/favicon.png",
       visitCount: 2,
     });
 
     const restored = new BrowserProfileStore(directory, encryption);
     await restored.initialize();
     expect(restored.searchHistory("usage", 5)).toHaveLength(1);
+  });
+
+  it("updates a visited page favicon without creating history entries", async () => {
+    const directory = await temporaryDirectory();
+    const store = new BrowserProfileStore(directory, encryption);
+    await store.initialize();
+    await store.recordVisit("https://example.com/page", "Example");
+
+    await store.updateHistoryFavicon("https://example.com/page#section", "data:image/png;base64,ZmFrZQ==");
+    expect(store.searchHistory("example", 5)[0]?.faviconUrl).toBe("data:image/png;base64,ZmFrZQ==");
+
+    await store.updateHistoryFavicon("https://missing.example/page", "https://missing.example/favicon.ico");
+    expect(store.historyCount()).toBe(1);
   });
 
   it("stores only encrypted passwords and restores them by exact origin", async () => {

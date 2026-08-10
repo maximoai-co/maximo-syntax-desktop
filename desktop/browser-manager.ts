@@ -1439,7 +1439,9 @@ export class BrowserManager {
     }
     const recordNavigation = (_event: Electron.Event, url: string) => {
       if (!isAllowedNavigation(url) || url === BROWSER_BLANK_URL) return;
-      void this.options.profile.recordVisit(url, webContents.getTitle() || defaultTitle(url));
+      const state = this.states.get(threadId);
+      const tab = state?.tabs.find((candidate) => candidate.id === tabId);
+      void this.options.profile.recordVisit(url, webContents.getTitle() || defaultTitle(url), tab?.faviconUrl);
       this.scheduleProfileFlush();
     };
     const recordInPageNavigation = (_event: Electron.Event, url: string, isMainFrame: boolean) => {
@@ -1468,6 +1470,7 @@ export class BrowserManager {
       tab.faviconUrl = favicon;
       this.changed(threadId);
       this.emitState(threadId);
+      if (favicon) void this.options.profile.updateHistoryFavicon(webContents.getURL(), favicon);
     };
     webContents.on("page-favicon-updated", updateFavicon);
     runtime.disposers.push(() => webContents.removeListener("page-favicon-updated", updateFavicon));
@@ -1570,6 +1573,7 @@ export class BrowserManager {
       this.syncRuntimeState(threadId, tabId);
       return;
     }
+    if (tab.url !== url) tab.faviconUrl = null;
     tab.url = url;
     tab.title = defaultTitle(url);
     tab.isLoading = true;

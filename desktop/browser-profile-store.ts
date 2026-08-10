@@ -59,6 +59,18 @@ function cleanText(value: unknown, maximum: number): string {
   return typeof value === "string" ? value.trim().slice(0, maximum) : "";
 }
 
+function normalizeFavicon(value: unknown): string | null {
+  const text = cleanText(value, 64 * 1024);
+  if (!text) return null;
+  if (/^data:image\//i.test(text)) return text;
+  try {
+    const parsed = new URL(text);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeBrowserOrigin(value: unknown): string | null {
   const text = cleanText(value, 2_048);
   if (!text) return null;
@@ -91,6 +103,7 @@ function normalizeHistory(value: unknown): BrowserHistoryEntry[] {
     entries.push({
       url,
       title: cleanText(source.title, 512),
+      faviconUrl: normalizeFavicon(source.faviconUrl),
       lastVisitedAt: finiteTimestamp(source.lastVisitedAt),
       visitCount: typeof source.visitCount === "number" && Number.isFinite(source.visitCount)
         ? Math.max(1, Math.min(1_000_000, Math.round(source.visitCount)))
@@ -258,7 +271,7 @@ export class BrowserProfileStore {
       .map(({ entry }) => ({ ...entry }));
   }
 
-  async recordVisit(url: string, title: string): Promise<void> {
+  async recordVisit(url: string, title: string, faviconUrl?: string | null): Promise<void> {
     let parsed: URL;
     try { parsed = new URL(url); } catch { return; }
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
@@ -266,9 +279,11 @@ export class BrowserProfileStore {
     const normalizedUrl = parsed.toString();
     const existingIndex = this.data.history.findIndex((entry) => entry.url === normalizedUrl);
     const existing = existingIndex >= 0 ? this.data.history.splice(existingIndex, 1)[0] : undefined;
+    const nextFavicon = faviconUrl === undefined ? existing?.faviconUrl ?? null : normalizeFavicon(faviconUrl);
     this.data.history.unshift({
       url: normalizedUrl,
       title: cleanText(title, 512) || existing?.title || parsed.hostname,
+      faviconUrl: nextFavicon,
       lastVisitedAt: Date.now(),
       visitCount: Math.min(1_000_000, (existing?.visitCount ?? 0) + 1),
     });
@@ -288,6 +303,21 @@ export class BrowserProfileStore {
     const entry = this.data.history.find((candidate) => candidate.url === normalizedUrl);
     if (!entry || entry.title === normalizedTitle) return;
     entry.title = normalizedTitle;
+    await this.persist();
+  }
+
+  async updateHistoryFavicon(url: string, faviconUrl: string): Promise<void> {
+    const favicon = normalizeFavicon(faviconUrl);
+    if (!favicon) return;
+    let normalizedUrl = url;
+    try {
+      const parsed = new URL(url);
+      parsed.hash = "";
+      normalizedUrl = parsed.toString();
+    } catch { return; }
+    const entry = this.data.history.find((candidate) => candidate.url === normalizedUrl);
+    if (!entry || entry.faviconUrl === favicon) return;
+    entry.faviconUrl = favicon;
     await this.persist();
   }
 

@@ -500,9 +500,12 @@ export class BrowserAutomationHost {
     const input = call.arguments;
     if (call.name === "browser_open") {
       const url = input.url === undefined ? undefined : normalizeUrl(String(input.url));
+      // Reveal the shared browser before navigation starts. Waiting for the
+      // page load meant slow or failed navigations could run entirely out of
+      // sight and never open the panel at all.
+      if (input.show !== false) this.options.onRequestOpenPanel?.(call.threadId);
       const state = await this.manager.automationOpen(call.threadId, url, input.reuse !== false);
       affinity.tabId = state.activeTabId;
-      if (input.show !== false) this.options.onRequestOpenPanel?.(call.threadId);
       if (state.activeTabId) {
         const runtime = await this.manager.getAutomationRuntime(call.threadId, state.activeTabId);
         await this.showAutomationCursor(runtime, { x: 28, y: 28 }, "Maximo is navigating", signal);
@@ -512,9 +515,10 @@ export class BrowserAutomationHost {
 
     const tabId = this.resolveTabId(call.threadId, affinity, input.tabId);
     if (call.name === "browser_navigate") {
-      const state = await this.manager.automationNavigate(call.threadId, tabId, normalizeUrl(String(input.url)));
-      affinity.tabId = tabId;
+      const url = normalizeUrl(String(input.url));
       if (input.show !== false) this.options.onRequestOpenPanel?.(call.threadId);
+      const state = await this.manager.automationNavigate(call.threadId, tabId, url);
+      affinity.tabId = tabId;
       const runtime = await this.manager.getAutomationRuntime(call.threadId, tabId);
       await this.showAutomationCursor(runtime, { x: 28, y: 28 }, "Maximo is navigating", signal);
       return this.navigationOutput(state, tabId, "reused");
