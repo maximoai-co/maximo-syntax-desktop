@@ -22,6 +22,8 @@ import { RuntimeManager } from "./runtime-manager.js";
 import { BrowserHostServer } from "./browser-host.js";
 import { BrowserManager } from "./browser-manager.js";
 import { BrowserProfileStore } from "./browser-profile-store.js";
+import { AutomationHostServer } from "./automation-host.js";
+import { AutomationService } from "./automation-service.js";
 import { discoverSkills } from "./skill-discovery.js";
 import { createInitialState, StateStore } from "./state-store.js";
 import { fetchAccountUsage } from "./usage-service.js";
@@ -34,7 +36,7 @@ import {
 } from "./whats-new.js";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
 import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
-import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, ProjectColorName, ProjectIconName, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
+import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, AutomationCreateInput, AutomationDefinition, AutomationRun, AutomationUpdateInput, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, ProjectColorName, ProjectIconName, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 import { launchConfigurationChanged, resolveAsFollowUp, RUN_ALREADY_RUNNING_ERROR, RUN_NOT_RUNNING_ERROR, type RunLaunchConfiguration } from "./run-dispatch.js";
 import { taskCompletionNotification } from "./task-notifications.js";
 
@@ -44,6 +46,8 @@ let runtime: RuntimeManager;
 let terminalManager: TerminalManager;
 let browserManager: BrowserManager;
 let browserHost: BrowserHostServer;
+let automationService: AutomationService;
+let automationHost: AutomationHostServer;
 let appUpdater: AppUpdater | null = null;
 let isQuitting = false;
 let quitCleanupFinished = false;
@@ -78,6 +82,18 @@ function resolveBrowserBridgePath(): string {
   const packagedPath = join(app.getAppPath(), "dist-electron", "browser-mcp-bridge.js");
   const unpackedPath = packagedPath.replace(/\.asar([\\/])/u, ".asar.unpacked$1");
   return existsSync(unpackedPath) ? unpackedPath : packagedPath;
+}
+
+function desktopBridge(threadId: string, projectId: string, workspaceRoot: string) {
+  const bridge = browserHost?.bridgeLaunch(threadId, workspaceRoot);
+  if (!bridge) return undefined;
+  return {
+    ...bridge,
+    env: {
+      ...bridge.env,
+      ...(automationHost?.launchEnvironment(threadId, projectId, workspaceRoot) ?? {}),
+    },
+  };
 }
 
 const attachmentMimeTypes: Record<string, string> = {
@@ -238,6 +254,21 @@ function notifyTaskCompletion(threadId: string): void {
 async function finishRunAndNotify(...args: Parameters<StateStore["finishRun"]>): Promise<void> {
   await store.finishRun(...args);
   notifyTaskCompletion(args[0]);
+}
+
+function notifyAutomationCompletion(definition: AutomationDefinition, run: AutomationRun): void {
+  const failed = run.status !== "succeeded";
+  if (definition.notificationPolicy === "none" || (definition.notificationPolicy === "failures_only" && !failed)) return;
+  const settings = store.snapshot().settings;
+  if (!settings.enableSystemTaskCompletionNotifications) return;
+  if (settings.enableNotificationSound) void Promise.resolve(playDesktopNotificationSound());
+  const outcome = run.status === "succeeded" ? "finished" : run.status === "skipped" ? "was skipped" : run.status === "cancelled" ? "was cancelled" : "needs attention";
+  showDesktopNotification({
+    title: definition.name,
+    body: `Automation ${outcome}.${run.error ? ` ${run.error}` : ""}`.slice(0, 500),
+    ...(run.threadId ? { threadId: run.threadId } : {}),
+    silent: true,
+  });
 }
 
 function resolveChangelogPath(): string {
@@ -452,8 +483,20 @@ function createApplicationMenu(): void {
 }
 
 async function loadRendererContents(window: BrowserWindow): Promise<void> {
-  if (process.env.VITE_DEV_SERVER_URL) await window.loadURL(process.env.VITE_DEV_SERVER_URL);
-  else await window.loadFile(join(app.getAppPath(), "dist-renderer", "index.html"));
+  const requestedSurface = process.env.MAXIMO_DESKTOP_START_SURFACE;
+  const surface = requestedSurface === "chat" || requestedSurface === "activity" || requestedSurface === "kanban" || requestedSurface === "pull-requests" || requestedSurface === "automations"
+    ? requestedSurface
+    : undefined;
+  const openAutomationModal = process.env.MAXIMO_DESKTOP_START_AUTOMATION_MODAL === "1";
+  if (process.env.VITE_DEV_SERVER_URL) {
+    const url = new URL(process.env.VITE_DEV_SERVER_URL);
+    if (surface) url.searchParams.set("surface", surface);
+    if (openAutomationModal) url.searchParams.set("newAutomation", "1");
+    await window.loadURL(url.toString());
+  } else {
+    const query = { ...(surface ? { surface } : {}), ...(openAutomationModal ? { newAutomation: "1" } : {}) };
+    await window.loadFile(join(app.getAppPath(), "dist-renderer", "index.html"), Object.keys(query).length > 0 ? { query } : undefined);
+  }
 }
 
 function scheduleRendererRecovery(window: BrowserWindow, reason: string, exitCode: number): void {
@@ -560,6 +603,12 @@ async function createWindow(): Promise<void> {
     const screenshotPath = resolve(process.env.MAXIMO_DESKTOP_SCREENSHOT);
     setTimeout(async () => {
       if (!mainWindow || mainWindow.isDestroyed()) return;
+      const selectLabel = process.env.MAXIMO_DESKTOP_SCREENSHOT_OPEN_SELECT?.trim();
+      if (selectLabel) {
+        const label = JSON.stringify(selectLabel.slice(0, 160));
+        await mainWindow.webContents.executeJavaScript(`(() => { const button = [...document.querySelectorAll('button[aria-label]')].find((candidate) => candidate.getAttribute('aria-label') === ${label}); button?.scrollIntoView({ block: 'center' }); button?.click(); })()`);
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 180));
+      }
       const image = await mainWindow.webContents.capturePage();
       await mkdir(join(screenshotPath, ".."), { recursive: true });
       await writeFile(screenshotPath, image.toPNG());
@@ -629,6 +678,14 @@ function registerIpc(): void {
     });
   });
   ipcMain.handle("state:load", () => store.snapshotForRenderer());
+  ipcMain.handle("automations:list", () => automationService.snapshot());
+  ipcMain.handle("automations:create", (_event, input: AutomationCreateInput) => automationService.create(input));
+  ipcMain.handle("automations:update", (_event, automationId: string, input: AutomationUpdateInput) => automationService.update(safeText(automationId, 100), input));
+  ipcMain.handle("automations:set-enabled", (_event, automationId: string, enabled: unknown) => automationService.setEnabled(safeText(automationId, 100), enabled === true));
+  ipcMain.handle("automations:delete", (_event, automationId: string) => automationService.delete(safeText(automationId, 100)));
+  ipcMain.handle("automations:run-now", (_event, automationId: string) => automationService.runNow(safeText(automationId, 100)));
+  ipcMain.handle("automations:cancel-run", (_event, runId: string) => automationService.cancelRun(safeText(runId, 100)));
+  ipcMain.handle("automations:mark-read", (_event, automationId?: unknown) => automationService.markRunsRead(typeof automationId === "string" ? safeText(automationId, 100) : undefined));
   ipcMain.handle("notifications:supported", () => ElectronNotification.isSupported());
   ipcMain.handle("notifications:sound", () => playDesktopNotificationSound());
   ipcMain.handle("notifications:show", (_event, input: DesktopNotificationInput) => showDesktopNotification(input));
@@ -1090,7 +1147,7 @@ function registerIpc(): void {
         onComplete: async (result) => {
           await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
         },
-      }, browserHost?.bridgeLaunch(threadId, project.path));
+      }, desktopBridge(threadId, project.id, project.path));
       runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort, permission: safeRequest.permission });
       return { accepted: true, state: startedState };
     } catch (error) {
@@ -1175,7 +1232,7 @@ function registerIpc(): void {
           onComplete: async (result) => {
             await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
           },
-        }, browserHost?.bridgeLaunch(threadId, project.path));
+        }, desktopBridge(threadId, project.id, project.path));
         runningModel.set(threadId, { model: resumedRequest.model, effort: resumedRequest.effort, permission: resumedRequest.permission });
         return { accepted: true, state: sentState };
       } catch (error) {
@@ -1297,7 +1354,7 @@ function registerIpc(): void {
         onComplete: async (result) => {
           await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
         },
-      }, browserHost?.bridgeLaunch(threadId, project.path));
+      }, desktopBridge(threadId, project.id, project.path));
       runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort, permission: safeRequest.permission });
       return { accepted: true, state: startedState };
     } catch (error) {
@@ -1685,6 +1742,18 @@ app.whenReady().then(async () => {
     resolveBrowserBridgePath(),
     { onRequestOpenPanel: (threadId) => send("browser:open-panel-request", { threadId }) },
   );
+  automationService = new AutomationService({
+    dataDirectory: app.getPath("userData"),
+    store,
+    runtime,
+    runner,
+    bridgeFor: (threadId, projectId, workspaceRoot) => desktopBridge(threadId, projectId, workspaceRoot),
+    onRunEvent: sendRunEvent,
+    finishThread: (...args) => store.finishRun(...args),
+    notify: notifyAutomationCompletion,
+    onChanged: (snapshot) => send("automations:changed", snapshot),
+  });
+  automationHost = new AutomationHostServer(automationService);
   appUpdater = new AppUpdater({
     currentVersion: app.getVersion(),
     openExternal: (url) => shell.openExternal(url),
@@ -1694,9 +1763,11 @@ app.whenReady().then(async () => {
   });
   registerIpc();
   createApplicationMenu();
+  await browserHost.start();
+  await automationHost.start();
+  await automationService.initialize();
   await createWindow();
   browserManager.setWindow(mainWindow);
-  await browserHost.start();
   appUpdater.start();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });
 });
@@ -1723,6 +1794,12 @@ app.on("before-quit", (event) => {
       await browserManager?.flushPersistentStorage();
     } catch (error) {
       console.error("[browser] failed to flush persistent session:", error);
+    }
+    try {
+      await automationService?.dispose();
+      await automationHost?.dispose();
+    } catch (error) {
+      console.error("[automation] failed to stop automation services:", error);
     }
     try {
       await browserHost?.dispose();

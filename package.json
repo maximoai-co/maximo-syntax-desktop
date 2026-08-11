@@ -32,10 +32,11 @@
   },
   "scripts": {
     "build:icon": "node scripts/build-app-icon.mjs",
+    "bundle:local-cli": "node scripts/sync-local-cli.mjs",
     "start": "npm run build && node scripts/start.mjs",
-    "dev": "node scripts/dev.mjs",
+    "dev": "npm run bundle:local-cli && node scripts/dev.mjs",
     "postinstall": "node scripts/prepare-node-pty.mjs",
-    "build": "npm run build:icon && npm run build:renderer && npm run build:electron",
+    "build": "npm run bundle:local-cli && npm run build:icon && npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
     "build:electron": "node scripts/clean-electron.mjs && tsc -p tsconfig.electron.json",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
@@ -88,11 +89,13 @@
       "dist-renderer/**/*",
       "dist-electron/**/*",
       "assets/**/*",
+      "vendor/maximo-syntax-cli/**/*",
       "CHANGELOG.md",
       "package.json"
     ],
     "asarUnpack": [
       "node_modules/**/*",
+      "vendor/maximo-syntax-cli/**/*",
       "dist-electron/**/*"
     ],
     "mac": {

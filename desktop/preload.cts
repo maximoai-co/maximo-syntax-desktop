@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { AppUpdateState, BrowserState, DesktopApi, RunEvent, TerminalEvent } from "./types.js";
+import type { AppUpdateState, AutomationSnapshot, BrowserState, DesktopApi, RunEvent, TerminalEvent } from "./types.js";
 
 const api: DesktopApi = {
   appInfo: () => ipcRenderer.invoke("app:info"),
@@ -77,6 +77,21 @@ const api: DesktopApi = {
       };
       ipcRenderer.on("notification:open-thread", listener);
       return () => ipcRenderer.removeListener("notification:open-thread", listener);
+    },
+  },
+  automations: {
+    list: () => ipcRenderer.invoke("automations:list"),
+    create: (input) => ipcRenderer.invoke("automations:create", input),
+    update: (automationId, input) => ipcRenderer.invoke("automations:update", automationId, input),
+    setEnabled: (automationId, enabled) => ipcRenderer.invoke("automations:set-enabled", automationId, enabled),
+    delete: (automationId) => ipcRenderer.invoke("automations:delete", automationId),
+    runNow: (automationId) => ipcRenderer.invoke("automations:run-now", automationId),
+    cancelRun: (runId) => ipcRenderer.invoke("automations:cancel-run", runId),
+    markRunsRead: (automationId) => ipcRenderer.invoke("automations:mark-read", automationId),
+    onChanged: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, snapshot: AutomationSnapshot) => callback(snapshot);
+      ipcRenderer.on("automations:changed", listener);
+      return () => ipcRenderer.removeListener("automations:changed", listener);
     },
   },
   startRun: (request) => ipcRenderer.invoke("run:start", request),

@@ -8,6 +8,7 @@ dist-renderer/
 release/
 .electron-dev/
 .icon-render/
+vendor/maximo-syntax-cli/
 
 # Coverage
 coverage/

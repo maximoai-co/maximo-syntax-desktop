@@ -643,6 +643,25 @@ export class StateStore {
     });
   }
 
+  /** Creates an automation-owned chat without changing the user's current project or chat. */
+  async createBackgroundThread(projectId: string, title: string): Promise<Thread> {
+    if (!this.state.projects.some((project) => project.id === projectId)) throw new Error("Project not found.");
+    const now = Date.now();
+    const thread: Thread = {
+      id: randomUUID(),
+      projectId,
+      title: title.trim().replace(/\s+/g, " ").slice(0, 100) || "Automation run",
+      createdAt: now,
+      updatedAt: now,
+      status: "idle",
+      messages: [],
+    };
+    await this.commit((draft) => {
+      draft.threads.unshift(thread);
+    });
+    return structuredClone(thread);
+  }
+
   async selectThread(threadId: string): Promise<AppState> {
     // Update selection synchronously, persist only the tiny checkpoint, and
     // keep the legacy full response for callers that have not adopted the
@@ -892,15 +911,26 @@ export class StateStore {
     });
   }
 
-  async beginRun(threadId: string, prompt: string, attachments: Attachment[], model: string, effort: string, permission: PermissionMode): Promise<AppState> {
+  async beginRun(
+    threadId: string,
+    prompt: string,
+    attachments: Attachment[],
+    model: string,
+    effort: string,
+    permission: PermissionMode,
+    options?: { select?: boolean; title?: string },
+  ): Promise<AppState> {
     return this.update((draft) => {
       const thread = draft.threads.find((candidate) => candidate.id === threadId);
       if (!thread) throw new Error("Chat not found.");
       this.pushUserMessage(thread, prompt, attachments, model, effort, permission);
+      if (options?.title?.trim()) thread.title = options.title.trim().replace(/\s+/g, " ").slice(0, 100);
       thread.status = "running";
       thread.unread = false;
-      draft.selectedThreadId = threadId;
-      draft.selectedProjectId = thread.projectId;
+      if (options?.select !== false) {
+        draft.selectedThreadId = threadId;
+        draft.selectedProjectId = thread.projectId;
+      }
     });
   }
 

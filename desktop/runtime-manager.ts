@@ -228,8 +228,12 @@ export class RuntimeManager {
         version,
         message: candidate.source === "bundled" ? "The included Maximo Syntax engine is ready." : `Maximo Syntax ${version} is ready.`,
       });
-      await this.autoUpdateIfNeeded();
-      return this.currentStatus();
+      const ready = this.currentStatus();
+      // Runtime availability and the authenticated model catalog must never
+      // wait behind a best-effort npm version check. That check can consume
+      // four network timeouts while offline, making model pickers look stuck.
+      void this.autoUpdateIfNeeded().catch(() => undefined);
+      return ready;
     }
 
     return this.installManagedRuntime();
@@ -242,6 +246,9 @@ export class RuntimeManager {
   private async autoUpdateIfNeeded(): Promise<void> {
     const current = this.launch;
     if (!current?.version || current.version === "installed") return;
+    // The workspace-vendored standalone engine is the exact artifact tested
+    // with this desktop build. Never replace it with a registry version.
+    if (current.entryPath.includes(join("vendor", "maximo-syntax-cli"))) return;
     if (current.source !== "bundled" && current.source !== "managed" && current.source !== "system") return;
     const latest = await this.fetchLatestVersion();
     if (!latest || compareVersions(latest, current.version) <= 0) return;
@@ -314,6 +321,12 @@ export class RuntimeManager {
     const candidates: Array<{ path: string; source: EngineSource }> = [];
     const configured = this.options.configuredPath().trim();
     if (configured) candidates.push({ path: configured, source: "configured" });
+
+    // Desktop packages built from a local CLI checkout vendor the exact tested
+    // engine here. Prefer it over sibling, managed, and npm installations so
+    // development and packaged tests use the same immutable artifact.
+    const localBundle = join(this.options.appPath, "vendor", "maximo-syntax-cli");
+    candidates.push({ path: localBundle, source: "bundled" });
 
     if (!this.options.isPackaged) {
       const sibling = resolve(this.options.appPath, "..", "maximo-syntax-cli");

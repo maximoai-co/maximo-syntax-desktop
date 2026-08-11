@@ -919,6 +919,104 @@ export interface TerminalSession {
   shell: string;
 }
 
+export type AutomationSchedule =
+  | { type: "manual" }
+  | { type: "once"; runAt: string }
+  | { type: "interval"; everyMinutes: number }
+  | { type: "daily"; timeOfDay: string; timezone: string }
+  | { type: "weekdays"; timeOfDay: string; timezone: string }
+  | { type: "weekly"; dayOfWeek: number; timeOfDay: string; timezone: string }
+  | { type: "cron"; expression: string; timezone: string };
+
+export type AutomationDestination = "new_chat" | "dedicated_chat" | "existing_chat";
+export type AutomationWorkspaceMode = "auto" | "local" | "worktree";
+export type AutomationNotificationPolicy = "all" | "failures_only" | "none";
+
+export interface AutomationDefinition {
+  id: string;
+  name: string;
+  description?: string;
+  prompt: string;
+  projectId: string;
+  destination: AutomationDestination;
+  threadId?: string;
+  schedule: AutomationSchedule;
+  enabled: boolean;
+  model: string;
+  effort: string;
+  permission: PermissionMode;
+  workspaceMode: AutomationWorkspaceMode;
+  allowLocalFallback: boolean;
+  notificationPolicy: AutomationNotificationPolicy;
+  maxRuntimeMinutes: number;
+  nextRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string;
+  lastRunStatus?: AutomationRunStatus;
+}
+
+export type AutomationRunTrigger = "scheduled" | "manual" | "catch_up";
+export type AutomationRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped" | "interrupted";
+
+export interface AutomationRun {
+  id: string;
+  automationId: string;
+  projectId: string;
+  threadId?: string;
+  trigger: AutomationRunTrigger;
+  status: AutomationRunStatus;
+  scheduledFor: string;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  summary?: string;
+  error?: string;
+  workspacePath?: string;
+  unread: boolean;
+}
+
+export interface AutomationSnapshot {
+  automations: AutomationDefinition[];
+  runs: AutomationRun[];
+  activeCount: number;
+  unreadCount: number;
+}
+
+export interface AutomationCreateInput {
+  name: string;
+  description?: string;
+  prompt: string;
+  projectId: string;
+  destination?: AutomationDestination;
+  threadId?: string;
+  schedule: AutomationSchedule;
+  enabled?: boolean;
+  model?: string;
+  effort?: string;
+  permission?: PermissionMode;
+  workspaceMode?: AutomationWorkspaceMode;
+  allowLocalFallback?: boolean;
+  notificationPolicy?: AutomationNotificationPolicy;
+  maxRuntimeMinutes?: number;
+}
+
+export type AutomationUpdateInput = Partial<Omit<AutomationCreateInput, "projectId">> & {
+  projectId?: string;
+};
+
+export interface AutomationControlApi {
+  list(): Promise<AutomationSnapshot>;
+  create(input: AutomationCreateInput): Promise<AutomationSnapshot>;
+  update(automationId: string, input: AutomationUpdateInput): Promise<AutomationSnapshot>;
+  setEnabled(automationId: string, enabled: boolean): Promise<AutomationSnapshot>;
+  delete(automationId: string): Promise<AutomationSnapshot>;
+  runNow(automationId: string): Promise<AutomationSnapshot>;
+  cancelRun(runId: string): Promise<AutomationSnapshot>;
+  markRunsRead(automationId?: string): Promise<AutomationSnapshot>;
+  onChanged(callback: (snapshot: AutomationSnapshot) => void): () => void;
+}
+
 export type TerminalEvent =
   | { type: "started"; sessionId: string; cwd: string; shell: string; timestamp: number }
   | { type: "output"; sessionId: string; text: string; timestamp: number }
@@ -1117,6 +1215,7 @@ export interface DesktopApi {
   copyImageToClipboard(bytes: Uint8Array): Promise<boolean>;
   openInEditor(path: string): Promise<void>;
   browser: BrowserControlApi;
+  automations: AutomationControlApi;
   onRunEvent(callback: (event: RunEvent) => void): () => void;
   onTerminalEvent(callback: (event: TerminalEvent) => void): () => void;
   onMenuAction(callback: (action: string) => void): () => void;

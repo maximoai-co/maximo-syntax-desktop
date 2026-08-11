@@ -32,6 +32,7 @@ import modelPerplexityUrl from "./assets/model-perplexity.svg";
 import modelOllamaUrl from "./assets/model-ollama.svg";
 import modelKiloUrl from "./assets/model-kilo.svg";
 import CreateProjectModal from "./components/CreateProjectModal";
+import CustomSelect, { type SelectOption } from "./components/CustomSelect";
 import ProjectEditorModal from "./components/ProjectEditorModal";
 import SpaceEditorModal from "./components/SpaceEditorModal";
 import { ProjectIcon } from "./components/ProjectIcon";
@@ -41,6 +42,7 @@ import ActivitySidebar from "./components/ActivitySidebar";
 import KanbanView from "./components/KanbanView";
 import MarkdownContent from "./components/MarkdownContent";
 import PullRequestsView from "./components/PullRequestsView";
+import AutomationsView from "./components/AutomationsView";
 import SearchPalette from "./components/SearchPalette";
 import QuestionModal, { type Question } from "./components/QuestionModal";
 import PermissionRequestModal, { type PermissionRequestPayload } from "./components/PermissionRequestModal";
@@ -55,6 +57,7 @@ import ProfileShareDialog, { type ProfileShareData } from "./components/ProfileS
 import { composerKeyAction, composerSendShortcutLabel } from "./composerKeyboard";
 import { MAXIMO_SHORTCUTS, matchesShortcut, shortcutLabel } from "./shortcuts";
 import { modelProvider, type ModelProvider } from "./utils/modelProvider.js";
+import { effortLabel, effortOptionsFor, normalizeEffortValue } from "./utils/modelCatalog.js";
 import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollElementNearBottom } from "./utils/chatScroll.js";
 import { resolveComposerRunSelection } from "./utils/composerSelection.js";
 import { matchesSlashCommandQuery } from "./utils/slashCommandMatching.js";
@@ -66,7 +69,14 @@ import { TransientRetryNotice, type TransientRetryState } from "./components/Tra
 import { getLiveRun, getLiveRunsSnapshot, isLiveInteractionActive, markLiveInteraction, publishLiveRuns, scheduleAfterLiveInteraction, useLiveRun, type LiveRun } from "./liveRunStore";
 import type { NewChatFlowSelection } from "./newChatFlows";
 
-type WorkspaceSurface = "chat" | "activity" | "kanban" | "pull-requests";
+type WorkspaceSurface = "chat" | "activity" | "kanban" | "pull-requests" | "automations";
+
+function initialWorkspaceSurface(): WorkspaceSurface {
+  const requested = new URLSearchParams(window.location.search).get("surface");
+  return requested === "activity" || requested === "kanban" || requested === "pull-requests" || requested === "automations"
+    ? requested
+    : "chat";
+}
 
 // Stable empty reference for memoized components that default to `[]` — a fresh
 // [] each render would defeat shallow compare on every streaming flush.
@@ -503,22 +513,9 @@ function notificationDate(timestamp: number): string {
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-function effortLabel(value: string): string {
-  if (value === "xhigh") return "Extra High";
-  return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : "Default";
-}
-
 function effortBadgeLabel(value: string): string {
   if (value === "xhigh") return "XHigh";
   return effortLabel(value);
-}
-
-function normalizeEffortValue(value: string): string {
-  const normalized = value.trim().toLowerCase().replace(/[-_\s]+/g, "");
-  if (normalized === "extrahigh" || normalized === "ultra") return "xhigh";
-  if (normalized === "maximum") return "max";
-  if (normalized === "med") return "medium";
-  return normalized || value.trim().toLowerCase();
 }
 
 type EffortTone = "default" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -531,17 +528,6 @@ function effortTone(value: string | undefined): EffortTone {
   if (normalized === "xhigh" || normalized === "extrahigh" || normalized === "ultra") return "xhigh";
   if (normalized === "max" || normalized === "maximum") return "max";
   return "default";
-}
-
-function effortOptionsFor(model: EngineModel | undefined): SelectOption<string>[] {
-  const configuredDefault = model?.activeEffort ? effortLabel(model.activeEffort) : model?.defaultEffort ? effortLabel(model.defaultEffort) : "model default";
-  const defaultValue = model?.activeEffort ?? model?.defaultEffort ?? "";
-  const options: SelectOption<string>[] = [{ value: defaultValue, label: defaultValue ? configuredDefault : "Default" }];
-  for (const value of model?.supportedEffortLevels ?? []) {
-    if (value === defaultValue || options.some((option) => option.value === value)) continue;
-    options.push({ value, label: effortLabel(value) });
-  }
-  return options;
 }
 
 function terminalFontStack(value: string): string {
@@ -575,52 +561,6 @@ function playNotificationTone(): void {
 async function playNotificationSound(): Promise<void> {
   const played = await window.maximoDesktop.notifications.playSound().catch(() => false);
   if (!played) playNotificationTone();
-}
-
-type SelectOption<T extends string> = { value: T; label: string; description?: string; icon?: ReactNode };
-
-function CustomSelect<T extends string>({ value, options, onChange, icon, disabled = false, className = "", placement = "bottom", ariaLabel }: {
-  value: T; options: SelectOption<T>[]; onChange: (value: T) => void; icon?: ReactNode; disabled?: boolean; className?: string;
-  placement?: "top" | "bottom"; ariaLabel: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(() => Math.max(0, options.findIndex((option) => option.value === value)));
-  const rootRef = useRef<HTMLDivElement>(null);
-  const selected = options.find((option) => option.value === value) ?? options[0];
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: MouseEvent) => { if (!rootRef.current?.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
-  useEffect(() => setActiveIndex(Math.max(0, options.findIndex((option) => option.value === value))), [value, options]);
-
-  const move = (amount: number) => setActiveIndex((index) => (index + amount + options.length) % options.length);
-  const choose = (option: SelectOption<T>) => { onChange(option.value); setOpen(false); };
-  return (
-    <div className={`custom-select ${placement} ${open ? "open" : ""} ${className}`} ref={rootRef}>
-      <button type="button" className="custom-select-trigger" disabled={disabled} aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open}
-        onClick={() => setOpen((visible) => !visible)}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); if (!open) setOpen(true); move(event.key === "ArrowDown" ? 1 : -1); }
-          if (event.key === "Escape") setOpen(false);
-          if (open && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); choose(options[activeIndex]); }
-        }}>
-        {(selected?.icon ?? icon) ? <span className="select-option-icon">{selected?.icon ?? icon}</span> : null}
-        <span className="select-option-label">{selected?.label ?? value}</span>
-        <ChevronDown size={12} />
-      </button>
-      {open && <div className="custom-select-menu glass-panel" role="listbox" aria-label={ariaLabel}>
-        {options.map((option, index) => <button type="button" role="option" aria-selected={option === selected} className={`${index === activeIndex ? "active " : ""}${option.icon ? "has-icon" : ""}`}
-          key={`${option.value || "default"}-${option.label}-${index}`} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(option)}>
-          {option.icon && <span className="select-option-icon">{option.icon}</span>}
-          <span className="select-option-copy"><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
-          <span className="select-check">{option === selected && <Check size={13} />}</span>
-        </button>)}
-      </div>}
-    </div>
-  );
 }
 
 const ModelControl = memo(function ModelControl({ model, effort, models, modelOptions, disabled, onModel, onEffort }: {
@@ -2699,8 +2639,9 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
   const primaryNav = (
     <nav className="sidebar-primary-nav" aria-label="Workspace views">
       <button type="button" className={activeSurface === "activity" ? "active" : ""} aria-label={activeSurface === "activity" ? "Switch to classic view" : "Switch to activity view"} aria-pressed={activeSurface === "activity"} title={activeSurface === "activity" ? "Switch to classic view" : "Switch to activity view"} onClick={() => { setNotificationsOpen(false); onNavigateSurface(activeSurface === "activity" ? "chat" : "activity"); }}><ActivityIcon size={15} /><span>Activity</span></button>
-      <button type="button" className={activeSurface === "kanban" ? "active" : ""} onClick={() => { setNotificationsOpen(false); onNavigateSurface("kanban"); }}><Columns3 size={15} /><span>Kanban</span></button>
-      <button type="button" className={activeSurface === "pull-requests" ? "active" : ""} onClick={() => { setNotificationsOpen(false); onNavigateSurface("pull-requests"); }}><GitPullRequest size={15} /><span>Pull requests</span></button>
+      <button type="button" className={activeSurface === "kanban" ? "active" : ""} aria-label={activeSurface === "kanban" ? "Switch to classic view" : "Switch to kanban view"} aria-pressed={activeSurface === "kanban"} title={activeSurface === "kanban" ? "Switch to classic view" : "Switch to kanban view"} onClick={() => { setNotificationsOpen(false); onNavigateSurface(activeSurface === "kanban" ? "chat" : "kanban"); }}><Columns3 size={15} /><span>Kanban</span></button>
+      <button type="button" className={activeSurface === "pull-requests" ? "active" : ""} aria-label={activeSurface === "pull-requests" ? "Switch to classic view" : "Switch to pull requests view"} aria-pressed={activeSurface === "pull-requests"} title={activeSurface === "pull-requests" ? "Switch to classic view" : "Switch to pull requests view"} onClick={() => { setNotificationsOpen(false); onNavigateSurface(activeSurface === "pull-requests" ? "chat" : "pull-requests"); }}><GitPullRequest size={15} /><span>Pull requests</span></button>
+      <button type="button" className={activeSurface === "automations" ? "active" : ""} aria-label={activeSurface === "automations" ? "Switch to classic view" : "Switch to automations view"} aria-pressed={activeSurface === "automations"} title={activeSurface === "automations" ? "Switch to classic view" : "Switch to automations view"} onClick={() => { setNotificationsOpen(false); onNavigateSurface(activeSurface === "automations" ? "chat" : "automations"); }}><Clock3 size={15} /><span>Automations</span></button>
     </nav>
   );
   const spaceStrip = state.spaces.length > 0 ? (
@@ -5914,7 +5855,7 @@ export default function App() {
       }, 0);
     }
   }, [state?.selectedThreadId]);
-  const [activeSurface, setActiveSurface] = useState<WorkspaceSurface>("chat");
+  const [activeSurface, setActiveSurface] = useState<WorkspaceSurface>(initialWorkspaceSurface);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [topbarThreadMenu, setTopbarThreadMenu] = useState<{ threadId: string; top: number; left: number } | null>(null);
@@ -6174,16 +6115,16 @@ export default function App() {
       ?? estimateThreadContextUsage(currentThread, engineModels, state?.settings.defaultModel ?? "");
   }, [visibleContextUsageVersion, currentThread, engineModels, state?.settings.defaultModel]);
   const sideChatThread = useMemo(() => sideChatThreadId ? state?.threads.find((thread) => thread.id === sideChatThreadId) : undefined, [sideChatThreadId, state]);
-  const modelOptions = useMemo(() => {
-    const base = modelsLoading && engineModels.length === 0
+  const providerModelOptions = useMemo(() => modelsLoading && engineModels.length === 0
       ? [{ value: "", label: "Loading models…", description: "Refreshing for the active account" }]
-      : toModelOptions(engineModels);
-    const known = new Set(base.map((option) => option.value));
+      : toModelOptions(engineModels), [engineModels, modelsLoading]);
+  const modelOptions = useMemo(() => {
+    const known = new Set(providerModelOptions.map((option) => option.value));
     const custom = (state?.settings.customModelSlugs ?? [])
       .filter((value) => value && !known.has(value))
       .map((value) => ({ value, label: value, description: "Saved custom model slug", icon: <Bot size={13} /> }));
-    return [...base, ...custom];
-  }, [engineModels, modelsLoading, state?.settings.customModelSlugs]);
+    return [...providerModelOptions, ...custom];
+  }, [providerModelOptions, state?.settings.customModelSlugs]);
   const skillNames = useMemo(() => {
     const names = new Set<string>();
     for (const command of [...skillCommands, ...discoveredSkills]) names.add(command.name.toLowerCase());
@@ -7602,8 +7543,7 @@ export default function App() {
         <header className="topbar drag-region">
           <div className="topbar-left">
             <button className={`topbar-button no-drag sidebar-reopen-button ${sidebarVisible ? "sidebar-visible" : ""}`} onClick={() => window.innerWidth <= 900 ? setSidebarOpen(true) : setSidebarVisible(true)} title={sidebarNotificationKind === "active" ? "Show sidebar · Activity in progress" : sidebarNotificationKind === "unread" ? "Show sidebar · Unread notification" : "Show sidebar"} aria-label={sidebarNotificationKind === "active" ? "Show sidebar, activity in progress" : sidebarNotificationKind === "unread" ? "Show sidebar, unread notification" : "Show sidebar"}><PanelLeftOpen size={16} />{sidebarNotificationKind && <span className={`nav-bell-badge ${sidebarNotificationKind === "active" ? "has-active" : "has-unread"}`} aria-hidden="true" />}</button>
-            {currentProject && <><FolderOpen size={14} /><span>{currentProject.name}</span></>}
-            {currentThread && <><span className="crumb">/</span><strong>{currentThread.title}</strong><button type="button" className={`topbar-button no-drag topbar-thread-options-button ${topbarThreadMenu?.threadId === currentThread.id ? "active" : ""}`} onClick={(event) => toggleTopbarThreadMenu(event, currentThread.id)} title="Chat options" aria-label={`Options for ${currentThread.title}`} aria-haspopup="menu" aria-expanded={topbarThreadMenu?.threadId === currentThread.id}><MoreHorizontal size={16} /></button></>}
+            {activeSurface === "automations" ? <><Clock3 size={14} /><strong>Automations</strong></> : <>{currentProject && <><FolderOpen size={14} /><span>{currentProject.name}</span></>}{currentThread && <><span className="crumb">/</span><strong>{currentThread.title}</strong><button type="button" className={`topbar-button no-drag topbar-thread-options-button ${topbarThreadMenu?.threadId === currentThread.id ? "active" : ""}`} onClick={(event) => toggleTopbarThreadMenu(event, currentThread.id)} title="Chat options" aria-label={`Options for ${currentThread.title}`} aria-haspopup="menu" aria-expanded={topbarThreadMenu?.threadId === currentThread.id}><MoreHorizontal size={16} /></button></>}</>}
           </div>
           <div className="topbar-right no-drag">
              {engine?.available && <span className="engine-ready"><i />CLI {engine.version}</span>}
@@ -7619,7 +7559,7 @@ export default function App() {
           <button type="button" role="menuitem" className="danger" onClick={() => { setTopbarThreadMenu(null); deleteThread(topbarMenuThread.id); }}><Trash2 size={14} />Delete chat</button>
         </div>, document.body)}
              <main className={`main-stage ${activeSurface !== "chat" && activeSurface !== "activity" ? "surface-stage" : environmentOpen && !inspectorVisible ? "environment-reserved" : ""} ${isThreadSwitchStale ? "thread-switch-pending" : ""}`}>
-             {activeSurface === "kanban" ? <KanbanView state={state} currentProject={currentProject} onOpenThread={selectThread} onNewThread={(projectId) => void newThread(projectId)} /> : activeSurface === "pull-requests" ? <PullRequestsView project={currentProject} /> : <>
+             {activeSurface === "automations" ? <AutomationsView state={state} currentProject={currentProject} models={engineModels} modelOptions={providerModelOptions} modelsLoading={modelsLoading} onRefreshModels={() => refreshEngineModels(true)} onOpenThread={(threadId) => void selectThread(threadId)} onToast={showToast} /> : activeSurface === "kanban" ? <KanbanView state={state} currentProject={currentProject} onOpenThread={selectThread} onNewThread={(projectId) => void newThread(projectId)} /> : activeSurface === "pull-requests" ? <PullRequestsView project={currentProject} /> : <>
             {currentProject && <WorkspaceEnvironment
               open={environmentOpen && !inspectorVisible}
                project={currentProject}
