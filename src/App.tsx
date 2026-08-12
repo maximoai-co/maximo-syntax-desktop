@@ -7624,7 +7624,7 @@ export default function App() {
       </section>
       {currentProject && <WorkspaceDock
          open={inspectorVisible && !settingsOpen}
-         suspendNativeSurfaces={accountOpen || whatsNewDialogOpen || Boolean(attachmentPreview) || Boolean(renameThreadTarget)}
+         suspendNativeSurfaces={searchOpen || accountOpen || whatsNewDialogOpen || Boolean(attachmentPreview) || Boolean(renameThreadTarget)}
         project={currentProject}
         thread={currentThread}
         state={state}
