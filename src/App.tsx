@@ -4,7 +4,7 @@ import {
   Activity as ActivityIcon, AlertCircle, Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
   File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, Image, LogOut, SquarePen,
   GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
-  Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Undo2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, X, Zap,
+  Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Undo2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, WrapText, X, Zap,
 } from "lucide-react";
 import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT } from "../desktop/types";
 import type {
@@ -1676,6 +1676,7 @@ function ActivityTimelineEvent({ entry, path, created, reviewable, change, proje
 
   // Only mount result/diff/input DOM when this row is opened — closed rows are just a summary line.
   const [expanded, setExpanded] = useState(false);
+  const [wrapped, setWrapped] = useState(false);
 
   return <details className={`work-event ${created ? "created" : ""} ${entry.isError ? "error" : ""} ${entry.classifierDecision ? `classifier-${entry.classifierDecision.decision}` : ""}`} onToggle={(event) => {
     const next = event.currentTarget.open;
@@ -1707,8 +1708,8 @@ function ActivityTimelineEvent({ entry, path, created, reviewable, change, proje
         {diffError && <div className="work-event-diff-status error">{diffError}</div>}
         {diff && !showDiff && !loadingDiff && <div className="work-event-diff-status"><FileCode2 size={12} />No textual diff is available for this file.</div>}
         {diff && showDiff && <div className="work-event-diff" aria-label={`Code diff for ${path}`}>
-          <div className="work-event-diff-header"><span title={diffPath}><FileCode2 size={12} />{diffPath}</span><span className="work-event-diff-count"><b>+{additions}</b><i>-{deletions}</i></span></div>
-          <DiffCode patch={diff.patch} className="work-diff-code" showMetadata={false} showHunks={false} />
+          <div className="work-event-diff-header"><span title={diffPath}><FileCode2 size={12} />{diffPath}</span><span className="work-event-diff-count"><b>+{additions}</b><i>-{deletions}</i></span><button type="button" className={`work-event-diff-wrap ${wrapped ? "is-active" : ""}`} onClick={() => setWrapped((value) => !value)} title={wrapped ? "Scroll long lines" : "Wrap long lines"} aria-label={wrapped ? "Unwrap lines" : "Wrap lines"} aria-pressed={wrapped}><WrapText size={12} /></button></div>
+          <DiffCode patch={diff.patch} className={`work-diff-code ${wrapped ? "is-wrapped" : "is-scroll"}`} showMetadata={false} showHunks={false} />
         </div>}
       </>}
       {entry.data && <details className="tool-payload"><summary>Show input<ChevronRight size={11} /></summary><pre>{entry.data}</pre></details>}
