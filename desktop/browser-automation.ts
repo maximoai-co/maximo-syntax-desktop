@@ -214,27 +214,37 @@ async function renderAutomationCursor(
       host=document.createElement("div");
       host.id=id;
       host.setAttribute("aria-hidden","true");
-      host.style.cssText="position:fixed;left:0;top:0;z-index:2147483647;pointer-events:none;opacity:0;transition:left .22s cubic-bezier(.22,1,.36,1),top .22s cubic-bezier(.22,1,.36,1),opacity .16s ease;";
+      host.style.cssText="position:fixed;left:0;top:0;z-index:2147483647;pointer-events:none;opacity:0;transition:left .16s cubic-bezier(.22,1,.36,1),top .16s cubic-bezier(.22,1,.36,1),opacity .12s ease;";
       const root=host.attachShadow({mode:"open"});
       root.innerHTML=\`<style>
-        :host{display:block;width:190px;height:58px;overflow:visible;}
-        .wrap{position:relative;width:100%;height:100%;}
-        .halo{position:absolute;left:-7px;top:-7px;width:30px;height:30px;border:1px solid rgba(101,235,211,.7);border-radius:50%;box-shadow:0 0 8px rgba(55,215,187,.78),0 0 22px rgba(55,215,187,.45);opacity:.8;}
-        .halo.pulse{animation:maximo-ai-cursor-pulse .58s ease-out 1;}
-        .pointer{position:absolute;left:0;top:0;width:23px;height:27px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.6)) drop-shadow(0 0 7px rgba(55,215,187,.86));}
-        .badge{position:absolute;left:22px;top:21px;max-width:160px;padding:4px 8px;border:1px solid rgba(101,235,211,.55);border-radius:999px;background:rgba(11,25,26,.9);box-shadow:0 4px 16px rgba(0,0,0,.3),0 0 12px rgba(55,215,187,.22);color:#d9fff5;font:600 10px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-        @keyframes maximo-ai-cursor-pulse{0%{transform:scale(.65);opacity:.15}45%{transform:scale(1.2);opacity:1}100%{transform:scale(1);opacity:.8}}
-      </style><div class="wrap"><div class="halo"></div><svg class="pointer" viewBox="0 0 24 28" aria-hidden="true"><path d="M3 2v22l6-5.8 3.7 8 4-1.9-3.8-8H22L3 2Z" fill="#79ecd6" stroke="#062d2a" stroke-width="1.6" stroke-linejoin="round"/></svg><div class="badge"></div></div>\`;
+        :host{display:block;width:28px;height:30px;overflow:visible;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+        .wrap{position:relative;width:28px;height:30px;isolation:isolate;}
+        .click-pulse{position:absolute;z-index:0;left:-4px;top:-4px;width:18px;height:18px;border:1px solid rgba(88,239,212,.82);border-radius:50%;box-shadow:0 0 8px rgba(44,210,182,.55);opacity:0;transform:scale(.5);}
+        .click-pulse.pulse{animation:maximo-ai-cursor-pulse .46s cubic-bezier(.2,.75,.25,1) 1;}
+        .pointer{position:absolute;z-index:1;left:0;top:0;width:18px;height:22px;overflow:visible;filter:drop-shadow(0 1px 1px rgba(0,0,0,.72)) drop-shadow(0 0 2px rgba(181,255,241,.95)) drop-shadow(0 0 7px rgba(43,211,181,.72));}
+        .label{position:absolute;z-index:2;left:14px;top:14px;height:22px;max-width:124px;padding:0 7px 0 6px;display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(255,255,255,.14);border-radius:7px;background:linear-gradient(180deg,rgba(18,26,28,.94),rgba(7,13,15,.94));box-shadow:0 4px 14px rgba(0,0,0,.34),0 0 0 1px rgba(48,218,188,.08);backdrop-filter:blur(12px) saturate(140%);-webkit-backdrop-filter:blur(12px) saturate(140%);color:rgba(244,252,250,.96);font-size:11px;font-weight:600;line-height:1;letter-spacing:-.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .label::before{content:"";width:4px;height:4px;flex:0 0 auto;border-radius:50%;background:#58ebd0;box-shadow:0 0 6px rgba(55,215,187,.9);}
+        .label.flip-x{left:auto;right:14px;}
+        .label.flip-y{top:auto;bottom:16px;}
+        @keyframes maximo-ai-cursor-pulse{0%{transform:scale(.45);opacity:.9}100%{transform:scale(1.45);opacity:0}}
+        @media (prefers-reduced-motion:reduce){.click-pulse.pulse{animation:none}.click-pulse.pulse{opacity:.55;transform:scale(1)}}
+      </style><div class="wrap"><div class="click-pulse"></div><svg class="pointer" viewBox="0 0 18 22" aria-hidden="true"><path d="M2.1 1.7 2.05 18.9l4.7-4.28 3.35 6.12 3.2-1.75-3.27-5.93h5.94L2.1 1.7Z" fill="#0b1113" stroke="#f4fffd" stroke-width="1.35" stroke-linejoin="round"/></svg><div class="label"></div></div>\`;
       (document.body||document.documentElement).appendChild(host);
     }
     const root=host.shadowRoot;
-    const badge=root&&root.querySelector(".badge");
-    const halo=root&&root.querySelector(".halo");
-    if(badge) badge.textContent=${JSON.stringify(label)};
+    const clickPulse=root&&root.querySelector(".click-pulse");
+    const labelEl=root&&root.querySelector(".label");
+    if(labelEl){
+      labelEl.textContent=${JSON.stringify(label)};
+      labelEl.classList.remove("flip-x","flip-y");
+      const labelWidth=labelEl.getBoundingClientRect().width;
+      labelEl.classList.toggle("flip-x",${x}+14+labelWidth>innerWidth-6);
+      labelEl.classList.toggle("flip-y",${y}+36>innerHeight-6);
+    }
     host.style.left=${x}+"px";
     host.style.top=${y}+"px";
     host.style.opacity="1";
-    if(halo&&${pulse ? "true" : "false"}){halo.classList.remove("pulse");void halo.offsetWidth;halo.classList.add("pulse");}
+    if(clickPulse&&${pulse ? "true" : "false"}){clickPulse.classList.remove("pulse");void clickPulse.offsetWidth;clickPulse.classList.add("pulse");}
   })()`, signal);
 }
 
@@ -508,7 +518,7 @@ export class BrowserAutomationHost {
       affinity.tabId = state.activeTabId;
       if (state.activeTabId) {
         const runtime = await this.manager.getAutomationRuntime(call.threadId, state.activeTabId);
-        await this.showAutomationCursor(runtime, { x: 28, y: 28 }, "Maximo is navigating", signal);
+        await this.showAutomationCursor(runtime, { x: 28, y: 28 }, "Opened page", signal);
       }
       return this.navigationOutput(state, state.activeTabId, "created");
     }
@@ -520,15 +530,16 @@ export class BrowserAutomationHost {
       const state = await this.manager.automationNavigate(call.threadId, tabId, url);
       affinity.tabId = tabId;
       const runtime = await this.manager.getAutomationRuntime(call.threadId, tabId);
-      await this.showAutomationCursor(runtime, { x: 28, y: 28 }, "Maximo is navigating", signal);
+      await this.showAutomationCursor(runtime, { x: 28, y: 28 }, "Navigated", signal);
       return this.navigationOutput(state, tabId, "reused");
     }
     if (call.name === "browser_back" || call.name === "browser_forward" || call.name === "browser_reload") {
       const direction = call.name === "browser_back" ? "back" : call.name === "browser_forward" ? "forward" : "reload";
+      const actionLabel = direction === "back" ? "Going back" : direction === "forward" ? "Going forward" : "Reloading";
       const runtime = await this.manager.getAutomationRuntime(call.threadId, tabId);
-      await this.showAutomationCursor(runtime, { x: 28, y: 28 }, `Maximo is going ${direction}`, signal);
+      await this.showAutomationCursor(runtime, { x: 28, y: 28 }, actionLabel, signal);
       const state = await this.manager.automationHistory({ threadId: call.threadId, tabId }, direction);
-      await this.showAutomationCursor(runtime, { x: 28, y: 28 }, `Maximo finished ${direction}`, signal);
+      await this.showAutomationCursor(runtime, { x: 28, y: 28 }, actionLabel, signal);
       return this.navigationOutput(state, tabId, "reused");
     }
     if (call.name === "browser_close") {
@@ -583,15 +594,19 @@ export class BrowserAutomationHost {
 
   private cursorLabel(name: BrowserToolName): string {
     switch (name) {
-      case "browser_snapshot": return "Maximo is reading";
-      case "browser_screenshot": return "Maximo is capturing";
-      case "browser_click": return "Maximo is clicking";
-      case "browser_type": return "Maximo is typing";
-      case "browser_press": return "Maximo is pressing a key";
-      case "browser_scroll": return "Maximo is scrolling";
-      case "browser_wait": return "Maximo is waiting";
-      case "browser_evaluate": return "Maximo is inspecting";
-      default: return "Maximo is working";
+      case "browser_snapshot": return "Reading";
+      case "browser_screenshot": return "Capturing";
+      case "browser_logs": return "Checking logs";
+      case "browser_click": return "Clicking";
+      case "browser_hover": return "Hovering";
+      case "browser_type": return "Typing";
+      case "browser_select": return "Selecting";
+      case "browser_upload": return "Uploading";
+      case "browser_press": return "Pressing key";
+      case "browser_scroll": return "Scrolling";
+      case "browser_wait": return "Waiting";
+      case "browser_evaluate": return "Inspecting";
+      default: return "Working";
     }
   }
 
@@ -732,7 +747,7 @@ export class BrowserAutomationHost {
       if (!selector) throw new Error("Click requires a snapshot ref, CSS selector, or point.");
       await evaluatePage(runtime, `(function(){const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw new Error("Element not found");e.scrollIntoView({block:"center",inline:"center"});e.click();return true})()`, signal);
     }
-    await this.showAutomationCursor(runtime, point ?? await this.resolveCursorPoint(sessionId, runtime, input, signal), "Maximo clicked", signal, true);
+    await this.showAutomationCursor(runtime, point ?? await this.resolveCursorPoint(sessionId, runtime, input, signal), "Clicked", signal, true);
     return { tabId: runtime.tabId, target: {}, point: point ?? { x: 0, y: 0 } };
   }
 

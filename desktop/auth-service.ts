@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AccountStatus, LoginMethod, OpenCodePlan } from "./types.js";
+import { chooseMytabulonDefaultModel } from "./model-defaults.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -276,12 +277,10 @@ async function configureMyTabulonApiKey(apiKey: string): Promise<void> {
     );
   }
 
-  const firstModel = rows.find((item) => item && typeof item === "object" && text((item as JsonObject).id) === "maximo-atlas-preview");
-  const fallbackModel = rows.find((item) => item && typeof item === "object" && text((item as JsonObject).id));
-  const defaultModel =
-    (firstModel && text((firstModel as JsonObject).id)) ||
-    (fallbackModel && text((fallbackModel as JsonObject).id)) ||
-    "maximo-atlas-preview";
+  const modelIds = rows
+    .map((item) => item && typeof item === "object" ? text((item as JsonObject).id) : undefined)
+    .filter((id): id is string => Boolean(id));
+  const defaultModel = chooseMytabulonDefaultModel(modelIds);
 
   const account: JsonObject = {
     userId: text(user?.id) ?? previous?.userId,

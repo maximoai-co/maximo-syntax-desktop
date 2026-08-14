@@ -4,6 +4,14 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-08-14
+
+- **Bundled CLI engine**: the desktop build now bundles CLI `v0.1.33`, whose MyTabulon default is Atlas 1.2; existing Atlas Preview selections are migrated before a run.
+- **Reliable completed-turn diffs**: large files now keep accurate focused patches instead of appearing as full-file replacements, legacy saved patches are repaired when displayed, and timeline reviews remain available in a dedicated **Selected turn** source after the working tree has been committed or pushed. Working-tree, staged, and unstaged views now show their own file totals and patches consistently.
+- **Diff review per Git scope**: the Source control pane and diff review now fetch staged and unstaged diffs separately (accurate totals per file), and a history note explains when a diff came from a saved turn.
+- **Transcript stability fixes**: timeline rows, agent work items, and open disclosures no longer remount when live entries stream in; interactive transcript controls (disclosures, links, buttons) now suspend auto-follow until you scroll back to the edge, and the scroll-back threshold is stricter after you take ownership.
+- **Automation cursor polish**: the browser automation cursor is smaller with a click pulse ring, edge-aware label flipping, and concise tool labels ("Clicking", "Typing", "Reading") instead of "Maximo is…" phrasing.
+
 ## [0.1.10] - 2026-08-10
 
 - **Project editor**: projects now support a name, icon, and accent color, chosen in a unified Project Editor dialog used for both creating (replacing the old create form) and editing (replacing the prompt-based rename) — project icons appear in the sidebar and hover card.

@@ -1,4 +1,4 @@
-import { Component, memo, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type ErrorInfo, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Component, Fragment, memo, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type ErrorInfo, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Activity as ActivityIcon, AlertCircle, Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
@@ -37,7 +37,7 @@ import ProjectEditorModal from "./components/ProjectEditorModal";
 import SpaceEditorModal from "./components/SpaceEditorModal";
 import { ProjectIcon } from "./components/ProjectIcon";
 import { SpaceIcon } from "./components/SpaceIcon";
-import DiffReview, { DiffCode, patchStats } from "./components/DiffReview";
+import DiffReview, { DiffCode, patchStats, reviewPatch } from "./components/DiffReview";
 import ActivitySidebar from "./components/ActivitySidebar";
 import KanbanView from "./components/KanbanView";
 import MarkdownContent from "./components/MarkdownContent";
@@ -58,12 +58,14 @@ import { composerKeyAction, composerSendShortcutLabel } from "./composerKeyboard
 import { MAXIMO_SHORTCUTS, matchesShortcut, shortcutLabel } from "./shortcuts";
 import { modelProvider, type ModelProvider } from "./utils/modelProvider.js";
 import { effortLabel, effortOptionsFor, normalizeEffortValue } from "./utils/modelCatalog.js";
-import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollElementNearBottom } from "./utils/chatScroll.js";
+import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollElementNearBottom, shouldStickToScrollBottom } from "./utils/chatScroll.js";
+import { activitySummaryDetail } from "./utils/activitySummary.js";
 import { resolveComposerRunSelection } from "./utils/composerSelection.js";
 import { matchesSlashCommandQuery } from "./utils/slashCommandMatching.js";
 import { retryWithBackoff, isRetryableError, DEFAULT_MAX_RETRIES, getRetryMessage } from "./utils/retry.js";
 import { observeUserMessageOverflow } from "./utils/userMessageOverflowObserver.js";
 import { splitLiveTimelineTail } from "./utils/liveTimeline.js";
+import { agentWorkItemKeys, workTimelineEntryKeys } from "./utils/timelineEntryKeys.js";
 import { threadMessageWindow } from "./utils/threadWindow.js";
 import { TransientRetryNotice, type TransientRetryState } from "./components/TransientRetryNotice";
 import { getLiveRun, getLiveRunsSnapshot, isLiveInteractionActive, markLiveInteraction, publishLiveRuns, scheduleAfterLiveInteraction, useLiveRun, type LiveRun } from "./liveRunStore";
@@ -87,6 +89,7 @@ const MAX_LIVE_TIMELINE_ITEMS = 800;
 const MAX_LIVE_LOG_ITEMS = 200;
 const THREAD_DETAIL_CACHE_LIMIT = 4;
 const THREAD_DETAIL_CACHE_TTL_MS = 5 * 60_000;
+const TRANSCRIPT_INTERACTION_SELECTOR = "summary, .message button, .message a[href], .message input, .message textarea, .message select, .message [role='button'], .message [contenteditable='true'], .conversation-show-older";
 
 type CachedThreadDetail = { thread: Thread; cachedAt: number };
 
@@ -995,23 +998,24 @@ function AgentStatusIcon({ status }: { status: AgentStatus }) {
 
 function AgentWorkTimeline({ work }: { work?: AgentWorkItem[] }) {
   if (!work?.length) return <div className="agent-work-empty">No intermediate work reported yet.</div>;
+  const rowKeys = agentWorkItemKeys(work);
   return <div className="agent-work-timeline">
-    {work.map((item, index) => item.type === "text" ? (
-      <MarkdownContent className="agent-work-partial" key={`agent-text-${item.timestamp}-${index}`}>{item.text}</MarkdownContent>
-    ) : (
-      <details className={`agent-work-item ${item.isError ? "error" : ""}`} key={`agent-work-${item.toolUseId ?? item.timestamp}-${index}`}>
+    {work.map((item, index) => {
+      if (item.type === "text") return <MarkdownContent className="agent-work-partial" key={rowKeys[index]}>{item.text}</MarkdownContent>;
+      const summaryDetail = activitySummaryDetail(item);
+      return <details className={`agent-work-item ${item.isError ? "error" : ""}`} key={rowKeys[index]}>
         <summary>
           <span className="agent-work-icon"><ToolIcon toolName={item.toolName} label={item.label} size={11} /></span>
           <span>{activityTitle(item)}</span>
-          {item.detail && <small>{item.detail}</small>}
+          {summaryDetail && <small>{summaryDetail}</small>}
           <ChevronRight size={11} />
         </summary>
         {(item.result || item.data) && <div className="agent-work-detail">
           {item.result && <pre className={item.isError ? "error" : ""}>{item.result}</pre>}
           {item.data && <details className="tool-payload"><summary>Show input<ChevronRight size={10} /></summary><pre>{item.data}</pre></details>}
         </div>}
-      </details>
-    ))}
+      </details>;
+    })}
   </div>;
 }
 
@@ -1358,7 +1362,7 @@ function AgentTimelineEvent({ agent }: { agent: AgentRun }) {
   const [expanded, setExpanded] = useState(false);
   const name = agent.agentType || "Sub-agent";
   const progress = agent.status === "running" ? (agent.lastToolName ? `Running ${agent.lastToolName}` : "Running") : agentStatusLabel(agent.status);
-  return <details className={`work-event agent-event ${agent.status}`} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+  return <details className={`work-event agent-event ${agent.status}`} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary>
       <span className="work-event-icon"><AgentStatusIcon status={agent.status} /></span>
       <span title={agent.description}>{name}</span>
@@ -1557,7 +1561,7 @@ function TodoTimelineEvent({ todos, data }: { todos: TodoItem[]; data?: string }
   const [expanded, setExpanded] = useState(false);
   const completed = todos.filter((todo) => todo.status === "completed").length;
   const active = todos.find((todo) => todo.status === "in_progress");
-  return <details className="work-event todo-event" onToggle={(event) => setExpanded(event.currentTarget.open)}>
+  return <details className="work-event todo-event" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary><span className="work-event-icon"><ListTodo size={12} /></span><span>Task checklist</span><small>{completed}/{todos.length} complete{active ? ` · ${active.content}` : ""}</small><ChevronRight size={12} /></summary>
     {expanded && <div className="work-event-detail todo-list-detail">
       {todos.map((todo, index) => <div className={`todo-item ${todo.status}`} key={todo.id ?? `${todo.content}-${index}`}><span className="todo-item-status">{todoStatusIcon(todo.status)}</span><span>{todo.content}</span></div>)}
@@ -1622,14 +1626,14 @@ function InteractionTimelineEvent({ interaction }: { interaction: ChatInteractio
   const [expanded, setExpanded] = useState(false);
   if (interaction.type === "permission") {
     const approved = interaction.decision === "approved";
-    return <details className={`work-event interaction-event ${approved ? "approved" : "denied"}`} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+    return <details className={`work-event interaction-event ${approved ? "approved" : "denied"}`} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary><span className="work-event-icon">{approved ? <Check size={12} /> : <X size={12} />}</span><span>{approved ? "Approved" : "Denied"} {interaction.toolName}</span>{interaction.detail && <small>{interaction.detail}</small>}<ChevronRight size={12} /></summary>
       {expanded && <div className="work-event-detail"><span>{approved ? "Permission granted" : "Permission denied"}{interaction.remember ? " for matching actions" : " for this action"}.</span>{interaction.detail && <code>{interaction.detail}</code>}</div>}
     </details>;
   }
   const first = interaction.questions[0];
   const answer = first?.answer ?? "Answered";
-  return <details className="work-event interaction-event answered" onToggle={(event) => setExpanded(event.currentTarget.open)}>
+  return <details className="work-event interaction-event answered" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary><span className="work-event-icon"><Check size={12} /></span><span>{interaction.questions.length > 1 ? `${interaction.questions.length} questions answered` : "Answered user question"}</span><small>{answer}</small><ChevronRight size={12} /></summary>
     {expanded && <div className="work-event-detail interaction-answers">{interaction.questions.map((item, index) => <div key={`${item.question}-${index}`}>{item.header && <b>{item.header}</b>}<span>{item.question}</span><strong>{item.answer}</strong></div>)}</div>}
   </details>;
@@ -1637,13 +1641,14 @@ function InteractionTimelineEvent({ interaction }: { interaction: ChatInteractio
 
 const MemoizedInteractionTimelineEvent = memo(InteractionTimelineEvent);
 
-function ActivityTimelineEvent({ entry, path, created, reviewable, change, project, onOpenFile }: {
+function ActivityTimelineEvent({ entry, path, created, reviewable, change, project, turnId, onOpenFile }: {
   entry: Extract<RunTimelineItem, { type: "activity" }>;
   path?: string;
   created: boolean;
   reviewable: boolean;
   change?: FileChange;
   project?: Project;
+  turnId?: string;
   onOpenFile?: (path: string, diff?: GitDiff) => void;
 }) {
   const [loadedDiff, setLoadedDiff] = useState<GitDiff | null>(null);
@@ -1662,23 +1667,29 @@ function ActivityTimelineEvent({ entry, path, created, reviewable, change, proje
     if (!reviewable || knownChange || loadedDiff || loadingDiff || !project || !path) return;
     setLoadingDiff(true);
     setDiffError(null);
-    void window.maximoDesktop.gitDiff(project.id, relativeProjectPath(project.path, path)).then(setLoadedDiff).catch((error) => {
+    void window.maximoDesktop.gitDiff(project.id, relativeProjectPath(project.path, path)).then((next) => setLoadedDiff({ ...next, source: "working-tree" })).catch((error) => {
       setDiffError(error instanceof Error ? error.message : "Unable to read the file diff.");
     }).finally(() => setLoadingDiff(false));
   };
 
-  const stats = knownChange ?? (diff ? patchStats(diff.patch) : { additions: 0, deletions: 0 });
+  const stats = diff ? patchStats(diff.patch) : { additions: 0, deletions: 0 };
   const additions = diff?.patch ? stats.additions : 0;
   const deletions = diff?.patch ? stats.deletions : 0;
   const showDiff = Boolean(diff?.patch.trim());
-  const reviewDiff = diff ? { path: diff.path, patch: diff.patch } : undefined;
+  const reviewDiff = diff ? {
+    path: diff.path,
+    patch: diff.patch,
+    source: knownChange ? "turn" as const : (diff.source ?? "working-tree"),
+    ...(knownChange && turnId ? { turnId } : {}),
+  } : undefined;
   const diffPath = path && project ? relativeProjectPath(project.path, path) : path;
 
   // Only mount result/diff/input DOM when this row is opened — closed rows are just a summary line.
   const [expanded, setExpanded] = useState(false);
   const [wrapped, setWrapped] = useState(false);
+  const summaryDetail = activitySummaryDetail(entry);
 
-  return <details className={`work-event ${created ? "created" : ""} ${entry.isError ? "error" : ""} ${entry.classifierDecision ? `classifier-${entry.classifierDecision.decision}` : ""}`} onToggle={(event) => {
+  return <details className={`work-event ${created ? "created" : ""} ${entry.isError ? "error" : ""} ${entry.classifierDecision ? `classifier-${entry.classifierDecision.decision}` : ""}`} open={expanded} onToggle={(event) => {
     const next = event.currentTarget.open;
     setExpanded(next);
     if (next) loadDiff();
@@ -1687,7 +1698,7 @@ function ActivityTimelineEvent({ entry, path, created, reviewable, change, proje
       <span className="work-event-icon"><ToolIcon toolName={entry.toolName} label={entry.label} /></span>
       <span>{activityTitle(entry)}</span>
       {entry.classifierDecision && <ClassifierBadge decision={entry.classifierDecision} />}
-      {entry.detail && <small>{entry.detail}</small>}
+      {summaryDetail && <small>{summaryDetail}</small>}
       {diff && <span className="work-event-diff-count"><b>+{additions}</b><i>-{deletions}</i></span>}
       <ChevronRight size={12} />
     </summary>
@@ -1720,8 +1731,9 @@ function ActivityTimelineEvent({ entry, path, created, reviewable, change, proje
 
 const MemoizedActivityTimelineEvent = memo(ActivityTimelineEvent);
 
-const MemoizedWorkTimeline = memo(function WorkTimeline({ entries, onOpenFile, fileChanges, project, onPreviewAttachment, streaming = false }: { entries: WorkTimelineEntry[]; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; onPreviewAttachment?: (attachment: Attachment) => void; streaming?: boolean }) {
+const MemoizedWorkTimeline = memo(function WorkTimeline({ entries, onOpenFile, fileChanges, project, turnId, onPreviewAttachment, streaming = false }: { entries: WorkTimelineEntry[]; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; turnId?: string; onPreviewAttachment?: (attachment: Attachment) => void; streaming?: boolean }) {
   const agentRows = useMemo(() => agentTimelineRows(entries), [entries]);
+  const rowKeys = useMemo(() => workTimelineEntryKeys(entries), [entries]);
   const rowsBySource = useMemo(() => {
     const map = new Map<number, AgentTimelineRow[]>();
     for (const row of agentRows) map.set(row.sourceIndex, [...(map.get(row.sourceIndex) ?? []), row]);
@@ -1736,11 +1748,18 @@ const MemoizedWorkTimeline = memo(function WorkTimeline({ entries, onOpenFile, f
   }, [fileChanges, project?.path]);
   const renderEntry = useCallback((entry: WorkTimelineEntry, index: number): ReactNode => {
     const assignedAgents = rowsBySource.get(index);
-    if (assignedAgents?.length) return <>{assignedAgents.map((row) => <MemoizedAgentTimelineEvent agent={row.agent} key={`agent-${row.agent.taskId}`} />)}</>;
-    if (entry.type === "text") return <MarkdownContent className="work-partial" streaming={streaming} key={`text-${entry.timestamp}-${index}`}>{entry.text}</MarkdownContent>;
-    if (entry.type === "interaction") return <MemoizedInteractionTimelineEvent interaction={entry.interaction} key={`interaction-${entry.timestamp}-${index}`} />;
+    if (assignedAgents?.length) {
+      // Anchor the group to its first task instead of its current source index
+      // or size; later child-agent arrivals must not close an already-open row.
+      const firstAgent = assignedAgents[0]!.agent;
+      const groupKey = `agent-group:${firstAgent.toolUseId ?? firstAgent.taskId}`;
+      return <Fragment key={groupKey}>{assignedAgents.map((row) => <MemoizedAgentTimelineEvent agent={row.agent} key={`agent-${row.agent.toolUseId ?? row.agent.taskId}`} />)}</Fragment>;
+    }
+    const rowKey = rowKeys[index];
+    if (entry.type === "text") return <MarkdownContent className="work-partial" streaming={streaming} key={rowKey}>{entry.text}</MarkdownContent>;
+    if (entry.type === "interaction") return <MemoizedInteractionTimelineEvent interaction={entry.interaction} key={rowKey} />;
     if (entry.type === "agent" || (entry.type === "activity" && isAgentActivity(entry))) return null;
-    if (entry.type === "user-context") return <MemoizedUserContextTimelineEvent entry={entry} onPreviewAttachment={onPreviewAttachment} key={`context-${entry.timestamp}-${index}`} />;
+    if (entry.type === "user-context") return <MemoizedUserContextTimelineEvent entry={entry} onPreviewAttachment={onPreviewAttachment} key={rowKey} />;
     const path = activityFilePath(entry);
     const created = (entry.toolName ?? "").toLowerCase() === "write";
     const reviewable = Boolean(path && /edit|write|notebook|patch/i.test(entry.toolName ?? entry.label));
@@ -1749,9 +1768,9 @@ const MemoizedWorkTimeline = memo(function WorkTimeline({ entries, onOpenFile, f
       if (fileChangeMap) change = fileChangeMap.get(relativeProjectPath(project!.path, path));
       else change = matchingFileChange(fileChanges, project, path);
     }
-    if (entry.todos?.length) return <MemoizedTodoTimelineEvent todos={entry.todos} data={entry.data} key={`todo-${entry.timestamp}-${index}`} />;
-    return <MemoizedActivityTimelineEvent entry={entry} path={path} created={created} reviewable={reviewable} change={change} project={project} onOpenFile={onOpenFile} key={`activity-${entry.timestamp}-${index}`} />;
-  }, [rowsBySource, fileChanges, fileChangeMap, project, onOpenFile, onPreviewAttachment, streaming]);
+    if (entry.todos?.length) return <MemoizedTodoTimelineEvent todos={entry.todos} data={entry.data} key={rowKey} />;
+    return <MemoizedActivityTimelineEvent entry={entry} path={path} created={created} reviewable={reviewable} change={change} project={project} turnId={turnId} onOpenFile={onOpenFile} key={rowKey} />;
+  }, [rowsBySource, rowKeys, fileChanges, fileChangeMap, project, turnId, onOpenFile, onPreviewAttachment, streaming]);
   return <div className="work-timeline">{entries.map(renderEntry)}</div>;
 });
 // Keep old name as alias for historic imports inside this file
@@ -1797,7 +1816,7 @@ function boundedLiveTimelineText(entries: RunTimelineItem[]): RunTimelineItem[] 
   return bounded;
 }
 
-function WorkDisclosure({ timeline, interactions = [], durationMs, live = false, finalContent, onOpenFile, fileChanges, project, onPreviewAttachment }: { timeline?: RunTimelineItem[]; interactions?: TimedInteraction[]; durationMs?: number; live?: boolean; finalContent?: string; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; onPreviewAttachment?: (attachment: Attachment) => void }) {
+function WorkDisclosure({ timeline, interactions = [], durationMs, live = false, finalContent, onOpenFile, fileChanges, project, messageId, onPreviewAttachment }: { timeline?: RunTimelineItem[]; interactions?: TimedInteraction[]; durationMs?: number; live?: boolean; finalContent?: string; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; messageId?: string; onPreviewAttachment?: (attachment: Attachment) => void }) {
   const [open, setOpen] = useState(false);
   // Defer mounting the body one frame so the chevron/open state paints immediately.
   const [bodyReady, setBodyReady] = useState(false);
@@ -1880,11 +1899,11 @@ function WorkDisclosure({ timeline, interactions = [], durationMs, live = false,
     return <div className="agent-flow live-agent-flow"><WorkTimeline entries={visibleLiveEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} streaming /></div>;
   }
   if (!durationMs && workEntries.length === 0) return null;
-  return <div className="agent-flow"><details className="worked-disclosure" onToggle={handleToggle}>
+  return <div className="agent-flow"><details className="worked-disclosure" open={open} onToggle={handleToggle}>
     <summary><span>Worked for {formatDuration(durationMs ?? 0)}</span><ChevronRight size={13} /></summary>
     {open && (workEntries.length > 0 ? (
       bodyReady ? <>
-        <WorkTimeline entries={visibleWorkEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} />
+        <WorkTimeline entries={visibleWorkEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} turnId={messageId} onPreviewAttachment={onPreviewAttachment} />
         {visibleWorkEntries.length < workEntries.length && <div className="work-timeline-loading" role="status">Loading more work details…</div>}
       </> : <div className="work-timeline-loading" role="status">Loading work details…</div>
     ) : <div className="work-timeline-empty">No intermediate actions were reported.</div>)}
@@ -1923,7 +1942,8 @@ function TurnFileChangesContent({ timeline, fileChanges, project, git, onOpenFil
   const counts = useMemo(() => paths.reduce((total, path) => {
     const change = recordedChanges.find((item) => item.path === path);
     const gitFile = git?.files.find((file) => file.path.replace(/\\/g, "/") === path);
-    return { additions: total.additions + (change?.additions ?? gitFile?.additions ?? 0), deletions: total.deletions + (change?.deletions ?? gitFile?.deletions ?? 0) };
+    const stats = change ? patchStats(change.patch) : gitFile ?? { additions: 0, deletions: 0 };
+    return { additions: total.additions + stats.additions, deletions: total.deletions + stats.deletions };
   }, { additions: 0, deletions: 0 }), [paths, recordedChanges, git]);
   const createdCount = useMemo(() => timelinePaths.filter((item) => (item.tool || "").toLowerCase() === "write" && recordedChanges.length === 0).length, [timelinePaths, recordedChanges.length]);
   const headerLabel = createdCount === paths.length ? "Created" : "Edited";
@@ -1954,7 +1974,7 @@ function TurnFileChangesContent({ timeline, fileChanges, project, git, onOpenFil
         <button type="button" className="turn-file-action turn-file-review" onClick={() => {
           // Review opens the diff pane for the first file (or all if called from header)
           const first = recordedChanges[0];
-          if (first) onOpenFile(first.path, { path: first.path, patch: first.patch });
+          if (first) onOpenFile(first.path, { path: first.path, patch: first.patch, source: "turn", ...(messageId ? { turnId: messageId } : {}) });
           else if (paths[0]) onOpenFile(paths[0]);
         }}>Review</button>
         <button type="button" className="turn-file-collapse" aria-expanded={expanded} aria-label={expanded ? "Collapse changed files" : "Expand changed files"} onClick={() => setExpanded((v) => !v)}><ChevronDown size={13} className={expanded ? "open" : ""} /></button>
@@ -1965,9 +1985,10 @@ function TurnFileChangesContent({ timeline, fileChanges, project, git, onOpenFil
         const change = recordedChanges.find((item) => item.path === path);
         const changed = git?.files.find((file) => file.path.replace(/\\/g, "/") === path);
         const created = recordedChanges.length === 0 && timelinePaths.some((item) => (item.tool || "").toLowerCase() === "write" && relativeProjectPath(project.path, item.path) === path);
-        const additions = change?.additions ?? changed?.additions ?? 0;
-        const deletions = change?.deletions ?? changed?.deletions ?? 0;
-        return <button type="button" className={`turn-file-row ${created ? "created" : ""}`} key={path} onClick={() => onOpenFile(path, change ? { path: change.path, patch: change.patch } : undefined)} title={path}>
+        const stats = change ? patchStats(change.patch) : changed ?? { additions: 0, deletions: 0 };
+        const additions = stats.additions;
+        const deletions = stats.deletions;
+        return <button type="button" className={`turn-file-row ${created ? "created" : ""}`} key={path} onClick={() => onOpenFile(path, change ? { path: change.path, patch: change.patch, source: "turn", ...(messageId ? { turnId: messageId } : {}) } : undefined)} title={path}>
           <span className="turn-file-row-icon">{fileIconForPath(path)}</span>
           <span className="turn-file-row-path"><strong>{path.split(/[\\/]/).pop()}</strong><small>{path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "Project root"}</small></span>
           {(additions > 0 || deletions > 0) && <span className="turn-file-count"><b>+{additions}</b> <i>-{deletions}</i></span>}
@@ -3392,6 +3413,10 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
   const scrollRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
+  // A transcript control (details, review button, link, etc.) is stronger than
+  // merely being geometrically near the bottom. Keep live-follow suspended
+  // until the user explicitly scrolls back to the edge or uses the jump button.
+  const transcriptInteractionLockRef = useRef(false);
   const scrollFrameRef = useRef<number | null>(null);
   const liveFollowFrameRef = useRef<number | null>(null);
   const previousThreadIdRef = useRef(thread.id);
@@ -3439,6 +3464,7 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
   useEffect(() => {
     if (previousThreadIdRef.current !== thread.id) {
       previousThreadIdRef.current = thread.id;
+      transcriptInteractionLockRef.current = false;
       shouldStickToBottomRef.current = true;
       if (showScrollButtonDebounceRef.current !== null) {
         window.clearTimeout(showScrollButtonDebounceRef.current);
@@ -3464,9 +3490,9 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
     return () => window.cancelAnimationFrame(frame);
   }, [thread.id, thread.messages.length, waiting]);
   const updateScrollButtonVisibility = useCallback((scroll: HTMLElement) => {
-    const nearBottom = isScrollElementNearBottom(scroll, AUTO_SCROLL_BOTTOM_THRESHOLD_PX);
-    shouldStickToBottomRef.current = nearBottom;
-    if (nearBottom) {
+    const shouldStick = shouldStickToScrollBottom(scroll, shouldStickToBottomRef.current, transcriptInteractionLockRef.current);
+    shouldStickToBottomRef.current = shouldStick;
+    if (shouldStick) {
       if (showScrollButtonDebounceRef.current !== null) {
         window.clearTimeout(showScrollButtonDebounceRef.current);
         showScrollButtonDebounceRef.current = null;
@@ -3496,6 +3522,35 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
     // Wheel/touch arrives before `scroll`; release auto-follow synchronously so
     // an already-scheduled live-output frame cannot pull the viewport back down.
     markLiveInteraction();
+    // A real scroll gesture may resume following when it reaches the bottom.
+    transcriptInteractionLockRef.current = false;
+    shouldStickToBottomRef.current = false;
+    if (liveFollowFrameRef.current !== null) {
+      window.cancelAnimationFrame(liveFollowFrameRef.current);
+      liveFollowFrameRef.current = null;
+    }
+  }, []);
+  const takeTranscriptInteractionOwnership = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest(TRANSCRIPT_INTERACTION_SELECTOR)) {
+      // Touch can turn into a scroll gesture before a wheel event exists.
+      if (event.pointerType === "touch") takeScrollOwnership();
+      return;
+    }
+    markLiveInteraction();
+    transcriptInteractionLockRef.current = true;
+    shouldStickToBottomRef.current = false;
+    if (liveFollowFrameRef.current !== null) {
+      window.cancelAnimationFrame(liveFollowFrameRef.current);
+      liveFollowFrameRef.current = null;
+    }
+  }, [takeScrollOwnership]);
+  const takeTranscriptKeyboardOwnership = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest(TRANSCRIPT_INTERACTION_SELECTOR)) return;
+    markLiveInteraction();
+    transcriptInteractionLockRef.current = true;
     shouldStickToBottomRef.current = false;
     if (liveFollowFrameRef.current !== null) {
       window.cancelAnimationFrame(liveFollowFrameRef.current);
@@ -3504,7 +3559,13 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
   }, []);
   const followLiveContent = useCallback(() => {
     // Do no layout work at all once the user has taken scroll ownership.
-    if (!shouldStickToBottomRef.current || liveFollowFrameRef.current !== null) return;
+    if (!shouldStickToBottomRef.current) {
+      // A new chunk now exists below the control the user is inspecting. Show
+      // the explicit return affordance instead of moving their viewport.
+      setShowScrollButton(true);
+      return;
+    }
+    if (liveFollowFrameRef.current !== null) return;
     liveFollowFrameRef.current = window.requestAnimationFrame(() => {
       liveFollowFrameRef.current = null;
       if (!shouldStickToBottomRef.current) return;
@@ -3515,6 +3576,7 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
   const scrollToBottom = useCallback((animated = true) => {
     const scroll = scrollRef.current;
     if (!scroll) return;
+    transcriptInteractionLockRef.current = false;
     shouldStickToBottomRef.current = true;
     if (showScrollButtonDebounceRef.current !== null) {
       window.clearTimeout(showScrollButtonDebounceRef.current);
@@ -3776,7 +3838,7 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
             <span>Maximo Syntax</span>
             <time>{formatTimestamp(message.createdAt, timestampFormat)}</time>
           </div>
-          <MemoizedWorkDisclosure timeline={turnTimeline} interactions={interactions} durationMs={message.durationMs} finalContent={message.content} onOpenFile={onOpenFile} fileChanges={message.fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} />
+          <MemoizedWorkDisclosure timeline={turnTimeline} interactions={interactions} durationMs={message.durationMs} finalContent={message.content} onOpenFile={onOpenFile} fileChanges={message.fileChanges} project={project} messageId={message.id} onPreviewAttachment={onPreviewAttachment} />
           {/* Error color applies only to this final body — not work-timeline partial answers. */}
           <MarkdownContent className={message.isError ? "message-error-body" : undefined}>{message.content}</MarkdownContent>
           <TurnFileChanges timeline={turnTimeline} fileChanges={message.fileChanges} project={project} git={git} onOpenFile={onOpenFile} messageId={message.id} onRevert={onRevert} />
@@ -3813,7 +3875,7 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
   }, [queuedFollowUps, displayThread.messages, timestampFormat, onPreviewAttachment]);
   return (
     <div className={`chat-transcript-pane ${isStale || stale ? "stale" : ""}`} ref={paneRef} style={isStale || stale ? { opacity: 0.97 } as CSSProperties : undefined}>
-      <div className={`conversation-scroll ${waiting ? "waiting" : ""}`} ref={scrollRef} onScroll={handleScroll} onWheelCapture={takeScrollOwnership} onTouchStartCapture={takeScrollOwnership}>
+      <div className={`conversation-scroll ${waiting ? "waiting" : ""}`} ref={scrollRef} onScroll={handleScroll} onWheelCapture={takeScrollOwnership} onTouchMoveCapture={takeScrollOwnership} onPointerDownCapture={takeTranscriptInteractionOwnership} onKeyDownCapture={takeTranscriptKeyboardOwnership}>
         <div className={`conversation ${waiting ? "waiting" : ""} ${showNewChatFlow ? "conversation-new-chat" : ""}`}>
           {showEmptyThread && (
             <div className="thread-empty">
@@ -5796,6 +5858,11 @@ export default function App() {
   const [editProjectId, setEditProjectId] = useState<string | null>(null);
   const [reviewFile, setReviewFile] = useState<string | null>(null);
   const [reviewDiff, setReviewDiff] = useState<GitDiff | null>(null);
+  // Review state and the request guard must exist before the thread-switch
+  // effects below. Incrementing the guard invalidates any Git diff request
+  // that belongs to the file, thread, or project the user just left.
+  const reviewStateByThreadRef = useRef<Map<string, { file: string | null; diff: GitDiff | null }>>(new Map());
+  const reviewFileByThreadSeqRef = useRef(0);
   useEffect(() => {
     // Capture physical input before React or IPC callbacks run. While the user
     // is interacting, live transcript paints are held and coalesced; the latest
@@ -5827,16 +5894,22 @@ export default function App() {
   // Keep review selection per thread so navigating away and back restores it,
   // matching Synara's per-route diff state. Session-only (resets on app close).
   // We sync to the map on every change and restore on thread switch.
+  const prevThreadForReviewRef = useRef<string | null>(null);
   useEffect(() => {
-    const tid = state?.selectedThreadId;
-    if (!tid) return;
+    // During the first render after a thread switch, reviewFile/reviewDiff still
+    // belong to the outgoing thread. Save them there; the restore effect below
+    // will then hydrate (or clear) the incoming thread's independent selection.
+    const selectedTid = state?.selectedThreadId;
+    if (!selectedTid) return;
+    const previousTid = prevThreadForReviewRef.current;
+    const tid = previousTid && previousTid !== selectedTid ? previousTid : selectedTid;
     reviewStateByThreadRef.current.set(tid, { file: reviewFile, diff: reviewDiff });
   }, [reviewFile, reviewDiff, state?.selectedThreadId]);
-  const prevThreadForReviewRef = useRef<string | null>(null);
   useEffect(() => {
     const tid = state?.selectedThreadId;
     if (!tid) return;
     if (prevThreadForReviewRef.current === tid) return;
+    reviewFileByThreadSeqRef.current += 1;
     prevThreadForReviewRef.current = tid;
     const saved = reviewStateByThreadRef.current.get(tid);
     if (saved) {
@@ -5952,11 +6025,6 @@ export default function App() {
     threadDetailRequestsRef.current.set(threadId, request);
     return request;
   }, [rememberThreadDetail]);
-  // Per-thread review (diff) state: keep the selected file/diff with its thread
-  // so switching threads doesn't lose what you were reviewing, matching Synara's
-  // per-route diff selection. Session-only (resets on app close).
-  const reviewStateByThreadRef = useRef<Map<string, { file: string | null; diff: GitDiff | null }>>(new Map());
-  const reviewFileByThreadSeqRef = useRef(0);
   // Per-thread scroll positions so returning to a thread restores where you left it.
   const threadScrollTopRef = useRef<Map<string, number>>(new Map());
   // Synara-like per-thread composer drafts: whatever the user typed (prompt +
@@ -6870,6 +6938,7 @@ export default function App() {
   }, [navigation, selectThread]);
 
   const openDiff = useCallback(async (path: string, knownDiff?: GitDiff) => {
+    const requestSequence = ++reviewFileByThreadSeqRef.current;
     // Use refs so the callback never goes stale when the user clicks a file
     // immediately after switching threads (the closure's currentProject would
     // still point at the previous project and the diff would open against the
@@ -6889,7 +6958,13 @@ export default function App() {
     setInspectorVisible(true);
     setReviewFile(normalizedReviewPath);
     if (knownDiff?.patch !== undefined) {
-      setReviewDiff({ path: normalizedReviewPath, patch: knownDiff.patch });
+      const source = knownDiff.source ?? "turn";
+      setReviewDiff({
+        ...knownDiff,
+        path: normalizedReviewPath,
+        patch: source === "turn" ? reviewPatch(knownDiff.patch, normalizedReviewPath) : knownDiff.patch,
+        source,
+      });
       return;
     }
     setReviewDiff(null);
@@ -6899,12 +6974,10 @@ export default function App() {
       });
       setTransientRetry(null);
       // Only apply if the user hasn't switched to another file in the meantime.
-      setReviewDiff((current) => {
-        // If reviewFile has already moved on, keep the newer selection's diff.
-        // We compare via closure ref rather than state to avoid races.
-        return diff;
-      });
+      if (requestSequence !== reviewFileByThreadSeqRef.current) return;
+      setReviewDiff({ ...diff, path: normalizedReviewPath, source: "working-tree" });
     } catch (error) {
+      if (requestSequence !== reviewFileByThreadSeqRef.current) return;
       setTransientRetry(null);
       showToast(error instanceof Error ? error.message : "Unable to read the Git diff.");
       setReviewFile((current) => current === normalizedReviewPath ? null : current);
@@ -7002,8 +7075,14 @@ export default function App() {
   }, [currentProject?.id, showTransientRetry]);
 
   useEffect(() => {
-    setReviewFile(null);
-    setReviewDiff(null);
+    reviewFileByThreadSeqRef.current += 1;
+    // A selected thread owns its own review state, including across projects;
+    // its thread-switch effect restores that state. Only a bare project view
+    // has no task review to retain.
+    if (!stateRef.current?.selectedThreadId) {
+      setReviewFile(null);
+      setReviewDiff(null);
+    }
     setSideChatThreadId(null);
   }, [currentProject?.id]);
 
@@ -7637,7 +7716,7 @@ export default function App() {
         onRequestHandled={() => setDockRequest(null)}
         onOpenChange={setInspectorVisible}
         onOpenDiff={(path, diff) => void openDiff(path, diff)}
-        onCloseReview={() => { setReviewFile(null); setReviewDiff(null); }}
+        onCloseReview={() => { reviewFileByThreadSeqRef.current += 1; setReviewFile(null); setReviewDiff(null); }}
         onRefreshGit={() => { setGit(null); void window.maximoDesktop.gitStatus(currentProject.id).then(setGit); }}
         onGitChanged={setGit}
         onOpenEditor={(path) => void window.maximoDesktop.openInEditor(path)}

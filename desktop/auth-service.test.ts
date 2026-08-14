@@ -73,7 +73,7 @@ describe("provider switching", () => {
       openCodePlan: "go",
       openAIModel: "deepseek-v4-flash",
       cencoriApiKey: "csk_x",
-      mytabulonDefaultModel: "maximo-atlas-preview",
+      mytabulonDefaultModel: "maximo-atlas-1.2",
       mytabulonAccount: { codingPlanTier: "plus" },
       oauthAccount: { emailAddress: "x@y.z" },
     });
@@ -93,7 +93,7 @@ describe("provider switching", () => {
       maximoApiKey: "mtb_live_key",
       openAIBaseUrl: "https://api.mytabulon.com/v1",
       openAIProvider: "mytabulon",
-      mytabulonDefaultModel: "maximo-atlas-preview",
+      mytabulonDefaultModel: "maximo-atlas-1.2",
       mytabulonAccount: { codingPlanTier: "plus" },
     });
     expect((await readLocalAccountStatus())?.authMethod).toBe("mytabulon");
@@ -104,7 +104,7 @@ describe("provider switching", () => {
       maximoApiKey: "mtb_live_key",
       openAIBaseUrl: "https://opencode.ai/zen/go/v1",
       openAIProvider: "mytabulon",
-      mytabulonDefaultModel: "maximo-atlas-preview",
+      mytabulonDefaultModel: "maximo-atlas-1.2",
     });
     expect((await readLocalAccountStatus())?.authMethod).toBe("mytabulon");
   });

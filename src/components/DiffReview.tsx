@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { ArrowLeft, Check, Clipboard, Code2, FileCode2, RefreshCw, X } from "lucide-react";
 import type { GitDiff, Project } from "../../desktop/types";
+import { normalizeLegacyFullReplacementPatch, patchStats as rawPatchStats } from "../../desktop/unified-diff";
 import { highlightCode } from "./MarkdownCodeBlock";
 
 interface DiffLine { text: string; kind: "context" | "added" | "removed" | "meta" | "hunk"; oldNumber?: number; newNumber?: number; }
@@ -23,11 +24,11 @@ function parsePatch(patch: string): DiffLine[] {
 }
 
 export function patchStats(patch: string): { additions: number; deletions: number } {
-  return patch.split(/\r?\n/).reduce((stats, line) => {
-    if (line.startsWith("+") && !line.startsWith("+++")) stats.additions += 1;
-    if (line.startsWith("-") && !line.startsWith("---")) stats.deletions += 1;
-    return stats;
-  }, { additions: 0, deletions: 0 });
+  return rawPatchStats(normalizeLegacyFullReplacementPatch(patch));
+}
+
+export function reviewPatch(patch: string, path?: string): string {
+  return normalizeLegacyFullReplacementPatch(patch, path);
 }
 
 export function diffLanguageForPath(path?: string): string | undefined {
@@ -74,7 +75,8 @@ export function diffLanguageForPath(path?: string): string | undefined {
 }
 
 export function DiffCode({ patch, className, showMetadata = true, showHunks = true, language }: { patch: string; className?: string; showMetadata?: boolean; showHunks?: boolean; language?: string }) {
-  const lines = useMemo(() => parsePatch(patch), [patch]);
+  const normalizedPatch = useMemo(() => reviewPatch(patch), [patch]);
+  const lines = useMemo(() => parsePatch(normalizedPatch), [normalizedPatch]);
   const visibleLines = lines.filter((line) => (showMetadata || line.kind !== "meta") && (showHunks || line.kind !== "hunk"));
   return <pre className={["diff-code", className].filter(Boolean).join(" ")}>{visibleLines.map((line, index) => {
     const highlighted = line.kind === "added" || line.kind === "removed" || line.kind === "context" ? highlightCode(line.text || " ", language) : null;
@@ -84,18 +86,19 @@ export function DiffCode({ patch, className, showMetadata = true, showHunks = tr
 
 export default function DiffReview({ project, diff, onBack, onOpenEditor }: { project: Project; diff: GitDiff | null; onBack: () => void; onOpenEditor: () => void }) {
   const [copied, setCopied] = useState(false);
-  const stats = useMemo(() => patchStats(diff?.patch ?? ""), [diff?.patch]);
+  const normalizedPatch = useMemo(() => reviewPatch(diff?.patch ?? "", diff?.path), [diff?.patch, diff?.path]);
+  const stats = useMemo(() => rawPatchStats(normalizedPatch), [normalizedPatch]);
   const copy = async () => {
-    if (!diff?.patch) return;
-    await navigator.clipboard.writeText(diff.patch);
+    if (!normalizedPatch) return;
+    await navigator.clipboard.writeText(normalizedPatch);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1_500);
   };
   return <div className="review-stage">
-     <header className="review-header"><button type="button" className="review-back" onPointerDown={(event) => event.stopPropagation()} onClick={onBack} title="Back to chat" aria-label="Back to chat"><ArrowLeft size={15} /><span className="review-back-label">Back to chat</span></button><div className="review-title"><span className="eyebrow">REVIEW</span><strong>{diff?.path ?? "Loading diff…"}</strong><small>{project.name}</small></div><div className="review-actions"><button type="button" onClick={() => void copy()} disabled={!diff?.patch} title={copied ? "Copied" : "Copy patch"}>{copied ? <Check size={14} /> : <Clipboard size={14} />}<span className="review-action-label">{copied ? "Copied" : "Copy patch"}</span></button><button type="button" onClick={onOpenEditor} disabled={!diff} title="Open in editor"><Code2 size={14} /><span className="review-action-label">Open in editor</span></button></div></header>
+     <header className="review-header"><button type="button" className="review-back" onPointerDown={(event) => event.stopPropagation()} onClick={onBack} title="Back to chat" aria-label="Back to chat"><ArrowLeft size={15} /><span className="review-back-label">Back to chat</span></button><div className="review-title"><span className="eyebrow">REVIEW</span><strong>{diff?.path ?? "Loading diff…"}</strong><small>{project.name}</small></div><div className="review-actions"><button type="button" onClick={() => void copy()} disabled={!normalizedPatch} title={copied ? "Copied" : "Copy patch"}>{copied ? <Check size={14} /> : <Clipboard size={14} />}<span className="review-action-label">{copied ? "Copied" : "Copy patch"}</span></button><button type="button" onClick={onOpenEditor} disabled={!diff} title="Open in editor"><Code2 size={14} /><span className="review-action-label">Open in editor</span></button></div></header>
     <div className="review-summary"><span><FileCode2 size={15} />{diff?.path ?? "Reading changed file"}</span><span className="diff-count"><b>+{stats.additions}</b><i>-{stats.deletions}</i></span><button type="button" onClick={onBack} title="Close review" aria-label="Close review"><X size={13} /></button></div>
      <section className="diff-surface" aria-label="Code diff">
-       {!diff ? <div className="diff-empty"><RefreshCw size={18} className="spin" />Reading file diff…</div> : !diff.patch.trim() ? <div className="diff-empty"><FileCode2 size={18} />No textual diff is available for this file.</div> : <DiffCode patch={diff.patch} language={diffLanguageForPath(diff.path)} showMetadata={false} />}
+       {!diff ? <div className="diff-empty"><RefreshCw size={18} className="spin" />Reading file diff…</div> : !normalizedPatch.trim() ? <div className="diff-empty"><FileCode2 size={18} />No textual diff is available for this file.</div> : <DiffCode patch={normalizedPatch} language={diffLanguageForPath(diff.path)} showMetadata={false} />}
     </section>
   </div>;
 }

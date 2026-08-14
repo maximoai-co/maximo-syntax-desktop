@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createInitialState, StateStore } from "./state-store.js";
+import { createInitialState, normalizeSettings, StateStore } from "./state-store.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -11,6 +11,10 @@ afterEach(async () => {
 });
 
 describe("StateStore", () => {
+  it("migrates a retired Atlas Preview default when loading settings", () => {
+    expect(normalizeSettings({ defaultModel: "maximo-atlas-preview" }).defaultModel).toBe("maximo-atlas-1.2");
+  });
+
   it("persists settings atomically", async () => {
     const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
     temporaryDirectories.push(directory);
@@ -19,7 +23,7 @@ describe("StateStore", () => {
     const themePacks = store.snapshot().settings.themePacks;
     await store.updateSettings({
       theme: "dark",
-      defaultModel: "maximo-atlas-preview",
+      defaultModel: "maximo-atlas-1.2",
       sendWithEnter: false,
       themePacks: {
         ...themePacks,
@@ -28,7 +32,7 @@ describe("StateStore", () => {
     });
     const saved = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
     expect(saved.settings.theme).toBe("dark");
-    expect(saved.settings.defaultModel).toBe("maximo-atlas-preview");
+    expect(saved.settings.defaultModel).toBe("maximo-atlas-1.2");
     expect(saved.settings.sendWithEnter).toBe(false);
     expect(saved.settings.themePacks.dark.accent).toBe("#0169cc");
   });
@@ -145,7 +149,7 @@ describe("StateStore", () => {
     const project = store.snapshot().projects[0]!;
     const state = await store.createThread(project.id);
     const thread = state.threads[0]!;
-    await store.beginRun(thread.id, "Fix the build", [], "maximo-atlas-preview", "", "auto");
+    await store.beginRun(thread.id, "Fix the build", [], "maximo-atlas-1.2", "", "auto");
     await store.finishRun(thread.id, "Build fixed.", "complete", "session-1", false, [{ label: "Using Bash", detail: "npm test", timestamp: 10 }], 12_000, [
       { type: "text", text: "Checking the build.", timestamp: 5 },
       { type: "activity", label: "Using Bash", detail: "npm test", toolName: "Bash", timestamp: 10 },
@@ -155,8 +159,8 @@ describe("StateStore", () => {
     expect(finished.status).toBe("complete");
     expect(finished.cliSessionId).toBe("session-1");
     expect(finished.messages).toHaveLength(2);
-    expect(finished.messages[0]?.model).toBe("maximo-atlas-preview");
-    expect(finished.messages[1]?.model).toBe("maximo-atlas-preview");
+    expect(finished.messages[0]?.model).toBe("maximo-atlas-1.2");
+    expect(finished.messages[1]?.model).toBe("maximo-atlas-1.2");
     // timeline is the canonical completed-turn activity stream; keeping the
     // legacy activity copy would duplicate every tool result and patch.
     expect(finished.messages[1]?.activity).toBeUndefined();

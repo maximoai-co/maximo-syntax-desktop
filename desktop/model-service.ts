@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import type { EngineModel, OpenCodePlan } from "./types.js";
+import { normalizeRetiredMytabulonModel } from "./model-defaults.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -103,7 +104,7 @@ function isMaximoReasoningModel(id: string): boolean {
 async function readActiveModelSelection(config: JsonObject): Promise<ActiveModelSelection> {
   const configDirectory = process.env.MAXIMO_CONFIG_DIR?.trim() || join(homedir(), ".maximo");
   const settings = await readJson(join(configDirectory, "settings.json")) ?? {};
-  const model = text(settings.model) ?? text(config.openAIModel) ?? text(config.mytabulonDefaultModel);
+  const model = normalizeRetiredMytabulonModel(text(settings.model) ?? text(config.openAIModel) ?? text(config.mytabulonDefaultModel));
   const settingsEnvironment = settings.env && typeof settings.env === "object" ? settings.env as JsonObject : undefined;
   const rawEffort = text(process.env.MAXIMO_SYNTAX_EFFORT_LEVEL) ?? text(settingsEnvironment?.MAXIMO_SYNTAX_EFFORT_LEVEL) ?? text(settings.effortLevel);
   const normalizedEffort = rawEffort && !["auto", "unset"].includes(normalizeEffort(rawEffort)) ? normalizeEffort(rawEffort) : undefined;

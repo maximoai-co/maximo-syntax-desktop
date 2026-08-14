@@ -78,6 +78,7 @@ import { DiffCode, diffLanguageForPath, patchStats } from "./DiffReview";
 import MarkdownContent from "./MarkdownContent";
 import { highlightCode } from "./MarkdownCodeBlock";
 import { useLiveRun } from "../liveRunStore";
+import { gitFilesForScope, savedTurnDiffs, savedTurnFiles } from "../utils/diffReviewHistory";
 
 export type WorkspacePaneKind = "diff" | "terminal" | "browser" | "explorer" | "file" | "sidechat" | "git";
 
@@ -435,25 +436,42 @@ function ChangedFileRow({ file, onOpenDiff, onStage, onUnstage }: { file: GitFil
   );
 }
 
-const WorkspaceGitPane = memo(function WorkspaceGitPane({ project, git, onOpenDiff, onRefresh, onGitChanged, active = true }: { project: Project; git: GitStatus | null; onOpenDiff: (path: string) => void; onRefresh: () => void; onGitChanged: (status: GitStatus) => void; active?: boolean }) {
+const WorkspaceGitPane = memo(function WorkspaceGitPane({ project, git, onOpenDiff, onRefresh, onGitChanged, active = true }: { project: Project; git: GitStatus | null; onOpenDiff: (path: string, diff?: GitDiff) => void; onRefresh: () => void; onGitChanged: (status: GitStatus) => void; active?: boolean }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedDiff, setSelectedDiff] = useState<GitDiff | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const staged = git?.files.filter((file) => file.staged) ?? [];
-  const changes = git?.files.filter((file) => !file.staged) ?? [];
+  const diffRequestRef = useRef(0);
+  const staged = gitFilesForScope(git?.files ?? [], "staged");
+  const changes = gitFilesForScope(git?.files ?? [], "unstaged");
 
   useEffect(() => {
-    let cancelled = false;
-    if (!active) return () => { cancelled = true; };
-    if (!selectedPath) {
-      setSelectedDiff(null);
-      return;
+    if (active) return;
+    diffRequestRef.current += 1;
+    setDiffLoading(false);
+  }, [active]);
+  useEffect(() => () => { diffRequestRef.current += 1; }, [project.id]);
+
+  const selectScopedDiff = async (path: string, scope: "staged" | "unstaged") => {
+    const requestId = ++diffRequestRef.current;
+    setSelectedPath(path);
+    setSelectedDiff(null);
+    setDiffLoading(true);
+    setError(null);
+    try {
+      const next = await window.maximoDesktop.gitDiff(project.id, path, scope);
+      if (requestId !== diffRequestRef.current) return;
+      const tagged = { ...next, source: scope } as GitDiff;
+      setSelectedDiff(tagged);
+      onOpenDiff(path, tagged);
+    } catch (reason) {
+      if (requestId === diffRequestRef.current) setError(reason instanceof Error ? reason.message : `Unable to read the ${scope} diff.`);
+    } finally {
+      if (requestId === diffRequestRef.current) setDiffLoading(false);
     }
-    void window.maximoDesktop.gitDiff(project.id, selectedPath).then((next) => { if (!cancelled) setSelectedDiff(next); }).catch(() => { if (!cancelled) setSelectedDiff(null); });
-    return () => { cancelled = true; };
-  }, [active, project.id, selectedPath]);
+  };
 
   const mutate = async (action: "stage" | "unstage", paths: string[]) => {
     setBusy(true);
@@ -461,6 +479,10 @@ const WorkspaceGitPane = memo(function WorkspaceGitPane({ project, git, onOpenDi
     try {
       const next = action === "stage" ? await window.maximoDesktop.gitStage(project.id, paths) : await window.maximoDesktop.gitUnstage(project.id, paths);
       onGitChanged(next);
+      diffRequestRef.current += 1;
+      setSelectedPath(null);
+      setSelectedDiff(null);
+      setDiffLoading(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Git action failed.");
     } finally {
@@ -475,6 +497,10 @@ const WorkspaceGitPane = memo(function WorkspaceGitPane({ project, git, onOpenDi
     try {
       const next = await window.maximoDesktop.gitCommitPush(project.id, message.trim());
       onGitChanged(next);
+      diffRequestRef.current += 1;
+      setSelectedPath(null);
+      setSelectedDiff(null);
+      setDiffLoading(false);
       setMessage("");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Commit and push failed.");
@@ -491,11 +517,11 @@ const WorkspaceGitPane = memo(function WorkspaceGitPane({ project, git, onOpenDi
       <header className="workspace-pane-titlebar"><div><GitCommitHorizontal size={15} /><strong>Source control</strong><span>{git.branch || "detached"}</span></div><button type="button" onClick={onRefresh} title="Refresh changes"><RefreshCw size={13} /></button></header>
       {error && <div className="workspace-inline-error"><AlertCircle size={13} />{error}</div>}
       <div className="workspace-git-list">
-        <section className="workspace-git-section"><div className="workspace-git-section-heading"><span>Staged</span><b>{staged.length}</b>{staged.length > 0 && <button type="button" disabled={busy} onClick={() => void mutate("unstage", staged.map((file) => file.path))}>Unstage all</button>}</div>{staged.length ? staged.map((file) => <ChangedFileRow key={`staged-${file.path}`} file={file} onOpenDiff={() => { setSelectedPath(file.path); onOpenDiff(file.path); }} onUnstage={() => void mutate("unstage", [file.path])} />) : <p className="workspace-git-empty">No staged changes.</p>}</section>
-        <section className="workspace-git-section"><div className="workspace-git-section-heading"><span>Changes</span><b>{changes.length}</b>{changes.length > 0 && <button type="button" disabled={busy} onClick={() => void mutate("stage", changes.map((file) => file.path))}>Stage all</button>}</div>{changes.length ? changes.map((file) => <ChangedFileRow key={`change-${file.path}`} file={file} onOpenDiff={() => { setSelectedPath(file.path); onOpenDiff(file.path); }} onStage={() => void mutate("stage", [file.path])} />) : <p className="workspace-git-empty">No unstaged changes.</p>}</section>
+        <section className="workspace-git-section"><div className="workspace-git-section-heading"><span>Staged</span><b>{staged.length}</b>{staged.length > 0 && <button type="button" disabled={busy} onClick={() => void mutate("unstage", staged.map((file) => file.path))}>Unstage all</button>}</div>{staged.length ? staged.map((file) => <ChangedFileRow key={`staged-${file.path}`} file={file} onOpenDiff={() => void selectScopedDiff(file.path, "staged")} onUnstage={() => void mutate("unstage", [file.path])} />) : <p className="workspace-git-empty">No staged changes.</p>}</section>
+        <section className="workspace-git-section"><div className="workspace-git-section-heading"><span>Changes</span><b>{changes.length}</b>{changes.length > 0 && <button type="button" disabled={busy} onClick={() => void mutate("stage", changes.map((file) => file.path))}>Stage all</button>}</div>{changes.length ? changes.map((file) => <ChangedFileRow key={`change-${file.path}`} file={file} onOpenDiff={() => void selectScopedDiff(file.path, "unstaged")} onStage={() => void mutate("stage", [file.path])} />) : <p className="workspace-git-empty">No unstaged changes.</p>}</section>
       </div>
       <div className="workspace-git-commit"><div className="workspace-git-commit-title"><Upload size={13} /><span>Commit and Push</span></div><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Commit message" onKeyDown={(event) => { if (event.key === "Enter") void commitPush(); }} /><button type="button" className="primary-button compact" disabled={busy || !git.files.length || !message.trim()} onClick={() => void commitPush()}>{busy ? <RefreshCw size={13} className="spin" /> : <Upload size={13} />}Commit and push</button></div>
-     <div className="workspace-git-diff">{selectedDiff ? <div className="workspace-selected-diff"><div className="workspace-selected-diff-header"><span>{selectedDiff.path}</span><span><b>+{patchStats(selectedDiff.patch).additions}</b> <i>-{patchStats(selectedDiff.patch).deletions}</i></span></div><DiffCode patch={selectedDiff.patch} language={diffLanguageForPath(selectedDiff.path)} showMetadata={false} /></div> : <div className="workspace-empty-state compact"><FileCode2 size={17} /><span>Select a file to view its diff.</span></div>}</div>
+     <div className="workspace-git-diff">{selectedDiff ? <div className="workspace-selected-diff"><div className="workspace-selected-diff-header"><span>{selectedDiff.path}</span><span><b>+{patchStats(selectedDiff.patch).additions}</b> <i>-{patchStats(selectedDiff.patch).deletions}</i></span></div><DiffCode patch={selectedDiff.patch} language={diffLanguageForPath(selectedDiff.path)} showMetadata={false} /></div> : diffLoading && selectedPath ? <div className="workspace-empty-state compact"><RefreshCw size={17} className="spin" /><span>Reading {selectedPath}…</span></div> : <div className="workspace-empty-state compact"><FileCode2 size={17} /><span>Select a file to view its diff.</span></div>}</div>
     </div>
   );
 });
@@ -1163,21 +1189,20 @@ const WorkspaceSideChatPane = memo(function WorkspaceSideChatPane({ sideChat, ac
   );
 });
 
-type DiffScope = "working-tree" | "unstaged" | "staged" | "branch" | "all-turns" | "last-turn";
+type DiffScope = "working-tree" | "unstaged" | "staged" | "selected-turn";
 
 const diffScopeOptions: Array<{ value: DiffScope; label: string; description: string }> = [
   { value: "working-tree", label: "Working tree", description: "All local changes" },
   { value: "unstaged", label: "Unstaged", description: "Changes not in the index" },
   { value: "staged", label: "Staged", description: "Changes ready to commit" },
-  { value: "branch", label: "Branch", description: "Changes on this branch" },
-  { value: "all-turns", label: "All turns", description: "Changes from every task turn" },
-  { value: "last-turn", label: "Last turn", description: "Changes from the latest task" },
+  { value: "selected-turn", label: "Selected turn", description: "Saved changes from the task timeline" },
 ];
 
-function DiffScopeSelect({ value, onChange }: { value: DiffScope; onChange: (value: DiffScope) => void }) {
+function DiffScopeSelect({ value, onChange, hasSelectedTurn }: { value: DiffScope; onChange: (value: DiffScope) => void; hasSelectedTurn: boolean }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const selected = diffScopeOptions.find((option) => option.value === value) ?? diffScopeOptions[0];
+  const options = hasSelectedTurn ? diffScopeOptions : diffScopeOptions.filter((option) => option.value !== "selected-turn");
+  const selected = options.find((option) => option.value === value) ?? options[0];
   useEffect(() => {
     if (!open) return;
     const close = (event: MouseEvent) => { if (!rootRef.current?.contains(event.target as Node)) setOpen(false); };
@@ -1186,11 +1211,18 @@ function DiffScopeSelect({ value, onChange }: { value: DiffScope; onChange: (val
   }, [open]);
   return <div className={`custom-select workspace-diff-scope ${open ? "open" : ""}`} ref={rootRef}>
     <button type="button" className="custom-select-trigger" aria-label="Diff source" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((visible) => !visible)} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}><span>{selected.label}</span><ChevronDown size={12} /></button>
-    {open && <div className="custom-select-menu glass-panel" role="listbox" aria-label="Diff source">{diffScopeOptions.map((option) => <button type="button" role="option" aria-selected={option.value === value} className={option.value === value ? "active" : ""} key={option.value} onClick={() => { onChange(option.value); setOpen(false); }}><span className="select-option-copy"><strong>{option.label}</strong><small>{option.description}</small></span><span className="select-check">{option.value === value && <Check size={13} />}</span></button>)}</div>}
+    {open && <div className="custom-select-menu glass-panel" role="listbox" aria-label="Diff source">{options.map((option) => <button type="button" role="option" aria-selected={option.value === value} className={option.value === value ? "active" : ""} key={option.value} onClick={() => { onChange(option.value); setOpen(false); }}><span className="select-option-copy"><strong>{option.label}</strong><small>{option.description}</small></span><span className="select-check">{option.value === value && <Check size={13} />}</span></button>)}</div>}
   </div>;
 }
 
-const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, git, reviewFile, reviewDiff, onOpenDiff, onCloseReview, onOpenEditor, onOpenGit, defaultWrapped = false, active = true }: { project: Project; git: GitStatus | null; reviewFile?: string | null; reviewDiff: GitDiff | null; onOpenDiff: (path: string) => void; onCloseReview: () => void; onOpenEditor: (path: string) => void; onOpenGit: () => void; defaultWrapped?: boolean; active?: boolean }) {
+function diffMatchesScope(diff: GitDiff | null, scope: DiffScope): boolean {
+  if (!diff) return false;
+  if (scope === "selected-turn") return diff.source === "turn";
+  if (scope === "staged" || scope === "unstaged") return diff.source === scope;
+  return diff.source === "working-tree" || diff.source === undefined;
+}
+
+const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, thread, git, reviewFile, reviewDiff, onOpenDiff, onCloseReview, onOpenEditor, onOpenGit, defaultWrapped = false, active = true }: { project: Project; thread?: Thread; git: GitStatus | null; reviewFile?: string | null; reviewDiff: GitDiff | null; onOpenDiff: (path: string, diff?: GitDiff) => void; onCloseReview: () => void; onOpenEditor: (path: string) => void; onOpenGit: () => void; defaultWrapped?: boolean; active?: boolean }) {
   const [scope, setScope] = useState<DiffScope>("working-tree");
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"stacked" | "split">("stacked");
@@ -1206,19 +1238,31 @@ const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, git, review
   const [jumpOpen, setJumpOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const jumpRef = useRef<HTMLDivElement>(null);
-  const files = git?.files ?? [];
-  const scopedFiles = files.filter((file) => {
-    if (scope === "staged") return file.staged;
-    if (scope === "unstaged") return !file.staged;
-    return true;
-  });
+  const openDiffRequestRef = useRef(0);
+  const workingTreeFiles = git?.files ?? [];
+  const selectedTurnDiffs = useMemo(() => savedTurnDiffs(project, thread, reviewFile, reviewDiff), [project, reviewDiff, reviewFile, thread]);
+  const selectedTurnDiffByPath = useMemo(() => new Map(selectedTurnDiffs.map((diff) => [diff.path, diff])), [selectedTurnDiffs]);
+  const selectedTurnFiles = useMemo(() => savedTurnFiles(selectedTurnDiffs), [selectedTurnDiffs]);
+  const scopedFiles = scope === "selected-turn" ? selectedTurnFiles : gitFilesForScope(workingTreeFiles, scope);
   const filteredFiles = scopedFiles.filter((file) => file.path.toLowerCase().includes(query.trim().toLowerCase()));
   const scopedFilesForJump = filteredFiles;
-  const selectedFile = files.find((file) => file.path === reviewFile);
-  const stats = reviewDiff ? patchStats(reviewDiff.patch) : { additions: selectedFile?.additions ?? 0, deletions: selectedFile?.deletions ?? 0 };
+  const activeReviewDiff = diffMatchesScope(reviewDiff, scope) ? reviewDiff : null;
+  const activeReviewFile = reviewDiff && !activeReviewDiff ? null : reviewFile;
+  const selectedFile = scopedFiles.find((file) => file.path === activeReviewFile);
+  const stats = activeReviewDiff ? patchStats(activeReviewDiff.patch) : { additions: selectedFile?.additions ?? 0, deletions: selectedFile?.deletions ?? 0 };
+  const scopeStats = filteredFiles.reduce((total, file) => ({ additions: total.additions + file.additions, deletions: total.deletions + file.deletions }), { additions: 0, deletions: 0 });
+  const emptySourceLabel = query.trim()
+    ? "No changed files match your search."
+    : scope === "selected-turn"
+      ? "No saved changes are available for this turn."
+      : scope === "staged"
+        ? "No staged changes."
+        : scope === "unstaged"
+          ? "No unstaged changes."
+          : "Working tree is clean.";
   const copyDiff = async () => {
-    if (!reviewDiff?.patch) return;
-    await navigator.clipboard.writeText(reviewDiff.patch);
+    if (!activeReviewDiff?.patch) return;
+    await navigator.clipboard.writeText(activeReviewDiff.patch);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1_400);
   };
@@ -1235,17 +1279,26 @@ const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, git, review
       return next;
     });
     if (wasCollapsed) {
-      const needsFetch = !filePatches[path] && !loadingFiles.has(path);
+      const loadingKey = `${scope}\u0000${path}`;
+      const cachedDiff = filePatches[path];
+      const hasMatchingPatch = scope === "selected-turn"
+        ? selectedTurnDiffByPath.has(path)
+        : Boolean(cachedDiff && diffMatchesScope(cachedDiff, scope));
+      const needsFetch = !hasMatchingPatch && !loadingFiles.has(loadingKey);
       if (needsFetch) {
-        if (path === reviewFile && reviewDiff) {
-          setFilePatches((m) => ({ ...m, [path]: reviewDiff }));
+        const savedDiff = scope === "selected-turn"
+          ? selectedTurnDiffByPath.get(path) ?? (path === reviewFile && reviewDiff?.source === "turn" ? reviewDiff : undefined)
+          : path === reviewFile && diffMatchesScope(reviewDiff, scope) ? reviewDiff : undefined;
+        if (savedDiff) {
+          setFilePatches((m) => ({ ...m, [path]: savedDiff }));
           return;
         }
-        setLoadingFiles((s) => new Set(s).add(path));
-        void window.maximoDesktop.gitDiff(project.id, path).then((diff) => {
-          setFilePatches((m) => ({ ...m, [path]: diff }));
+        setLoadingFiles((s) => new Set(s).add(loadingKey));
+        const gitScope = scope === "staged" || scope === "unstaged" ? scope : "working-tree";
+        void window.maximoDesktop.gitDiff(project.id, path, gitScope).then((diff) => {
+          setFilePatches((m) => ({ ...m, [path]: { ...diff, source: gitScope } }));
         }).catch(() => setFilePatches((m) => ({ ...m, [path]: null }))).finally(() => {
-          setLoadingFiles((s) => { const n = new Set(s); n.delete(path); return n; });
+          setLoadingFiles((s) => { const n = new Set(s); n.delete(loadingKey); return n; });
         });
       }
     }
@@ -1253,8 +1306,19 @@ const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, git, review
 
   useEffect(() => setWrapped(defaultWrapped), [defaultWrapped]);
   useEffect(() => {
-    if (reviewFile && reviewDiff) setFilePatches((m) => ({ ...m, [reviewFile]: reviewDiff }));
-  }, [reviewFile, reviewDiff]);
+    if (reviewDiff?.source === "turn") setScope("selected-turn");
+    else if (reviewDiff?.source === "staged" || reviewDiff?.source === "unstaged" || reviewDiff?.source === "working-tree") setScope(reviewDiff.source);
+    else if (scope === "selected-turn") setScope("working-tree");
+  }, [reviewDiff]); // A fresh file click should reveal the source that produced its patch, even for the same path.
+  useEffect(() => {
+    openDiffRequestRef.current += 1;
+    setFilePatches({});
+    setLoadingFiles(new Set());
+    setCollapsedFiles(new Set());
+  }, [project.id, scope, thread?.id]);
+  useEffect(() => {
+    if (reviewFile && reviewDiff && diffMatchesScope(reviewDiff, scope)) setFilePatches((m) => ({ ...m, [reviewFile]: reviewDiff }));
+  }, [reviewFile, reviewDiff, scope]);
   // When the user opens a file from the timeline (e.g. clicking main.ts in the
   // "Edited 3 files" card) we must ensure that file is expanded in the list
   // and its patch is cached, even if the initial auto-collapse already ran.
@@ -1306,15 +1370,36 @@ const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, git, review
   if (!active) return <div className="workspace-empty-state compact"><Diff size={17} /><span>Panel paused</span><small>Activate this pane to resume the diff.</small></div>;
 
   const isDetailCollapsed = detailCollapsed;
+  const openDiffFile = (path: string) => {
+    const requestId = ++openDiffRequestRef.current;
+    if (scope === "selected-turn") {
+      onOpenDiff(path, selectedTurnDiffByPath.get(path));
+      return;
+    }
+    if (scope === "working-tree") {
+      onOpenDiff(path);
+      return;
+    }
+    void window.maximoDesktop.gitDiff(project.id, path, scope).then((diff) => {
+      if (requestId !== openDiffRequestRef.current) return;
+      onOpenDiff(path, { ...diff, source: scope });
+    }).catch(() => {
+      if (requestId === openDiffRequestRef.current) showToast(`Unable to read the ${scope} diff.`);
+    });
+  };
 
   return <div className="workspace-diff-pane">
-     <header className="workspace-pane-titlebar workspace-diff-header"><div><Diff size={15} /><DiffScopeSelect value={scope} onChange={setScope} /><span>{filteredFiles.length} file{filteredFiles.length === 1 ? "" : "s"}</span></div><span className="workspace-diff-totals"><b>+{git?.additions ?? 0}</b> <i>-{git?.deletions ?? 0}</i></span></header>
-    <div className="workspace-diff-toolbar"><div className="workspace-diff-toolbar-left"><button type="button" className="workspace-diff-icon-btn" onClick={() => setJumpOpen((v) => !v)} title="Jump to file" aria-label="Jump to file"><Search size={14} /></button>{jumpOpen && <div ref={jumpRef} className="workspace-diff-jump-menu"><div className="workspace-diff-jump-header"><Search size={13} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Jump to file" aria-label="Search changed files" /></div><div className="workspace-diff-jump-list">{scopedFilesForJump.length === 0 ? <div className="workspace-tree-state">{files.length ? "No matching files" : "Working tree is clean."}</div> : scopedFilesForJump.map((file) => <button type="button" key={file.path} className="workspace-diff-jump-item" onClick={() => { onOpenDiff(file.path); setJumpOpen(false); }}><span className="workspace-diff-jump-icon"><FileCode2 size={13} /></span><span className="workspace-diff-jump-copy"><strong>{file.path.split(/[\\/]/).at(-1)}</strong><small>{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "Project root"}</small></span><span className="workspace-diff-jump-stats"><b>+{file.additions}</b><i>-{file.deletions}</i></span></button>)}</div></div>}</div><div className="workspace-diff-toolbar-actions"><button type="button" className={`workspace-diff-view-btn ${view === "stacked" ? "active" : ""}`} onClick={() => setView("stacked")} title="Stacked diff">Stacked</button><button type="button" className={`workspace-diff-view-btn ${view === "split" ? "active" : ""}`} onClick={() => setView("split")} title="Split diff">Split</button><button type="button" className={`workspace-diff-view-btn ${wrapped ? "active" : ""}`} onClick={() => setWrapped((value) => !value)} title="Wrap long lines">Wrap</button><button type="button" className="workspace-diff-view-btn" onClick={() => setDetailCollapsed((value) => !value)} title={detailCollapsed ? "Expand diff" : "Collapse diff"}>{detailCollapsed ? "Expand" : "Collapse"}</button><button type="button" className="workspace-diff-icon-btn" onClick={() => void copyDiff()} disabled={!reviewDiff?.patch} title={copied ? "Copied" : "Copy diff"}>{copied ? <Check size={12} /> : <Copy size={12} />}</button><div className="workspace-diff-actions"><button type="button" className="workspace-diff-icon-btn" onClick={() => setActionsOpen((value) => !value)} title="Diff options" aria-label="Diff options"><MoreHorizontal size={14} /></button>{actionsOpen && <div className="workspace-diff-actions-menu"><button type="button" onClick={() => { setWrapped((v) => !v); setActionsOpen(false); }}><Copy size={13} />{wrapped ? "Disable wrap" : "Wrap long lines"}</button><button type="button" onClick={() => { void copyDiff(); setActionsOpen(false); }}><Copy size={13} />{copied ? "Copied" : "Copy diff"}</button><button type="button" onClick={() => { const allCollapsed = filteredFiles.every((f) => collapsedFiles.has(f.path)); if (allCollapsed) setCollapsedFiles(new Set()); else setCollapsedFiles(new Set(filteredFiles.map((f) => f.path))); setActionsOpen(false); }}><Folder size={13} />{filteredFiles.every((f) => collapsedFiles.has(f.path)) ? "Expand all" : "Collapse all"}</button><button type="button" onClick={onOpenGit}><GitCommitHorizontal size={13} />Open source control</button><button type="button" onClick={() => onOpenEditor(reviewFile ? projectFilePath(project, reviewFile) : project.path)}><ExternalLink size={13} />Open in editor</button></div>}</div></div></div>
+     <header className="workspace-pane-titlebar workspace-diff-header"><div><Diff size={15} /><DiffScopeSelect value={scope} onChange={setScope} hasSelectedTurn={selectedTurnDiffs.length > 0} /><span>{filteredFiles.length} file{filteredFiles.length === 1 ? "" : "s"}</span></div><span className="workspace-diff-totals"><b>+{scopeStats.additions}</b> <i>-{scopeStats.deletions}</i></span></header>
+    {scope === "selected-turn" && <div className="workspace-diff-history-note"><GitCommitHorizontal size={12} /><span>Saved task changes remain available after commit or push.</span></div>}
+    <div className="workspace-diff-toolbar"><div className="workspace-diff-toolbar-left"><button type="button" className="workspace-diff-icon-btn" onClick={() => setJumpOpen((v) => !v)} title="Jump to file" aria-label="Jump to file"><Search size={14} /></button>{jumpOpen && <div ref={jumpRef} className="workspace-diff-jump-menu"><div className="workspace-diff-jump-header"><Search size={13} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Jump to file" aria-label="Search changed files" /></div><div className="workspace-diff-jump-list">{scopedFilesForJump.length === 0 ? <div className="workspace-tree-state">{emptySourceLabel}</div> : scopedFilesForJump.map((file) => <button type="button" key={file.path} className="workspace-diff-jump-item" onClick={() => { openDiffFile(file.path); setJumpOpen(false); }}><span className="workspace-diff-jump-icon"><FileCode2 size={13} /></span><span className="workspace-diff-jump-copy"><strong>{file.path.split(/[\\/]/).at(-1)}</strong><small>{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "Project root"}</small></span><span className="workspace-diff-jump-stats"><b>+{file.additions}</b><i>-{file.deletions}</i></span></button>)}</div></div>}</div><div className="workspace-diff-toolbar-actions"><button type="button" className={`workspace-diff-view-btn ${view === "stacked" ? "active" : ""}`} onClick={() => setView("stacked")} title="Stacked diff">Stacked</button><button type="button" className={`workspace-diff-view-btn ${view === "split" ? "active" : ""}`} onClick={() => setView("split")} title="Split diff">Split</button><button type="button" className={`workspace-diff-view-btn ${wrapped ? "active" : ""}`} onClick={() => setWrapped((value) => !value)} title="Wrap long lines">Wrap</button><button type="button" className="workspace-diff-view-btn" onClick={() => setDetailCollapsed((value) => !value)} title={detailCollapsed ? "Expand diff" : "Collapse diff"}>{detailCollapsed ? "Expand" : "Collapse"}</button><button type="button" className="workspace-diff-icon-btn" onClick={() => void copyDiff()} disabled={!activeReviewDiff?.patch} title={copied ? "Copied" : "Copy diff"}>{copied ? <Check size={12} /> : <Copy size={12} />}</button><div className="workspace-diff-actions"><button type="button" className="workspace-diff-icon-btn" onClick={() => setActionsOpen((value) => !value)} title="Diff options" aria-label="Diff options"><MoreHorizontal size={14} /></button>{actionsOpen && <div className="workspace-diff-actions-menu"><button type="button" onClick={() => { setWrapped((v) => !v); setActionsOpen(false); }}><Copy size={13} />{wrapped ? "Disable wrap" : "Wrap long lines"}</button><button type="button" onClick={() => { void copyDiff(); setActionsOpen(false); }}><Copy size={13} />{copied ? "Copied" : "Copy diff"}</button><button type="button" onClick={() => { const allCollapsed = filteredFiles.every((f) => collapsedFiles.has(f.path)); if (allCollapsed) setCollapsedFiles(new Set()); else setCollapsedFiles(new Set(filteredFiles.map((f) => f.path))); setActionsOpen(false); }}><Folder size={13} />{filteredFiles.every((f) => collapsedFiles.has(f.path)) ? "Expand all" : "Collapse all"}</button><button type="button" onClick={onOpenGit}><GitCommitHorizontal size={13} />Open source control</button><button type="button" onClick={() => onOpenEditor(activeReviewFile ? projectFilePath(project, activeReviewFile) : project.path)}><ExternalLink size={13} />Open in editor</button></div>}</div></div></div>
     <div className={`workspace-diff-workspace ${view} ${wrapped ? "wrapped" : ""} ${isDetailCollapsed ? "detail-collapsed" : ""}`}>
-      <aside className="workspace-diff-file-list">{filteredFiles.length === 0 ? <div className="workspace-tree-state">{files.length ? "No files match this view." : "Working tree is clean."}</div> : filteredFiles.map((file) => {
+      <aside className="workspace-diff-file-list">{filteredFiles.length === 0 ? <div className="workspace-tree-state">{emptySourceLabel}</div> : filteredFiles.map((file) => {
         const isCollapsed = collapsedFiles.has(file.path);
-        const patchEntry = filePatches[file.path];
-        const isLoading = loadingFiles.has(file.path);
+        const cachedPatch = filePatches[file.path];
+        const patchEntry = scope === "selected-turn"
+          ? selectedTurnDiffByPath.get(file.path) ?? (cachedPatch?.source === "turn" ? cachedPatch : null)
+          : cachedPatch && diffMatchesScope(cachedPatch, scope) ? cachedPatch : null;
+        const isLoading = loadingFiles.has(`${scope}\u0000${file.path}`);
         const handleHeaderClickCapture = (event: React.MouseEvent<HTMLDivElement>) => {
           const native = event.nativeEvent as unknown as { composedPath?: () => EventTarget[] };
           const path = typeof native.composedPath === "function" ? native.composedPath() : [];
@@ -1325,9 +1410,9 @@ const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, git, review
           event.stopPropagation();
           toggleFileCollapsed(file.path);
         };
-        return <div key={file.path} className={`workspace-diff-file-row ${reviewFile === file.path ? "selected" : ""} ${isCollapsed ? "collapsed" : "expanded"}`} data-diff-file-path={file.path}>
+        return <div key={file.path} className={`workspace-diff-file-row ${activeReviewFile === file.path ? "selected" : ""} ${isCollapsed ? "collapsed" : "expanded"}`} data-diff-file-path={file.path}>
           <div className="workspace-diff-file-row-header" data-diff-file-header="" onClickCapture={handleHeaderClickCapture}>
-            <button type="button" className="workspace-diff-file-card" onClick={() => onOpenDiff(file.path)} title={file.path}><span className={`workspace-git-status status-${file.status[0]}`}>{file.status}</span><span className="workspace-diff-file-icon"><FileCode2 size={14} /></span><span className="workspace-diff-file-copy"><strong>{file.path.split(/[\\/]/).at(-1)}</strong><small>{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "Project root"}</small></span><span className="workspace-diff-file-stats"><b>+{file.additions}</b><i>-{file.deletions}</i></span></button>
+            <button type="button" className="workspace-diff-file-card" onClick={() => openDiffFile(file.path)} title={file.path}><span className={`workspace-git-status status-${file.status[0]}`}>{file.status}</span><span className="workspace-diff-file-icon"><FileCode2 size={14} /></span><span className="workspace-diff-file-copy"><strong>{file.path.split(/[\\/]/).at(-1)}</strong><small>{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "Project root"}</small></span><span className="workspace-diff-file-stats"><b>+{file.additions}</b><i>-{file.deletions}</i></span></button>
             <span data-diff-header-menu="true" className="inline-flex"><button type="button" className="file-menu-trigger" onClick={(e) => { e.stopPropagation(); setFileMenuOpen(fileMenuOpen === file.path ? null : file.path); }} aria-label="File actions"><Ellipsis size={14} /></button></span>
             <button type="button" className="turn-file-collapse file-row-collapse" aria-label={isCollapsed ? "Expand diff" : "Collapse diff"} onClick={(e) => { e.stopPropagation(); toggleFileCollapsed(file.path); }}><ChevronDown size={14} className={isCollapsed ? "" : "open"} /></button>
             {fileMenuOpen === file.path && <div className="file-context-menu"><button type="button" onClick={() => { void referInChat(file.path); setFileMenuOpen(null); }}>Refer {file.path.split(/[\\/]/).at(-1)}</button><button type="button" onClick={() => { void askWhy(file.path); setFileMenuOpen(null); }}>Ask why this changed</button><button type="button" onClick={() => { void copyPath(file.path); setFileMenuOpen(null); }}>Copy path</button></div>}
@@ -1337,7 +1422,7 @@ const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, git, review
           </div>}
         </div>;
       })}</aside>
-       <section className="workspace-diff-detail">{!reviewFile ? <div className="workspace-empty-state"><Diff size={20} /><span>Select a file to review its changes.</span><small>Choose a changed file on the left to inspect the full patch.</small></div> : <><header className="workspace-diff-detail-header" data-diff-file-header="" onClickCapture={(event) => {
+       <section className="workspace-diff-detail">{!activeReviewFile ? <div className="workspace-empty-state"><Diff size={20} /><span>Select a file to review its changes.</span><small>Choose a changed file on the left to inspect the full patch.</small></div> : <><header className="workspace-diff-detail-header" data-diff-file-header="" onClickCapture={(event) => {
         const native = event.nativeEvent as unknown as { composedPath?: () => EventTarget[] };
         const path = typeof native.composedPath === "function" ? native.composedPath() : [];
         if (path.some((node) => node instanceof Element && node.hasAttribute("data-diff-header-menu"))) return;
@@ -1346,8 +1431,8 @@ const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, git, review
         const target = event.target as Element;
         if (target.closest("button") && !target.closest(".turn-file-collapse")) return;
         event.stopPropagation();
-        toggleFileCollapsed(reviewFile);
-      }}><div className="workspace-diff-detail-fileinfo" data-file-info=""><FileCode2 size={14} /><div><strong>{reviewFile.split(/[\\/]/).at(-1)}</strong><small>{reviewFile.includes("/") ? reviewFile.slice(0, reviewFile.lastIndexOf("/")) : "Project root"}</small></div></div><div className="workspace-diff-detail-stats"><b>+{stats.additions}</b> <i>-{stats.deletions}</i></div><div className="diff-header-actions"><span data-diff-header-menu="true" className="inline-flex"><button type="button" className="diff-header-menu-trigger" onClick={() => setDiffHeaderMenuOpen((v) => !v)} aria-label="Diff actions"><Ellipsis size={14} /></button></span>{diffHeaderMenuOpen && <div className="file-context-menu diff-header-menu"><button type="button" onClick={() => { void referInChat(reviewFile); setDiffHeaderMenuOpen(false); }}>Refer {reviewFile.split(/[\\/]/).at(-1)}</button><button type="button" onClick={() => { void askWhy(reviewFile); setDiffHeaderMenuOpen(false); }}>Ask why this changed</button><button type="button" onClick={() => { void copyPath(reviewFile); setDiffHeaderMenuOpen(false); }}>Copy path</button></div>}<button type="button" className="workspace-diff-icon-btn" onClick={(e) => { e.stopPropagation(); onOpenEditor(projectFilePath(project, reviewFile)); }} title="Open in editor"><ExternalLink size={13} /></button><button type="button" className="turn-file-collapse" aria-label={isDetailCollapsed ? "Expand diff" : "Collapse diff"} onClick={(e) => { e.stopPropagation(); setDetailCollapsed((v) => !v); }}><ChevronDown size={14} className={isDetailCollapsed ? "" : "open"} /></button></div></header>{isDetailCollapsed ? null : reviewDiff?.patch ? <div className="workspace-diff-code"><DiffCode patch={reviewDiff.patch} language={diffLanguageForPath(reviewDiff.path)} showMetadata={false} className={view === "split" ? "split-view" : ""} /></div> : <div className="workspace-empty-state"><RefreshCw size={18} className="spin" /><span>Reading diff…</span></div>}</>}</section>
+        toggleFileCollapsed(activeReviewFile);
+      }}><div className="workspace-diff-detail-fileinfo" data-file-info=""><FileCode2 size={14} /><div><strong>{activeReviewFile.split(/[\\/]/).at(-1)}</strong><small>{activeReviewFile.includes("/") ? activeReviewFile.slice(0, activeReviewFile.lastIndexOf("/")) : "Project root"}</small></div></div><div className="workspace-diff-detail-stats"><b>+{stats.additions}</b> <i>-{stats.deletions}</i></div><div className="diff-header-actions"><span data-diff-header-menu="true" className="inline-flex"><button type="button" className="diff-header-menu-trigger" onClick={() => setDiffHeaderMenuOpen((v) => !v)} aria-label="Diff actions"><Ellipsis size={14} /></button></span>{diffHeaderMenuOpen && <div className="file-context-menu diff-header-menu"><button type="button" onClick={() => { void referInChat(activeReviewFile); setDiffHeaderMenuOpen(false); }}>Refer {activeReviewFile.split(/[\\/]/).at(-1)}</button><button type="button" onClick={() => { void askWhy(activeReviewFile); setDiffHeaderMenuOpen(false); }}>Ask why this changed</button><button type="button" onClick={() => { void copyPath(activeReviewFile); setDiffHeaderMenuOpen(false); }}>Copy path</button></div>}<button type="button" className="workspace-diff-icon-btn" onClick={(e) => { e.stopPropagation(); onOpenEditor(projectFilePath(project, activeReviewFile)); }} title="Open in editor"><ExternalLink size={13} /></button><button type="button" className="turn-file-collapse" aria-label={isDetailCollapsed ? "Expand diff" : "Collapse diff"} onClick={(e) => { e.stopPropagation(); setDetailCollapsed((v) => !v); }}><ChevronDown size={14} className={isDetailCollapsed ? "" : "open"} /></button></div></header>{isDetailCollapsed ? null : activeReviewDiff?.patch ? <div className="workspace-diff-code"><DiffCode patch={activeReviewDiff.patch} language={diffLanguageForPath(activeReviewDiff.path)} showMetadata={false} className={view === "split" ? "split-view" : ""} /></div> : <div className="workspace-empty-state"><RefreshCw size={18} className="spin" /><span>Reading diff…</span></div>}</>}</section>
     </div>
     {toast && <div className="diff-toast">{toast}</div>}
   </div>;
@@ -1452,7 +1537,7 @@ function WorkspaceDockUnmemoized(props: WorkspaceDockProps) {
            {pane.kind === "explorer" && props.project ? <WorkspaceExplorerPane project={props.project} active={paneIsActive(pane.id)} onOpenFile={(path) => openPane("file", path)} onOpenEditor={props.onOpenEditor} />
              : pane.kind === "file" && props.project ? <WorkspaceFileViewer project={props.project} filePath={pane.filePath ?? null} active={paneIsActive(pane.id)} onOpenEditor={props.onOpenEditor} />
                : pane.kind === "git" && props.project ? <WorkspaceGitPane project={props.project} git={props.git} active={paneIsActive(pane.id)} onOpenDiff={props.onOpenDiff} onRefresh={props.onRefreshGit} onGitChanged={props.onGitChanged} />
-                    : pane.kind === "diff" && props.project ? <WorkspaceDiffPane project={props.project} git={props.git} active={paneIsActive(pane.id)} reviewFile={props.reviewFile} reviewDiff={props.reviewDiff} defaultWrapped={props.state?.settings.diffWordWrap} onOpenDiff={props.onOpenDiff} onCloseReview={props.onCloseReview} onOpenEditor={props.onOpenEditor} onOpenGit={() => openPane("git")} />
+                    : pane.kind === "diff" && props.project ? <WorkspaceDiffPane project={props.project} thread={props.thread} git={props.git} active={paneIsActive(pane.id)} reviewFile={props.reviewFile} reviewDiff={props.reviewDiff} defaultWrapped={props.state?.settings.diffWordWrap} onOpenDiff={props.onOpenDiff} onCloseReview={props.onCloseReview} onOpenEditor={props.onOpenEditor} onOpenGit={() => openPane("git")} />
                     : pane.kind === "terminal" && props.project ? <WorkspaceTerminalPane project={props.project} settings={props.state?.settings} paneActive={paneIsActive(pane.id)} />
                         : pane.kind === "browser" ? <WorkspaceBrowserPane initialUrl={pane.url} threadId={props.thread?.id} paneActive={paneIsActive(pane.id)} suspendNative={Boolean(props.suspendNativeSurfaces)} />
                        : pane.kind === "sidechat" && props.sideChat ? <WorkspaceSideChatPane sideChat={props.sideChat} active={paneIsActive(pane.id)} />

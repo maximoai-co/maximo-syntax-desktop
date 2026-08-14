@@ -634,6 +634,10 @@ export interface GitFile {
   status: string;
   additions: number;
   deletions: number;
+  stagedAdditions?: number;
+  stagedDeletions?: number;
+  unstagedAdditions?: number;
+  unstagedDeletions?: number;
   staged?: boolean;
   unstaged?: boolean;
 }
@@ -650,6 +654,10 @@ export interface GitStatus {
 export interface GitDiff {
   path: string;
   patch: string;
+  /** UI provenance. Git IPC responses omit this; task-history selections set it in the renderer. */
+  source?: "working-tree" | "unstaged" | "staged" | "turn";
+  /** Assistant message that owns a persisted turn diff, used to reveal sibling files from the same turn. */
+  turnId?: string;
 }
 
 export interface GitRemote {
@@ -1197,7 +1205,7 @@ export interface DesktopApi {
   gitBranches(projectId: string): Promise<{ current: string; branches: string[]; dirty: boolean }>;
   gitCheckout(projectId: string, branch: string): Promise<GitStatus>;
   gitCreateBranch(projectId: string, branch: string): Promise<GitStatus>;
-  gitDiff(projectId: string, path: string): Promise<GitDiff>;
+  gitDiff(projectId: string, path: string, scope?: "working-tree" | "unstaged" | "staged"): Promise<GitDiff>;
   gitStage(projectId: string, paths: string[]): Promise<GitStatus>;
   gitUnstage(projectId: string, paths: string[]): Promise<GitStatus>;
   gitCommitPush(projectId: string, message: string): Promise<GitStatus>;

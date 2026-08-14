@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { DEFAULT_SETTINGS, DEFAULT_THEME_PACKS, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
+import { normalizeRetiredMytabulonModel } from "./model-defaults.js";
 import { normalizeThemePack } from "./theme.js";
 import type { AppState, AskUserAnswer, Attachment, ChatMessage, ContextUsage, FileChange, PermissionMode, ProfileUsage, Project, ProjectColorName, ProjectIconName, RunActivity, RunTimelineItem, Settings, Space, SpaceIconName, ThemeVariant, Thread, ThreadStatus } from "./types.js";
 
@@ -55,7 +56,7 @@ export function normalizeSettings(input: unknown): Settings {
     theme,
     themePacks,
     cliPath: normalizedString(source.cliPath),
-    defaultModel: normalizedString(source.defaultModel, "", 200),
+    defaultModel: normalizeRetiredMytabulonModel(normalizedString(source.defaultModel, "", 200)) ?? "",
     defaultEffort: normalizedString(source.defaultEffort, "", 40),
     defaultPermission,
     hideFullAccessWarning: typeof source.hideFullAccessWarning === "boolean" ? source.hideFullAccessWarning : DEFAULT_SETTINGS.hideFullAccessWarning,
@@ -191,6 +192,7 @@ function normalizeState(input: unknown, fallback: AppState): AppState {
     threads: Array.isArray(value.threads) ? value.threads.map((thread) => {
       const normalizedThread = {
         ...thread,
+        ...(typeof thread.model === "string" ? { model: normalizeRetiredMytabulonModel(thread.model) } : {}),
         ...(thread.title === "New task" ? { title: "New chat" } : {}),
         ...(thread.status === "running" ? { status: "cancelled" as const } : {}),
       };

@@ -3706,6 +3706,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .workspace-diff-header .workspace-diff-scope .custom-select-trigger:hover, .workspace-diff-header .workspace-diff-scope.open .custom-select-trigger { background: var(--surface-hover); }
 .workspace-diff-header .workspace-diff-scope .custom-select-menu { top: calc(100% + 7px); width: 218px; min-width: 218px; }
 .workspace-diff-toolbar { min-height: 38px; padding: 6px 8px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent); background: var(--bg); }
+.workspace-diff-history-note { min-height: 29px; padding: 5px 11px; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent); background: color-mix(in srgb, var(--accent) 5%, var(--bg)); color: var(--muted); font-size: 9px; line-height: 1.35; }
+.workspace-diff-history-note svg { flex: 0 0 auto; color: var(--accent-strong); }
 .workspace-diff-search { min-width: 0; flex: 1; height: 28px; padding: 0 8px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 7px; color: var(--faint); background: var(--bg-soft); }
 .workspace-diff-search:focus-within { border-color: var(--accent); color: var(--accent-strong); }
 .workspace-diff-toolbar input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 11px; }

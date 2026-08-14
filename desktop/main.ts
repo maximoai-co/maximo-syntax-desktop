@@ -39,6 +39,7 @@ import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
 import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, AutomationCreateInput, AutomationDefinition, AutomationRun, AutomationUpdateInput, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, ProjectColorName, ProjectIconName, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 import { launchConfigurationChanged, resolveAsFollowUp, RUN_ALREADY_RUNNING_ERROR, RUN_NOT_RUNNING_ERROR, type RunLaunchConfiguration } from "./run-dispatch.js";
 import { taskCompletionNotification } from "./task-notifications.js";
+import { normalizeRetiredMytabulonModel } from "./model-defaults.js";
 
 let mainWindow: BrowserWindow | null = null;
 let store: StateStore;
@@ -1119,7 +1120,7 @@ function registerIpc(): void {
       threadId,
       prompt,
       attachments: await normalizeAttachments(request.attachments),
-      model: typeof request.model === "string" ? request.model.slice(0, 200) : "",
+      model: typeof request.model === "string" ? normalizeRetiredMytabulonModel(request.model.slice(0, 200)) ?? "" : "",
       effort: typeof request.effort === "string" ? request.effort.slice(0, 40) : "",
       permission,
       additionalDirectories: (project.sourcePaths ?? [])
@@ -1475,7 +1476,7 @@ function registerIpc(): void {
     if (result.code !== 0) throw new Error("Git could not create that branch. It may already exist or conflict with current changes.");
     return readGitStatus(project.id);
   });
-  ipcMain.handle("git:diff", async (_event, projectId: string, requestedPath: string) => {
+  ipcMain.handle("git:diff", async (_event, projectId: string, requestedPath: string, requestedScope?: string) => {
     const project = store.getProject(safeText(projectId, 100));
     if (!project) throw new Error("Project not found.");
     const requested = safeText(requestedPath, 2_000);
@@ -1495,10 +1496,16 @@ function registerIpc(): void {
       const noIndex = await runGit(["diff", "--no-index", "--unified=4", "--", "/dev/null", absolute], project.path);
       return { path, patch: noIndex.stdout };
     }
-    const result = await runGit(["diff", "--no-ext-diff", "--unified=4", "HEAD", "--", path], project.path);
+    const scope = requestedScope === "staged" || requestedScope === "unstaged" ? requestedScope : "working-tree";
+    const diffArgs = scope === "staged"
+      ? ["diff", "--cached", "--no-ext-diff", "--unified=4", "--", path]
+      : scope === "unstaged"
+        ? ["diff", "--no-ext-diff", "--unified=4", "--", path]
+        : ["diff", "--no-ext-diff", "--unified=4", "HEAD", "--", path];
+    const result = await runGit(diffArgs, project.path);
     if (result.stdout.trim()) return { path, patch: result.stdout };
     const status = await runGit(["status", "--porcelain=v1", "--", path], project.path);
-    if (/^\?\?\s/.test(status.stdout.trim())) {
+    if (scope !== "staged" && /^\?\?\s/.test(status.stdout.trim())) {
       const untracked = await runGit(["diff", "--no-index", "--unified=4", "/dev/null", path], project.path);
       return { path, patch: untracked.stdout };
     }
@@ -1591,16 +1598,24 @@ async function readGitStatus(projectId: string): Promise<GitStatus> {
   if (!project) return empty;
   const branchResult = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], project.path);
   if (branchResult.code !== 0) return empty;
-  const [statusResult, diffResult] = await Promise.all([
+  const [statusResult, diffResult, unstagedDiffResult, stagedDiffResult] = await Promise.all([
     runGit(["status", "--porcelain=v1", "-uall"], project.path),
     runGit(["diff", "--numstat", "HEAD"], project.path),
+    runGit(["diff", "--numstat"], project.path),
+    runGit(["diff", "--cached", "--numstat"], project.path),
   ]);
-  const counts = new Map<string, { additions: number; deletions: number }>();
-  for (const line of diffResult.stdout.split(/\r?\n/)) {
-    const [added, deleted, ...parts] = line.split("\t");
-    if (!parts.length) continue;
-    counts.set(parts.join("\t"), { additions: Number(added) || 0, deletions: Number(deleted) || 0 });
-  }
+  const readCounts = (output: string) => {
+    const counts = new Map<string, { additions: number; deletions: number }>();
+    for (const line of output.split(/\r?\n/)) {
+      const [added, deleted, ...parts] = line.split("\t");
+      if (!parts.length) continue;
+      counts.set(parts.join("\t"), { additions: Number(added) || 0, deletions: Number(deleted) || 0 });
+    }
+    return counts;
+  };
+  const counts = readCounts(diffResult.stdout);
+  const unstagedCounts = readCounts(unstagedDiffResult.stdout);
+  const stagedCounts = readCounts(stagedDiffResult.stdout);
   const files: GitFile[] = statusResult.stdout.split(/\r?\n/).filter(Boolean).map((line) => {
     const indexStatus = line[0] ?? " ";
     const worktreeStatus = line[1] ?? " ";
@@ -1615,12 +1630,18 @@ async function readGitStatus(projectId: string): Promise<GitStatus> {
     const unquoted = rawPath.startsWith('"') && rawPath.endsWith('"') ? rawPath.slice(1, -1).replace(/\\"/g, '"') : rawPath;
     const path = unquoted.includes(" -> ") ? unquoted.split(" -> ").pop()! : unquoted;
     const count = counts.get(path) ?? { additions: 0, deletions: 0 };
+    const stagedCount = stagedCounts.get(path) ?? { additions: 0, deletions: 0 };
+    const unstagedCount = unstagedCounts.get(path) ?? { additions: 0, deletions: 0 };
     return {
       path,
       status: statusCode,
       ...count,
+      stagedAdditions: stagedCount.additions,
+      stagedDeletions: stagedCount.deletions,
+      unstagedAdditions: unstagedCount.additions,
+      unstagedDeletions: unstagedCount.deletions,
       staged: indexStatus !== " " && indexStatus !== "?",
-      unstaged: worktreeStatus !== " " && worktreeStatus !== "?",
+      unstaged: statusCode === "?" || (worktreeStatus !== " " && worktreeStatus !== "?"),
     };
   });
   // For untracked files Git's HEAD diff has no entry so counts stay 0/0.
@@ -1636,6 +1657,7 @@ async function readGitStatus(projectId: string): Promise<GitStatus> {
             // Count lines: number of newline-terminated rows + last line if no trailing newline.
             const lines = content.endsWith("\n") ? content.split("\n").length - 1 : content.split("\n").length;
             file.additions = Math.max(0, lines);
+            file.unstagedAdditions = file.additions;
           }
         }
       } catch { /* keep 0/0 if read fails */ }

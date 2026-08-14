@@ -6,6 +6,9 @@ import type { Readable, Writable } from "node:stream";
 import type { EngineLaunch } from "./runtime-manager.js";
 import { MAX_ATTACHMENT_COUNT } from "./types.js";
 import type { AgentProgress, AgentRun, AgentStatus, AgentUsage, AgentWorkItem, Attachment, ClassifierDecision, ContextApiUsage, ContextUsage, FileChange, PermissionMode, RunActivity, RunEvent, RunRequest, RunTimelineItem, SlashCommand, ThreadStatus, TodoItem, TodoStatus } from "./types.js";
+import { buildUnifiedPatch, splitDiffLines } from "./unified-diff.js";
+
+export { buildUnifiedPatch } from "./unified-diff.js";
 
 /** Prefix used by the CLI for auto-mode classifier denials (see messages.ts). */
 export const CLASSIFIER_DENIAL_PREFIX = "Permission for this action has been denied. Reason: ";
@@ -553,11 +556,9 @@ function serializeToolInput(input: unknown): string | undefined {
   }
 }
 
-type DiffOperation = { type: "equal" | "added" | "removed"; text: string };
 type TextFileSnapshot = { absolutePath: string; path: string; existed: boolean; comparable: boolean; content: string };
 
 const MAX_DIFF_FILE_BYTES = 2 * 1024 * 1024;
-const MAX_DIFF_CELLS = 2_000_000;
 const MAX_RUN_ACTIVITY_ITEMS = 500;
 const MAX_RUN_TIMELINE_ITEMS = 800;
 const MAX_FILE_SNAPSHOT_COUNT = 100;
@@ -574,102 +575,6 @@ function appendBounded<T>(items: T[], item: T, limit: number): void {
 function isWithinPath(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
   return path === "" || (!path.startsWith("..") && !isAbsolute(path));
-}
-
-function splitDiffLines(content: string): string[] {
-  const normalized = content.replace(/\r\n/g, "\n");
-  if (!normalized) return [];
-  const lines = normalized.split("\n");
-  if (normalized.endsWith("\n")) lines.pop();
-  return lines;
-}
-
-function diffOperations(before: string[], after: string[]): DiffOperation[] {
-  if (before.length * after.length > MAX_DIFF_CELLS) {
-    return [
-      ...before.map((text) => ({ type: "removed" as const, text })),
-      ...after.map((text) => ({ type: "added" as const, text })),
-    ];
-  }
-  const table = Array.from({ length: before.length + 1 }, () => new Uint32Array(after.length + 1));
-  for (let beforeIndex = before.length - 1; beforeIndex >= 0; beforeIndex -= 1) {
-    for (let afterIndex = after.length - 1; afterIndex >= 0; afterIndex -= 1) {
-      table[beforeIndex]![afterIndex] = before[beforeIndex] === after[afterIndex]
-        ? table[beforeIndex + 1]![afterIndex + 1]! + 1
-        : Math.max(table[beforeIndex + 1]![afterIndex]!, table[beforeIndex]![afterIndex + 1]!);
-    }
-  }
-  const operations: DiffOperation[] = [];
-  let beforeIndex = 0;
-  let afterIndex = 0;
-  while (beforeIndex < before.length || afterIndex < after.length) {
-    if (beforeIndex < before.length && afterIndex < after.length && before[beforeIndex] === after[afterIndex]) {
-      operations.push({ type: "equal", text: before[beforeIndex]! });
-      beforeIndex += 1;
-      afterIndex += 1;
-    } else if (beforeIndex < before.length && (afterIndex >= after.length || table[beforeIndex + 1]![afterIndex]! >= table[beforeIndex]![afterIndex + 1]!)) {
-      operations.push({ type: "removed", text: before[beforeIndex]! });
-      beforeIndex += 1;
-    } else {
-      operations.push({ type: "added", text: after[afterIndex]! });
-      afterIndex += 1;
-    }
-  }
-  return operations;
-}
-
-function diffRangeStart(start: number, count: number): string {
-  if (count === 0) return `${Math.max(0, start - 1)},0`;
-  return count === 1 ? String(start) : `${start},${count}`;
-}
-
-export function buildUnifiedPatch(path: string, beforeContent: string, afterContent: string): FileChange {
-  const operations = diffOperations(splitDiffLines(beforeContent), splitDiffLines(afterContent));
-  const changedIndexes = operations.flatMap((operation, index) => operation.type === "equal" ? [] : [index]);
-  if (changedIndexes.length === 0) return { path, patch: "", additions: 0, deletions: 0 };
-
-  const context = 4;
-  const hunks: Array<{ start: number; end: number }> = [];
-  for (const changedIndex of changedIndexes) {
-    const nextStart = Math.max(0, changedIndex - context);
-    const nextEnd = Math.min(operations.length, changedIndex + context + 1);
-    const previous = hunks.at(-1);
-    if (previous && nextStart <= previous.end + context) previous.end = Math.max(previous.end, nextEnd);
-    else hunks.push({ start: nextStart, end: nextEnd });
-  }
-
-  let oldLine = 1;
-  let newLine = 1;
-  const oldLineAt: number[] = [];
-  const newLineAt: number[] = [];
-  for (let index = 0; index <= operations.length; index += 1) {
-    oldLineAt[index] = oldLine;
-    newLineAt[index] = newLine;
-    const operation = operations[index];
-    if (!operation) continue;
-    if (operation.type !== "added") oldLine += 1;
-    if (operation.type !== "removed") newLine += 1;
-  }
-
-  const patchLines = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`];
-  for (const hunk of hunks) {
-    let oldCount = 0;
-    let newCount = 0;
-    for (const operation of operations.slice(hunk.start, hunk.end)) {
-      if (operation.type !== "added") oldCount += 1;
-      if (operation.type !== "removed") newCount += 1;
-    }
-    patchLines.push(`@@ -${diffRangeStart(oldLineAt[hunk.start]!, oldCount)} +${diffRangeStart(newLineAt[hunk.start]!, newCount)} @@`);
-    for (const operation of operations.slice(hunk.start, hunk.end)) {
-      patchLines.push(`${operation.type === "added" ? "+" : operation.type === "removed" ? "-" : " "}${operation.text}`);
-    }
-  }
-  return {
-    path,
-    patch: `${patchLines.join("\n")}\n`,
-    additions: operations.filter((operation) => operation.type === "added").length,
-    deletions: operations.filter((operation) => operation.type === "removed").length,
-  };
 }
 
 type ParsedHunk = {

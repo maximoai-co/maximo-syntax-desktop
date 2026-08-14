@@ -16,7 +16,7 @@ describe("parseModel", () => {
 
   it("keeps explicitly advertised effort levels authoritative", () => {
     expect(parseModel({
-      id: "maximo-atlas-preview",
+      id: "maximo-atlas-1.2",
       reasoning: { supported_efforts: ["medium", "high"], default_effort: "medium" },
       supported_features: ["reasoning"],
     })).toMatchObject({
