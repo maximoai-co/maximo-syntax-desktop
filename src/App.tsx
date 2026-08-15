@@ -6,9 +6,9 @@ import {
   GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
   Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Undo2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, WrapText, X, Zap,
 } from "lucide-react";
-import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT } from "../desktop/types";
+import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_SIZE } from "../desktop/types";
 import type {
-  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AppUpdateState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, BrowserClearDataInput, BrowserProfileSettingsInput, BrowserProfileSnapshot, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, ProjectColorName, ProjectIconName, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, ThreadGoalState, TimestampFormat, TodoItem, UsageSnapshot, WhatsNewSnapshot,
+  AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AppUpdateState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, AttachmentRejection, AttachmentResolution, BrowserClearDataInput, BrowserProfileSettingsInput, BrowserProfileSnapshot, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, ProjectColorName, ProjectIconName, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, ThreadGoalState, TimestampFormat, TodoItem, UsageSnapshot, WhatsNewSnapshot,
 } from "../desktop/types";
 import {
   getAppUpdateButtonLabel,
@@ -60,6 +60,7 @@ import { modelProvider, type ModelProvider } from "./utils/modelProvider.js";
 import { effortLabel, effortOptionsFor, normalizeEffortValue } from "./utils/modelCatalog.js";
 import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollElementNearBottom, shouldStickToScrollBottom } from "./utils/chatScroll.js";
 import { activitySummaryDetail } from "./utils/activitySummary.js";
+import { formatSubagentTitle, isGenericSubagentType } from "./utils/subagentDisplay.js";
 import { resolveComposerRunSelection } from "./utils/composerSelection.js";
 import { matchesSlashCommandQuery } from "./utils/slashCommandMatching.js";
 import { retryWithBackoff, isRetryableError, DEFAULT_MAX_RETRIES, getRetryMessage } from "./utils/retry.js";
@@ -102,6 +103,10 @@ function navigationMessageSummary(message: ChatMessage): ChatMessage {
     ...(message.model !== undefined ? { model: message.model } : {}),
     ...(message.attachments?.length ? { attachments: message.attachments } : {}),
     ...(message.isError !== undefined ? { isError: message.isError } : {}),
+    ...(message.interrupted ? {
+      interrupted: true,
+      ...(message.durationMs !== undefined ? { durationMs: message.durationMs } : {}),
+    } : {}),
     ...(message.interaction ? { interaction: message.interaction } : {}),
     ...(message.kind ? { kind: message.kind } : {}),
     ...(message.uuid ? { uuid: message.uuid } : {}),
@@ -938,7 +943,8 @@ const syntaxWorkPhrases = [
 function liveWorkLabel(live: LiveRun | undefined, activeAgent: AgentRun | undefined): string {
   if (activeAgent) {
     if (activeAgent.lastToolName) return `Using ${activeAgent.lastToolName}`;
-    if (activeAgent.agentType) return `Thinking with ${activeAgent.agentType}`;
+    if (activeAgent.agentType && !isGenericSubagentType(activeAgent.agentType)) return `Thinking with ${activeAgent.agentType}`;
+    if (activeAgent.description && activeAgent.description !== "Sub-agent task") return `Thinking with ${activeAgent.description}`;
     return "Thinking with a sub-agent";
   }
   const item = live?.activity.at(-1);
@@ -1360,11 +1366,14 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
 function AgentTimelineEvent({ agent }: { agent: AgentRun }) {
   // Keep closed rows cheap: sub-agent work can include large nested tool I/O + markdown.
   const [expanded, setExpanded] = useState(false);
-  const name = agent.agentType || "Sub-agent";
+  const name = formatSubagentTitle(agent);
   const progress = agent.status === "running" ? (agent.lastToolName ? `Running ${agent.lastToolName}` : "Running") : agentStatusLabel(agent.status);
   return <details className={`work-event agent-event ${agent.status}`} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary>
-      <span className="work-event-icon"><AgentStatusIcon status={agent.status} /></span>
+      <span className="work-event-icon subagent-event-icon" title={agent.agentType || "Sub-agent"}>
+        <Bot size={12} aria-hidden="true" />
+        <AgentStatusIcon status={agent.status} />
+      </span>
       <span title={agent.description}>{name}</span>
       <small>{progress}</small>
       <ChevronRight size={12} />
@@ -1389,8 +1398,11 @@ function AgentStatusList({ agents }: { agents: AgentRun[] }) {
     <div className="agent-status-heading"><span><Users size={12} />Sub-agents</span><small>{running > 0 ? `${running} running` : `${agents.length} total`}</small></div>
     <div className="agent-status-list">
       {agents.slice(-6).map((agent) => <div className={`agent-status-row ${agent.status}`} key={agent.taskId}>
-        <span className="agent-status-icon"><AgentStatusIcon status={agent.status} /></span>
-        <span className="agent-status-copy"><strong title={agent.agentType || "Sub-agent"}>{agent.agentType || "Sub-agent"}</strong><small title={agent.description}>{agent.description}</small></span>
+        <span className="agent-status-icon subagent-event-icon" title={agent.agentType || "Sub-agent"}>
+          <Bot size={12} aria-hidden="true" />
+          <AgentStatusIcon status={agent.status} />
+        </span>
+        <span className="agent-status-copy"><strong title={agent.description}>{formatSubagentTitle(agent)}</strong><small title={agent.agentType || agent.description}>{isGenericSubagentType(agent.agentType) ? agent.description : agent.agentType}</small></span>
         <small className="agent-status-label">{agentStatusLabel(agent.status)}</small>
       </div>)}
     </div>
@@ -1816,13 +1828,13 @@ function boundedLiveTimelineText(entries: RunTimelineItem[]): RunTimelineItem[] 
   return bounded;
 }
 
-function WorkDisclosure({ timeline, interactions = [], durationMs, live = false, finalContent, onOpenFile, fileChanges, project, messageId, onPreviewAttachment }: { timeline?: RunTimelineItem[]; interactions?: TimedInteraction[]; durationMs?: number; live?: boolean; finalContent?: string; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; messageId?: string; onPreviewAttachment?: (attachment: Attachment) => void }) {
+function WorkDisclosure({ timeline, interactions = [], durationMs, interrupted = false, live = false, finalContent, onOpenFile, fileChanges, project, messageId, onPreviewAttachment }: { timeline?: RunTimelineItem[]; interactions?: TimedInteraction[]; durationMs?: number; interrupted?: boolean; live?: boolean; finalContent?: string; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; messageId?: string; onPreviewAttachment?: (attachment: Attachment) => void }) {
   const [open, setOpen] = useState(false);
   // Defer mounting the body one frame so the chevron/open state paints immediately.
   const [bodyReady, setBodyReady] = useState(false);
   const [renderedEntryCount, setRenderedEntryCount] = useState(INITIAL_WORK_ENTRIES);
   // For historic (non-live) disclosures, avoid merging while collapsed when we have no data to show.
-  // The disclosure header ("Worked for…") still renders, but the heavy merge + sort is deferred until open.
+  // The disclosure header still renders, but the heavy merge + sort is deferred until open.
   const shouldMerge = live || open || Boolean(durationMs);
   const entries = useMemo(() => {
     // Live runs can retain hundreds of events for recovery, but only the tail is
@@ -1898,9 +1910,9 @@ function WorkDisclosure({ timeline, interactions = [], durationMs, live = false,
     // Memoize live WorkTimeline props to avoid re-creating timeline nodes when parent re-renders for unrelated state
     return <div className="agent-flow live-agent-flow"><WorkTimeline entries={visibleLiveEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} onPreviewAttachment={onPreviewAttachment} streaming /></div>;
   }
-  if (!durationMs && workEntries.length === 0) return null;
-  return <div className="agent-flow"><details className="worked-disclosure" open={open} onToggle={handleToggle}>
-    <summary><span>Worked for {formatDuration(durationMs ?? 0)}</span><ChevronRight size={13} /></summary>
+  if (!interrupted && !durationMs && workEntries.length === 0) return null;
+  return <div className="agent-flow"><details className={`worked-disclosure${interrupted ? " interrupted" : ""}`} open={open} onToggle={handleToggle}>
+    <summary><span>{interrupted ? "You stopped after" : "Worked for"} {formatDuration(durationMs ?? 0)}</span><ChevronRight size={13} /></summary>
     {open && (workEntries.length > 0 ? (
       bodyReady ? <>
         <WorkTimeline entries={visibleWorkEntries} onOpenFile={onOpenFile} fileChanges={fileChanges} project={project} turnId={messageId} onPreviewAttachment={onPreviewAttachment} />
@@ -2047,7 +2059,7 @@ function attachmentKindForName(name: string): AttachmentPreviewKind {
   if (["avif", "bmp", "gif", "ico", "jpeg", "jpg", "png", "svg", "webp"].includes(extension)) return "image";
   if (extension === "pdf") return "pdf";
   if (["aac", "flac", "m4a", "mp3", "oga", "ogg", "wav"].includes(extension)) return "audio";
-  if (["3gp", "m4v", "mov", "mp4", "ogv", "webm"].includes(extension)) return "video";
+  if (["3g2", "3gp", "asf", "avi", "flv", "m1v", "m2ts", "m2v", "m4v", "mkv", "mov", "movie", "mp4", "mpe", "mpeg", "mpg", "ogm", "ogv", "qt", "vob", "webm", "wmv"].includes(extension)) return "video";
   if (["c", "cc", "conf", "cpp", "css", "csv", "env", "go", "h", "hpp", "htm", "html", "ini", "java", "js", "jsx", "json", "less", "log", "markdown", "md", "mjs", "mts", "py", "rs", "sass", "scss", "sh", "sql", "toml", "ts", "tsx", "txt", "vue", "xml", "yaml", "yml", "zsh"].includes(extension)) return "text";
   return "unsupported";
 }
@@ -2114,8 +2126,12 @@ const AttachmentList = memo(function AttachmentList({ attachments, onPreview, on
 
 function AttachmentPreviewModal({ state, theme, onClose }: { state: AttachmentPreviewState; theme: ThemeMode; onClose: () => void }) {
   const [openError, setOpenError] = useState<string | null>(null);
+  const [videoPlaybackError, setVideoPlaybackError] = useState(false);
   const { attachment, preview, loading } = state;
   const kind = preview?.kind ?? attachmentKindForName(attachment.name);
+  useEffect(() => {
+    setVideoPlaybackError(false);
+  }, [attachment.path, preview?.dataUrl]);
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKeyDown);
@@ -2129,10 +2145,10 @@ function AttachmentPreviewModal({ state, theme, onClose }: { state: AttachmentPr
   const content = loading ? <div className="attachment-preview-loading"><RefreshCw size={21} className="spin" /><span>Preparing preview…</span></div>
     : preview?.dataUrl && kind === "image" ? <img className="attachment-preview-image" src={preview.dataUrl} alt={attachment.name} />
     : preview?.dataUrl && kind === "pdf" ? <iframe className="attachment-preview-pdf" src={preview.dataUrl} title={`Preview of ${attachment.name}`} />
-    : preview?.dataUrl && kind === "video" ? <video className="attachment-preview-video" src={preview.dataUrl} controls autoPlay={false} />
+    : preview?.dataUrl && kind === "video" && !videoPlaybackError ? <video className="attachment-preview-video" src={preview.dataUrl} controls autoPlay={false} preload="metadata" playsInline onError={() => setVideoPlaybackError(true)} />
     : preview?.dataUrl && kind === "audio" ? <audio className="attachment-preview-audio" src={preview.dataUrl} controls />
     : preview?.text !== undefined ? <pre className="attachment-preview-text">{preview.text}</pre>
-    : <div className="attachment-preview-unavailable"><AttachmentGlyph kind={kind} /><strong>Preview unavailable</strong><p>{state.error ?? preview?.reason ?? "The original file could not be read."}</p></div>;
+    : <div className="attachment-preview-unavailable"><AttachmentGlyph kind={kind} /><strong>Preview unavailable</strong><p>{state.error ?? preview?.reason ?? (videoPlaybackError ? "This video format or codec is not supported by the built-in player. Use Open file to play it with a system app." : "The original file could not be read.")}</p></div>;
   return createPortal(
     <div className={`attachment-preview-backdrop theme-${theme}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="attachment-preview-modal glass-panel" role="dialog" aria-modal="true" aria-labelledby="attachment-preview-title">
@@ -3838,11 +3854,11 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
             <span>Maximo Syntax</span>
             <time>{formatTimestamp(message.createdAt, timestampFormat)}</time>
           </div>
-          <MemoizedWorkDisclosure timeline={turnTimeline} interactions={interactions} durationMs={message.durationMs} finalContent={message.content} onOpenFile={onOpenFile} fileChanges={message.fileChanges} project={project} messageId={message.id} onPreviewAttachment={onPreviewAttachment} />
+          <MemoizedWorkDisclosure timeline={turnTimeline} interactions={interactions} durationMs={message.durationMs} interrupted={message.interrupted} finalContent={message.content} onOpenFile={onOpenFile} fileChanges={message.fileChanges} project={project} messageId={message.id} onPreviewAttachment={onPreviewAttachment} />
           {/* Error color applies only to this final body — not work-timeline partial answers. */}
-          <MarkdownContent className={message.isError ? "message-error-body" : undefined}>{message.content}</MarkdownContent>
+          {message.content.trim() && <MarkdownContent className={message.isError ? "message-error-body" : undefined}>{message.content}</MarkdownContent>}
           <TurnFileChanges timeline={turnTimeline} fileChanges={message.fileChanges} project={project} git={git} onOpenFile={onOpenFile} messageId={message.id} onRevert={onRevert} />
-          <div className="message-actions assistant-actions">{message.role === "assistant" && <AnswerModelLabel message={message} thread={displayThread} models={models} />}<MessageEnvironmentActions message={message} pinned={Boolean(displayThread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} /><CopyMessageButton content={message.content} /></div>
+          <div className="message-actions assistant-actions">{message.role === "assistant" && <AnswerModelLabel message={message} thread={displayThread} models={models} />}<MessageEnvironmentActions message={message} pinned={Boolean(displayThread.pinnedMessages?.some((pin) => pin.messageId === message.id))} onTogglePin={() => onTogglePin(message.id)} />{message.content.trim() && <CopyMessageButton content={message.content} />}</div>
         </article>,
       );
     }
@@ -3952,6 +3968,27 @@ function FullAccessConfirm({ onCancel, onConfirm }: { onCancel: () => void; onCo
   );
 }
 
+function AttachmentLimitModal({ rejections, onClose }: { rejections: AttachmentRejection[]; onClose: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  return createPortal(
+    <div className="permission-confirm-backdrop attachment-limit-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="permission-confirm attachment-limit-modal glass-panel" role="alertdialog" aria-modal="true" aria-labelledby="attachment-limit-title">
+        <span className="permission-confirm-icon attachment-limit-icon"><AlertCircle size={18} /></span>
+        <div><strong id="attachment-limit-title">Attachment not added</strong><p>{rejections.length === 1 ? "This file is too large to attach." : "These files are too large to attach."} The maximum attachment size is {formatFileSize(MAX_ATTACHMENT_SIZE)}.</p></div>
+        <div className="permission-scope-list attachment-rejection-list">
+          {rejections.map((rejection, index) => <span key={`${rejection.name}-${rejection.size}-${index}`}><File size={15} /><div><strong title={rejection.name}>{rejection.name}</strong><small>{formatFileSize(rejection.size)} · {rejection.reason}</small></div></span>)}
+        </div>
+        <div className="permission-confirm-actions"><button type="button" onClick={onClose}>Close</button></div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 const Composer = memo(function Composer({ thread, project, git, settings, models, modelOptions, slashCommands, skillCommands = [], discoveredSkills = [], contextUsage, contextLoading = false, onRefreshContext, onSend, onStop, onOpenProject, onAccountUsage, onSettingsChanged, onGitChanged, onPreviewAttachment, pendingQuestion, pendingPermission, onSubmitAnswers, onSkipQuestion, onApprovePermission, onDenyPermission, queuedFollowUps = [], onRemoveQueuedFollowUp, onEditQueuedFollowUp, draft, onDraftChange, starterSelection }: {
   thread: Thread; project?: Project; git: GitStatus | null; settings: AppState["settings"]; models: EngineModel[]; modelOptions: SelectOption<string>[]; slashCommands: SlashCommand[]; skillCommands?: SlashCommand[]; discoveredSkills?: SlashCommand[];
   contextUsage: ContextUsage | null; contextLoading?: boolean; onRefreshContext: () => Promise<void>;
@@ -3973,6 +4010,7 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
   const [prompt, setPrompt] = useState(() => draft?.prompt ?? "");
   const [attachments, setAttachments] = useState<Attachment[]>(() => draft?.attachments ?? []);
   const [pastedTexts, setPastedTexts] = useState<PastedTextDraft[]>(() => draft?.pastedTexts ?? []);
+  const [attachmentRejections, setAttachmentRejections] = useState<AttachmentRejection[]>([]);
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
   const [model, setModel] = useState(() => draft?.model ?? thread.model ?? settings.defaultModel);
   const [effort, setEffort] = useState(() => draft?.effort ?? thread.effort ?? settings.defaultEffort);
@@ -4034,6 +4072,9 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
       composerNoticeTimerRef.current = null;
       setComposerNotice(null);
     }, 2_800);
+  }, []);
+  const showAttachmentRejections = useCallback((rejections: AttachmentRejection[]) => {
+    if (rejections.length > 0) setAttachmentRejections(rejections);
   }, []);
   useEffect(() => () => {
     if (composerNoticeTimerRef.current !== null) window.clearTimeout(composerNoticeTimerRef.current);
@@ -4304,7 +4345,14 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
     setAttachments((items) => items.filter((item) => item.path !== file.path));
   }, []);
   const addFiles = async (files: File[]) => {
-    const selected = await Promise.all(files.slice(0, MAX_ATTACHMENT_COUNT).map(async (file) => {
+    const candidates = files.slice(0, MAX_ATTACHMENT_COUNT);
+    const oversized = candidates.filter((file) => file.size > MAX_ATTACHMENT_SIZE).map((file): AttachmentRejection => ({
+      name: file.name || "Selected file",
+      size: file.size,
+      reason: `This file exceeds the ${formatFileSize(MAX_ATTACHMENT_SIZE)} attachment limit.`,
+    }));
+    const eligible = candidates.filter((file) => file.size <= MAX_ATTACHMENT_SIZE);
+    const selected = await Promise.all(eligible.map(async (file): Promise<AttachmentResolution> => {
       let path = "";
       try { path = window.maximoDesktop.filePath(file); } catch { path = ""; }
       if (path) return window.maximoDesktop.attachmentFromPath(path);
@@ -4312,24 +4360,23 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
         const bytes = new Uint8Array(await file.arrayBuffer());
         const fallbackName = file.name || `pasted-file-${Date.now()}${file.type === "image/png" ? ".png" : ""}`;
         return window.maximoDesktop.savePastedAttachment(fallbackName, bytes);
-      } catch { return null; }
+      } catch { return { attachment: null }; }
     }));
-    addAttachments(selected.filter((file): file is Attachment => Boolean(file)));
+    const rejected = [...oversized, ...selected.map((result) => result.rejection).filter((rejection): rejection is AttachmentRejection => Boolean(rejection))];
+    showAttachmentRejections(rejected);
+    addAttachments(selected.map((result) => result.attachment).filter((file): file is Attachment => Boolean(file)));
   };
-  const addPaths = async (paths: string[]) => {
-    const selected = await Promise.all(paths.slice(0, MAX_ATTACHMENT_COUNT).map((path) => window.maximoDesktop.attachmentFromPath(path)));
-    addAttachments(selected.filter((file): file is Attachment => Boolean(file)));
+  const chooseAttachments = async () => {
+    const result = await window.maximoDesktop.chooseAttachments();
+    showAttachmentRejections(result.rejected);
+    addAttachments(result.attachments);
   };
-  const chooseAttachments = async () => addAttachments(await window.maximoDesktop.chooseAttachments());
   const handleDrop = async (event: ReactDragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragActive(false);
     if (waitingForResponse) return;
     const files = Array.from(event.dataTransfer.files);
-    const paths = files.map((file) => { try { return window.maximoDesktop.filePath(file); } catch { return ""; } }).filter(Boolean);
-    if (paths.length) await addPaths(paths);
-    const filesWithoutPaths = files.filter((file) => !paths.includes((() => { try { return window.maximoDesktop.filePath(file); } catch { return ""; } })()));
-    if (filesWithoutPaths.length) await addFiles(filesWithoutPaths);
+    if (files.length) await addFiles(files);
   };
   const handlePaste = async (event: ReactClipboardEvent<HTMLDivElement>) => {
     if (waitingForResponse) return;
@@ -4527,6 +4574,7 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
   return (
     <div className="composer-wrap">
       {confirmFullAccess && <FullAccessConfirm onCancel={() => setConfirmFullAccess(false)} onConfirm={() => { setPermission("full"); onDraftChange?.(thread.id, { permission: "full" }); setConfirmFullAccess(false); }} />}
+      {attachmentRejections.length > 0 && <AttachmentLimitModal rejections={attachmentRejections} onClose={() => setAttachmentRejections([])} />}
       {goalBanner && (
         <div
           className={`goal-banner glass-panel goal-banner-${goalBanner.phase}`}
@@ -4574,7 +4622,7 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
         </div>
       )}
       {!waitingForResponse && <div className={`composer glass-panel ${running ? "running" : ""} ${dragActive ? "drop-active" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragActive(true); }} onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragLeave={(event) => { if (event.currentTarget === event.target || !event.currentTarget.contains(event.relatedTarget as Node)) setDragActive(false); }} onDrop={(event) => void handleDrop(event)} onPaste={(event) => void handlePaste(event)}>
-         {dragActive && <div className="drop-overlay"><Paperclip size={20} /><strong>Drop files to attach</strong><small>Images, documents, and code files up to 25 MB</small></div>}
+         {dragActive && <div className="drop-overlay"><Paperclip size={20} /><strong>Drop files to attach</strong><small>Images, documents, and code files up to {formatFileSize(MAX_ATTACHMENT_SIZE)}</small></div>}
          {thread.messages.length === 0 && project && <div className="composer-context">
           <button type="button" onClick={() => void openContext("project")}><FolderOpen size={13} />{project.name}<ChevronDown size={10} /></button>
           <button type="button" onClick={() => void openContext("location")}><HardDrive size={13} />Local<ChevronDown size={10} /></button>

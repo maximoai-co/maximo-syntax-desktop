@@ -77,6 +77,7 @@ export const DEFAULT_THEME_PACKS: Record<ThemeVariant, ThemePack> = {
 };
 
 export const MAX_ATTACHMENT_COUNT = 10;
+export const MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024;
 export const MAX_PROJECT_SOURCE_COUNT = 5;
 
 export type ProjectColorName = "default" | "red" | "orange" | "yellow" | "green" | "blue" | "purple" | "pink";
@@ -254,6 +255,22 @@ export interface Attachment {
   size: number;
 }
 
+export interface AttachmentRejection {
+  name: string;
+  size: number;
+  reason: string;
+}
+
+export interface AttachmentResolution {
+  attachment: Attachment | null;
+  rejection?: AttachmentRejection;
+}
+
+export interface AttachmentSelectionResult {
+  attachments: Attachment[];
+  rejected: AttachmentRejection[];
+}
+
 export type AttachmentPreviewKind = "image" | "pdf" | "text" | "video" | "audio" | "unsupported";
 
 export interface AttachmentPreview {
@@ -380,6 +397,8 @@ export interface ChatMessage {
   timeline?: RunTimelineItem[];
   durationMs?: number;
   isError?: boolean;
+  /** True when the user stopped this assistant turn before it completed. */
+  interrupted?: boolean;
   interaction?: ChatInteraction;
   fileChanges?: FileChange[];
   /** Context added while a run was active; rendered inside the assistant work disclosure. */
@@ -1174,9 +1193,9 @@ export interface DesktopApi {
   removeThreadMarker(threadId: string, markerId: string): Promise<AppState>;
   updateThreadNotes(threadId: string, notes: string): Promise<AppState>;
   deleteThread(threadId: string): Promise<AppState>;
-  chooseAttachments(): Promise<Attachment[]>;
-  attachmentFromPath(path: string): Promise<Attachment | null>;
-  savePastedAttachment(name: string, bytes: Uint8Array): Promise<Attachment | null>;
+  chooseAttachments(): Promise<AttachmentSelectionResult>;
+  attachmentFromPath(path: string): Promise<AttachmentResolution>;
+  savePastedAttachment(name: string, bytes: Uint8Array): Promise<AttachmentResolution>;
   previewAttachment(path: string, thumbnail?: boolean): Promise<AttachmentPreview | null>;
   filePath(file: unknown): string;
   ensureEngine(forceRepair?: boolean): Promise<EngineStatus>;

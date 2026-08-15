@@ -4,6 +4,11 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] - 2026-08-15
+
+- **Sub-agent timeline**: chat timeline rows now use a dedicated sub-agent icon and show `subagent: <task title>` instead of the generic `general-purpose` type name.
+- **Bundled CLI engine**: the desktop build now bundles CLI `v0.1.37`, which uses the same logged-in account catalog as `/model` for sub-agent model/effort (Maximo AI, MyTabulon, Cencori, OpenRouter, OpenCode) and no longer advertises Claude leftovers like `sonnet` / `opus` / `haiku`.
+
 ## [0.1.11] - 2026-08-14
 
 - **Bundled CLI engine**: the desktop build now bundles CLI `v0.1.33`, whose MyTabulon default is Atlas 1.2; existing Atlas Preview selections are migrated before a run.

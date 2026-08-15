@@ -168,6 +168,27 @@ describe("StateStore", () => {
     expect(finished.messages[1]?.durationMs).toBe(12_000);
   });
 
+  it("records a stopped turn without adding a fake assistant answer", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(directory, createInitialState(directory));
+    await store.initialize();
+    const project = store.snapshot().projects[0]!;
+    const state = await store.createThread(project.id);
+    const threadId = state.selectedThreadId!;
+
+    await store.beginRun(threadId, "Stop this run", [], "", "", "auto");
+    await store.finishRun(threadId, "Run stopped.", "cancelled", "session-stopped", false, [], 9_300);
+
+    const stopped = store.getThread(threadId)!;
+    const assistant = stopped.messages.at(-1)!;
+    expect(stopped.status).toBe("cancelled");
+    expect(assistant.role).toBe("assistant");
+    expect(assistant.content).toBe("");
+    expect(assistant.interrupted).toBe(true);
+    expect(assistant.durationMs).toBe(9_300);
+  });
+
   it("persists the latest context snapshot for chat reloads", async () => {
     const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
     temporaryDirectories.push(directory);

@@ -35,8 +35,8 @@ import {
   toWhatsNewSnapshot,
 } from "./whats-new.js";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
-import { MAX_ATTACHMENT_COUNT, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
-import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, AutomationCreateInput, AutomationDefinition, AutomationRun, AutomationUpdateInput, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, ProjectColorName, ProjectIconName, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
+import { MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_SIZE, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
+import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, AttachmentRejection, AttachmentResolution, AttachmentSelectionResult, AutomationCreateInput, AutomationDefinition, AutomationRun, AutomationUpdateInput, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, ProjectColorName, ProjectIconName, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 import { launchConfigurationChanged, resolveAsFollowUp, RUN_ALREADY_RUNNING_ERROR, RUN_NOT_RUNNING_ERROR, type RunLaunchConfiguration } from "./run-dispatch.js";
 import { taskCompletionNotification } from "./task-notifications.js";
 import { normalizeRetiredMytabulonModel } from "./model-defaults.js";
@@ -69,7 +69,6 @@ let rendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 const rendererRecoveryTimes: number[] = [];
 // Local staging ceiling; the CLI applies its format-specific API limits when
 // it dereferences the @-mentioned path.
-const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
 const MAX_BINARY_PREVIEW_SIZE = 12 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_SIZE = 512 * 1024;
 const MAXIMO_PROJECTS_ROOT = resolve(homedir(), ".maximo", "projects");
@@ -115,12 +114,28 @@ const attachmentMimeTypes: Record<string, string> = {
   ".ogg": "audio/ogg",
   ".wav": "audio/wav",
   ".aac": "audio/aac",
+  ".3g2": "video/3gpp2",
   ".m4v": "video/mp4",
   ".mov": "video/quicktime",
+  ".movie": "video/quicktime",
   ".mp4": "video/mp4",
+  ".qt": "video/quicktime",
   ".ogv": "video/ogg",
   ".webm": "video/webm",
   ".3gp": "video/3gpp",
+  ".avi": "video/x-msvideo",
+  ".asf": "video/x-ms-asf",
+  ".flv": "video/x-flv",
+  ".m1v": "video/mpeg",
+  ".m2ts": "video/mp2t",
+  ".m2v": "video/mpeg",
+  ".mkv": "video/x-matroska",
+  ".mpe": "video/mpeg",
+  ".mpeg": "video/mpeg",
+  ".mpg": "video/mpeg",
+  ".ogm": "video/ogg",
+  ".vob": "video/dvd",
+  ".wmv": "video/x-ms-wmv",
   ".c": "text/x-c",
   ".cc": "text/x-c++",
   ".conf": "text/plain",
@@ -175,10 +190,19 @@ function attachmentPreviewKind(mimeType: string): AttachmentPreviewKind {
   return "unsupported";
 }
 
+function attachmentSizeRejection(name: string, size: number): AttachmentRejection {
+  return {
+    name,
+    size,
+    reason: `This file exceeds the ${Math.round(MAX_ATTACHMENT_SIZE / (1024 * 1024))} MB attachment limit.`,
+  };
+}
+
 function attachmentPreviewReason(kind: AttachmentPreviewKind, size: number): string | undefined {
-  if (size > MAX_ATTACHMENT_SIZE) return "This file is larger than the 25 MB attachment limit.";
+  if (size > MAX_ATTACHMENT_SIZE) return `This file is larger than the ${Math.round(MAX_ATTACHMENT_SIZE / (1024 * 1024))} MB attachment limit.`;
   if (kind === "unsupported") return "This file type opens in your default desktop app instead of an inline preview.";
   if (kind === "text") return undefined;
+  if (kind === "video") return undefined;
   const limit = MAX_BINARY_PREVIEW_SIZE;
   if (size > limit) return `This file is too large for an inline preview (${Math.round(limit / (1024 * 1024))} MB limit).`;
   return undefined;
@@ -341,15 +365,16 @@ function safeRelativeGitPaths(value: unknown): string[] {
     .filter((path) => path && !path.startsWith("/") && !/^[A-Za-z]:/.test(path) && !path.split("/").includes("..")))].slice(0, 200);
 }
 
-async function attachmentFromPathValue(requestedPath: unknown): Promise<Attachment | null> {
-  if (typeof requestedPath !== "string") return null;
+async function attachmentResolutionFromPath(requestedPath: unknown): Promise<AttachmentResolution> {
+  if (typeof requestedPath !== "string") return { attachment: null };
   const path = resolve(requestedPath.slice(0, 2_000));
   try {
     const info = await stat(path);
-    if (!info.isFile() || info.size > MAX_ATTACHMENT_SIZE) return null;
-    return { name: basename(path), path, size: info.size };
+    if (!info.isFile()) return { attachment: null };
+    if (info.size > MAX_ATTACHMENT_SIZE) return { attachment: null, rejection: attachmentSizeRejection(basename(path), info.size) };
+    return { attachment: { name: basename(path), path, size: info.size } };
   } catch {
-    return null;
+    return { attachment: null };
   }
 }
 
@@ -360,9 +385,9 @@ async function normalizeAttachments(value: unknown): Promise<Attachment[]> {
     const path = (item as { path?: unknown }).path;
     return typeof path === "string" ? path : null;
   });
-  const attachments = await Promise.all(paths.map(attachmentFromPathValue));
+  const resolutions = await Promise.all(paths.map(attachmentResolutionFromPath));
   const seen = new Set<string>();
-  return attachments.filter((attachment): attachment is Attachment => {
+  return resolutions.map((resolution) => resolution.attachment).filter((attachment): attachment is Attachment => {
     if (!attachment || seen.has(attachment.path)) return false;
     seen.add(attachment.path);
     return true;
@@ -958,25 +983,29 @@ function registerIpc(): void {
   ipcMain.handle("thread:notes-update", (_event, threadId: string, notes: string) => store.updateThreadNotes(safeText(threadId, 100), safeText(notes, 10_000)));
   ipcMain.handle("thread:delete", (_event, threadId: string) => store.deleteThread(safeText(threadId, 100)));
 
-  ipcMain.handle("attachments:choose", async (): Promise<Attachment[]> => {
+  ipcMain.handle("attachments:choose", async (): Promise<AttachmentSelectionResult> => {
     const result = await dialog.showOpenDialog(mainWindow!, { title: "Attach files", properties: ["openFile", "multiSelections"] });
-    if (result.canceled) return [];
-    const attachments = await Promise.all(result.filePaths.slice(0, MAX_ATTACHMENT_COUNT).map(attachmentFromPathValue));
-    return attachments.filter((attachment): attachment is Attachment => Boolean(attachment));
+    if (result.canceled) return { attachments: [], rejected: [] };
+    const resolutions = await Promise.all(result.filePaths.slice(0, MAX_ATTACHMENT_COUNT).map(attachmentResolutionFromPath));
+    return {
+      attachments: resolutions.map((resolution) => resolution.attachment).filter((attachment): attachment is Attachment => Boolean(attachment)),
+      rejected: resolutions.map((resolution) => resolution.rejection).filter((rejection): rejection is AttachmentRejection => Boolean(rejection)),
+    };
   });
-  ipcMain.handle("attachments:path", async (_event, requestedPath: string): Promise<Attachment | null> => {
-    return attachmentFromPathValue(requestedPath);
+  ipcMain.handle("attachments:path", async (_event, requestedPath: string): Promise<AttachmentResolution> => {
+    return attachmentResolutionFromPath(requestedPath);
   });
-  ipcMain.handle("attachments:save", async (_event, requestedName: string, requestedBytes: Uint8Array): Promise<Attachment | null> => {
+  ipcMain.handle("attachments:save", async (_event, requestedName: string, requestedBytes: Uint8Array): Promise<AttachmentResolution> => {
     const bytes = Buffer.from(requestedBytes);
-    if (!bytes.length || bytes.length > MAX_ATTACHMENT_SIZE) return null;
     const rawName = basename(safeText(requestedName || "pasted-file", 180));
     const safeName = rawName.replace(/[^A-Za-z0-9._ -]/g, "-") || "pasted-file";
+    if (!bytes.length) return { attachment: null };
+    if (bytes.length > MAX_ATTACHMENT_SIZE) return { attachment: null, rejection: attachmentSizeRejection(safeName, bytes.length) };
     const targetDir = join(app.getPath("temp"), "maximo-syntax-attachments");
     await mkdir(targetDir, { recursive: true });
     const path = join(targetDir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`);
     await writeFile(path, bytes, { mode: 0o600 });
-    return { name: safeName, path, size: bytes.length };
+    return { attachment: { name: safeName, path, size: bytes.length } };
   });
   ipcMain.handle("attachments:preview", async (_event, requestedPath: string, requestedThumbnail?: boolean): Promise<AttachmentPreview | null> => {
     const path = resolve(safeText(requestedPath, 2_000));

@@ -1333,7 +1333,7 @@ export class CliRunner {
         if (finished) callbacks.onEvent({ type: "agent-finished", threadId: request.threadId, taskId: finished.taskId, toolUseId: finished.toolUseId, status: unfinishedStatus, timestamp: timestamp() });
       }
       current.completed = true;
-      const content = current.finalResult || current.streamedText || (status === "cancelled" ? "Run stopped." : stderrBuffer.trim() || "The Maximo Syntax engine exited without a response.");
+      const content = current.finalResult || current.streamedText || (status === "cancelled" ? "" : stderrBuffer.trim() || "The Maximo Syntax engine exited without a response.");
       const completed: CompletedTurn = { status, content, sessionId, exitCode, error: status === "error", final, ...(continueRunning ? { continueRunning: true } : {}), activity: current.activity, timeline: current.timeline, durationMs: Math.max(0, Date.now() - current.startedAt), fileChanges: [] };
       return (async () => {
         try { completed.fileChanges = collectFileChanges(current.fileSnapshots); } catch (error) {

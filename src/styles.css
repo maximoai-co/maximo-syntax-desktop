@@ -1545,6 +1545,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .agent-event.completed > summary > span:nth-child(2) { color: var(--accent-strong); }
 .agent-event.error > summary > span:nth-child(2) { color: var(--danger); }
 .agent-event.stopped > summary > span:nth-child(2) { color: var(--warning); }
+.subagent-event-icon { position: relative; width: 16px; height: 16px; display: grid; place-items: center; }
+.subagent-event-icon > svg:first-child { display: block; }
+.subagent-event-icon .agent-status-spinner,
+.subagent-event-icon > svg:last-child { position: absolute; right: -4px; bottom: -3px; width: 8px; height: 8px; }
 .agent-status-spinner { width: 10px; height: 10px; display: block; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 .agent-event-detail > small { color: var(--faint); font-size: 8px; }
 .agent-work-timeline { margin: 2px 0 2px; padding: 2px 0 2px 7px; display: grid; gap: 1px; border-left: 1px solid var(--border); }
@@ -1703,6 +1707,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .tool-payload pre { max-height: 210px; margin: 6px 0 0; padding: 8px; overflow: auto; border-radius: 6px; background: var(--bg-soft); border: 1px solid var(--border); color: var(--text); white-space: pre-wrap; font-size: 8px; }
 .worked-disclosure { margin-top: 4px; border-bottom: 1px solid var(--border); }
 .worked-disclosure > summary { width: max-content; min-height: 31px; display: flex; align-items: center; gap: 5px; color: var(--faint); }
+.worked-disclosure.interrupted > summary { color: var(--muted); }
 .worked-disclosure > div { padding: 0 0 8px; color: var(--faint); font-size: 9px; }
 /* Compact mid-turn queue strip above the composer */
 .followup-queue { margin: 0 0 6px; display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
@@ -1975,6 +1980,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .permission-scope-list > span > div { display: grid; }
 .permission-scope-list strong { font-size: 10px; }
 .permission-scope-list small { color: var(--faint); font-size: 8px; }
+.attachment-limit-icon { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.attachment-rejection-list > span > div { min-width: 0; overflow: hidden; }
+.attachment-rejection-list strong, .attachment-rejection-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .permission-confirm-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 7px; margin-top: 3px; }
 .permission-confirm-actions button { min-height: 32px; padding: 0 10px; border-radius: 8px; background: var(--surface-hover); color: var(--muted); font-size: 10px; }
 .permission-confirm-actions button:last-child { color: #2a1601; background: var(--warning); font-weight: 700; }
@@ -1991,7 +1999,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .attachment-preview-stage.kind-image { padding: 24px; background: repeating-conic-gradient(color-mix(in srgb, var(--bg-soft) 65%, transparent) 0% 25%, color-mix(in srgb, var(--bg) 88%, transparent) 0% 50%) 50% / 18px 18px; }
 .attachment-preview-image { max-width: 100%; max-height: 100%; display: block; object-fit: contain; border-radius: 8px; box-shadow: var(--shadow-soft); }
 .attachment-preview-pdf { width: 100%; height: 100%; border: 0; border-radius: 8px; background: #fff; }
-.attachment-preview-video { max-width: 100%; max-height: 100%; border-radius: 8px; background: #000; box-shadow: var(--shadow-soft); }
+.attachment-preview-video { width: 100%; height: 100%; min-height: 0; display: block; object-fit: contain; border-radius: 8px; background: #000; box-shadow: var(--shadow-soft); }
 .attachment-preview-audio { width: min(460px, 100%); }
 .attachment-preview-text { width: 100%; height: 100%; margin: 0; padding: 14px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-solid); color: var(--text); font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .attachment-preview-loading, .attachment-preview-unavailable { display: grid; place-items: center; gap: 8px; color: var(--muted); text-align: center; }

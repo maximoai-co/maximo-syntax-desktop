@@ -257,6 +257,10 @@ function summaryMessage(message: ChatMessage): ChatMessage {
     ...(message.model !== undefined ? { model: message.model } : {}),
     ...(message.attachments?.length ? { attachments: structuredClone(message.attachments) } : {}),
     ...(message.isError !== undefined ? { isError: message.isError } : {}),
+    ...(message.interrupted ? {
+      interrupted: true,
+      ...(message.durationMs !== undefined ? { durationMs: message.durationMs } : {}),
+    } : {}),
     ...(message.interaction ? { interaction: structuredClone(message.interaction) } : {}),
     ...(message.kind ? { kind: message.kind } : {}),
     ...(message.uuid ? { uuid: message.uuid } : {}),
@@ -1057,7 +1061,11 @@ export class StateStore {
       const thread = draft.threads.find((candidate) => candidate.id === threadId);
       if (!thread) return;
       if (pendingUsage) applyContextUsage(draft, threadId, pendingUsage);
-      const assistantContent = content.trim() || (fileChanges.length > 0 ? "I updated the files listed below." : "");
+      const interrupted = status === "cancelled";
+      const trimmedContent = content.trim();
+      const assistantContent = interrupted && trimmedContent === "Run stopped."
+        ? (fileChanges.length > 0 ? "I updated the files listed below." : "")
+        : trimmedContent || (fileChanges.length > 0 ? "I updated the files listed below." : "");
       const answerModel = [...thread.messages].reverse().find((message) => message.role === "user" && message.kind !== "follow-up")?.model;
       const continuedContexts: ChatMessage[] = [];
       if (continueRunning) {
@@ -1067,8 +1075,11 @@ export class StateStore {
         }
       }
       const latest = thread.messages.at(-1);
-      const duplicateFinal = final && assistantContent && latest?.role === "assistant" && latest.content === assistantContent;
-      if (!duplicateFinal && (assistantContent || timeline.length > 0 || fileChanges.length > 0)) {
+      const duplicateFinal = final && latest?.role === "assistant" && (
+        (Boolean(assistantContent) && latest.content === assistantContent)
+        || (interrupted && latest.interrupted === true && latest.durationMs === durationMs)
+      );
+      if (!duplicateFinal && (assistantContent || timeline.length > 0 || fileChanges.length > 0 || interrupted)) {
         const assistantMessage: ChatMessage = {
           id: randomUUID(),
           role: "assistant",
@@ -1079,6 +1090,7 @@ export class StateStore {
           activity,
           timeline,
           durationMs,
+          ...(interrupted ? { interrupted: true } : {}),
           ...(fileChanges.length > 0 ? { fileChanges } : {}),
         };
         compactMessageHistory(assistantMessage);
