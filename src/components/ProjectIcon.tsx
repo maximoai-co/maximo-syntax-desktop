@@ -20,6 +20,7 @@ import {
   FilePenLine,
   FileText,
   Folder,
+  FolderOpen,
   Gamepad2,
   Globe2,
   Hammer,
@@ -136,8 +137,8 @@ const icons: Record<ProjectIconName, LucideIcon> = {
   coffee: Coffee,
 };
 
-export function ProjectIcon({ icon, color = "default", size = 15 }: { icon: ProjectIconName; color?: ProjectColorName; size?: number }) {
-  const Icon = icons[icon] ?? Folder;
+export function ProjectIcon({ icon, color = "default", size = 15, isOpen = false }: { icon: ProjectIconName; color?: ProjectColorName; size?: number; isOpen?: boolean }) {
+  const Icon = icon === "folder" && isOpen ? FolderOpen : icons[icon] ?? Folder;
   return <span className={`project-icon project-color-${color}`}><Icon size={size} aria-hidden="true" /></span>;
 }
 
