@@ -14,6 +14,8 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   CircleHelp,
   Code2,
   Copy,
@@ -49,6 +51,7 @@ import {
   TerminalSquare,
   Trash2,
   Upload,
+  WrapText,
   X,
   ZoomIn,
   ZoomOut,
@@ -1370,6 +1373,21 @@ const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, thread, git
   if (!active) return <div className="workspace-empty-state compact"><Diff size={17} /><span>Panel paused</span><small>Activate this pane to resume the diff.</small></div>;
 
   const isDetailCollapsed = detailCollapsed;
+  const allFilesCollapsed = filteredFiles.length > 0 && filteredFiles.every((file) => collapsedFiles.has(file.path));
+  const toggleAllDiffs = () => {
+    if (filteredFiles.length === 0) return;
+    if (allFilesCollapsed) {
+      filteredFiles.forEach((file) => toggleFileCollapsed(file.path));
+      setDetailCollapsed(false);
+      return;
+    }
+    setCollapsedFiles((prev) => {
+      const next = new Set(prev);
+      filteredFiles.forEach((file) => next.add(file.path));
+      return next;
+    });
+    setDetailCollapsed(true);
+  };
   const openDiffFile = (path: string) => {
     const requestId = ++openDiffRequestRef.current;
     if (scope === "selected-turn") {
@@ -1391,7 +1409,7 @@ const WorkspaceDiffPane = memo(function WorkspaceDiffPane({ project, thread, git
   return <div className="workspace-diff-pane">
      <header className="workspace-pane-titlebar workspace-diff-header"><div><Diff size={15} /><DiffScopeSelect value={scope} onChange={setScope} hasSelectedTurn={selectedTurnDiffs.length > 0} /><span>{filteredFiles.length} file{filteredFiles.length === 1 ? "" : "s"}</span></div><span className="workspace-diff-totals"><b>+{scopeStats.additions}</b> <i>-{scopeStats.deletions}</i></span></header>
     {scope === "selected-turn" && <div className="workspace-diff-history-note"><GitCommitHorizontal size={12} /><span>Saved task changes remain available after commit or push.</span></div>}
-    <div className="workspace-diff-toolbar"><div className="workspace-diff-toolbar-left"><button type="button" className="workspace-diff-icon-btn" onClick={() => setJumpOpen((v) => !v)} title="Jump to file" aria-label="Jump to file"><Search size={14} /></button>{jumpOpen && <div ref={jumpRef} className="workspace-diff-jump-menu"><div className="workspace-diff-jump-header"><Search size={13} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Jump to file" aria-label="Search changed files" /></div><div className="workspace-diff-jump-list">{scopedFilesForJump.length === 0 ? <div className="workspace-tree-state">{emptySourceLabel}</div> : scopedFilesForJump.map((file) => <button type="button" key={file.path} className="workspace-diff-jump-item" onClick={() => { openDiffFile(file.path); setJumpOpen(false); }}><span className="workspace-diff-jump-icon"><FileCode2 size={13} /></span><span className="workspace-diff-jump-copy"><strong>{file.path.split(/[\\/]/).at(-1)}</strong><small>{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "Project root"}</small></span><span className="workspace-diff-jump-stats"><b>+{file.additions}</b><i>-{file.deletions}</i></span></button>)}</div></div>}</div><div className="workspace-diff-toolbar-actions"><button type="button" className={`workspace-diff-view-btn ${view === "stacked" ? "active" : ""}`} onClick={() => setView("stacked")} title="Stacked diff">Stacked</button><button type="button" className={`workspace-diff-view-btn ${view === "split" ? "active" : ""}`} onClick={() => setView("split")} title="Split diff">Split</button><button type="button" className={`workspace-diff-view-btn ${wrapped ? "active" : ""}`} onClick={() => setWrapped((value) => !value)} title="Wrap long lines">Wrap</button><button type="button" className="workspace-diff-view-btn" onClick={() => setDetailCollapsed((value) => !value)} title={detailCollapsed ? "Expand diff" : "Collapse diff"}>{detailCollapsed ? "Expand" : "Collapse"}</button><button type="button" className="workspace-diff-icon-btn" onClick={() => void copyDiff()} disabled={!activeReviewDiff?.patch} title={copied ? "Copied" : "Copy diff"}>{copied ? <Check size={12} /> : <Copy size={12} />}</button><div className="workspace-diff-actions"><button type="button" className="workspace-diff-icon-btn" onClick={() => setActionsOpen((value) => !value)} title="Diff options" aria-label="Diff options"><MoreHorizontal size={14} /></button>{actionsOpen && <div className="workspace-diff-actions-menu"><button type="button" onClick={() => { setWrapped((v) => !v); setActionsOpen(false); }}><Copy size={13} />{wrapped ? "Disable wrap" : "Wrap long lines"}</button><button type="button" onClick={() => { void copyDiff(); setActionsOpen(false); }}><Copy size={13} />{copied ? "Copied" : "Copy diff"}</button><button type="button" onClick={() => { const allCollapsed = filteredFiles.every((f) => collapsedFiles.has(f.path)); if (allCollapsed) setCollapsedFiles(new Set()); else setCollapsedFiles(new Set(filteredFiles.map((f) => f.path))); setActionsOpen(false); }}><Folder size={13} />{filteredFiles.every((f) => collapsedFiles.has(f.path)) ? "Expand all" : "Collapse all"}</button><button type="button" onClick={onOpenGit}><GitCommitHorizontal size={13} />Open source control</button><button type="button" onClick={() => onOpenEditor(activeReviewFile ? projectFilePath(project, activeReviewFile) : project.path)}><ExternalLink size={13} />Open in editor</button></div>}</div></div></div>
+     <div className="workspace-diff-toolbar"><div className="workspace-diff-toolbar-left"><button type="button" className="workspace-diff-icon-btn" onClick={() => setJumpOpen((v) => !v)} title="Jump to file" aria-label="Jump to file"><Search size={14} /></button>{jumpOpen && <div ref={jumpRef} className="workspace-diff-jump-menu"><div className="workspace-diff-jump-header"><Search size={13} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Jump to file" aria-label="Search changed files" /></div><div className="workspace-diff-jump-list">{scopedFilesForJump.length === 0 ? <div className="workspace-tree-state">{emptySourceLabel}</div> : scopedFilesForJump.map((file) => <button type="button" key={file.path} className="workspace-diff-jump-item" onClick={() => { openDiffFile(file.path); setJumpOpen(false); }}><span className="workspace-diff-jump-icon"><FileCode2 size={13} /></span><span className="workspace-diff-jump-copy"><strong>{file.path.split(/[\\/]/).at(-1)}</strong><small>{file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "Project root"}</small></span><span className="workspace-diff-jump-stats"><b>+{file.additions}</b><i>-{file.deletions}</i></span></button>)}</div></div>}</div><div className="workspace-diff-toolbar-actions"><button type="button" className={`workspace-diff-view-btn ${view === "stacked" ? "active" : ""}`} onClick={() => setView("stacked")} title="Stacked diff">Stacked</button><button type="button" className={`workspace-diff-view-btn ${view === "split" ? "active" : ""}`} onClick={() => setView("split")} title="Split diff">Split</button><button type="button" className={`workspace-diff-view-btn ${wrapped ? "active" : ""}`} onClick={() => setWrapped((value) => !value)} title="Wrap long lines">Wrap</button><button type="button" className="workspace-diff-view-btn" onClick={toggleAllDiffs} title={allFilesCollapsed ? "Expand all diffs" : "Collapse all diffs"}>{allFilesCollapsed ? "Expand" : "Collapse"}</button><button type="button" className="workspace-diff-icon-btn" onClick={() => void copyDiff()} disabled={!activeReviewDiff?.patch} title={copied ? "Copied" : "Copy diff"}>{copied ? <Check size={12} /> : <Copy size={12} />}</button><div className="workspace-diff-actions"><button type="button" className="workspace-diff-icon-btn" onClick={() => setActionsOpen((value) => !value)} title="Diff options" aria-label="Diff options"><MoreHorizontal size={14} /></button>{actionsOpen && <div className="workspace-diff-actions-menu"><button type="button" onClick={() => { setWrapped((v) => !v); setActionsOpen(false); }}><WrapText size={13} />{wrapped ? "Disable wrap" : "Wrap long lines"}</button><button type="button" onClick={() => { void copyDiff(); setActionsOpen(false); }}><Copy size={13} />{copied ? "Copied" : "Copy diff"}</button><button type="button" onClick={() => { toggleAllDiffs(); setActionsOpen(false); }}>{allFilesCollapsed ? <ChevronsUpDown size={13} /> : <ChevronsDownUp size={13} />}{allFilesCollapsed ? "Expand all" : "Collapse all"}</button><button type="button" onClick={onOpenGit}><GitCommitHorizontal size={13} />Open source control</button><button type="button" onClick={() => onOpenEditor(activeReviewFile ? projectFilePath(project, activeReviewFile) : project.path)}><ExternalLink size={13} />Open in editor</button></div>}</div></div></div>
     <div className={`workspace-diff-workspace ${view} ${wrapped ? "wrapped" : ""} ${isDetailCollapsed ? "detail-collapsed" : ""}`}>
       <aside className="workspace-diff-file-list">{filteredFiles.length === 0 ? <div className="workspace-tree-state">{emptySourceLabel}</div> : filteredFiles.map((file) => {
         const isCollapsed = collapsedFiles.has(file.path);
