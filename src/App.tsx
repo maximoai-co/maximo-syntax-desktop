@@ -1,7 +1,7 @@
 import { Component, Fragment, memo, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type ErrorInfo, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  Activity as ActivityIcon, AlertCircle, Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
+  Activity as ActivityIcon, AlertCircle, Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, Bot, Box, Boxes, Bug, Camera, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, CircleHelp, CirclePlus, CircleStop, Clock3, Code2, CodeXml, Columns3, Command, Copy, CornerDownRight, Eye, FileCheck2, Gauge, Keyboard, Monitor,
   File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, Image, LogOut, SquarePen,
   GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
   Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Undo2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, WrapText, X, Zap,
@@ -51,6 +51,11 @@ import MessageTrail from "./components/MessageTrail";
 import WorkspaceDock, { type WorkspaceDockRequest, type WorkspacePaneKind } from "./components/WorkspaceDock";
 import WorkspaceEnvironment from "./components/WorkspaceEnvironment";
 import WhatsNewDialog from "./components/WhatsNewDialog";
+import AppSnapCoordinator from "./components/AppSnapCoordinator";
+import AppSnapSettingsPanel from "./components/AppSnapSettingsPanel";
+import AppSnapWelcomeDialog from "./components/AppSnapWelcomeDialog";
+import { APP_SNAP_ATTACH_EVENT, type AppSnapAttachDetail } from "./appSnapEvents";
+import { normalizeComposerImageSource } from "./appSnapSource";
 import WhatsNewPopoutCard from "./components/WhatsNewPopoutCard";
 import NewChatFlow from "./components/NewChatFlow";
 import ProfileShareDialog, { type ProfileShareData } from "./components/ProfileShareDialog";
@@ -2101,6 +2106,29 @@ const AttachmentCard = memo(function AttachmentCard({ attachment, onPreview, onR
     });
     return () => { active = false; };
   }, [attachment.path, kind]);
+  const appSnapSource = normalizeComposerImageSource(attachment.source);
+  if (appSnapSource) {
+    const appName = appSnapSource.appName?.trim() || "Captured app";
+    const windowTitle = appSnapSource.windowTitle?.trim() || null;
+    const provenance =
+      windowTitle && windowTitle.localeCompare(appName, undefined, { sensitivity: "accent" }) !== 0
+        ? `${windowTitle} / ${appName}`
+        : appName;
+    return (
+      <div className={`attachment-card-shell appsnap-card-shell ${onRemove ? "removable" : ""}`}>
+        <button type="button" className="appsnap-card" onClick={() => onPreview(attachment)} title={provenance} aria-label={`Preview AppSnap from ${appName}`}>
+          <span className="appsnap-card-preview">
+            {thumbnail ? <img src={thumbnail} alt="" draggable={false} /> : <AttachmentGlyph kind={kind} />}
+          </span>
+          <span className="appsnap-card-caption">
+            {appSnapSource.appIconDataUrl ? <img src={appSnapSource.appIconDataUrl} alt="" draggable={false} /> : <Camera size={12} />}
+            <span title={provenance}>{provenance}</span>
+          </span>
+        </button>
+        {onRemove && <button type="button" className="attachment-remove" onClick={(event) => { event.stopPropagation(); onRemove(); }} aria-label={`Remove AppSnap from ${appName}`} title={`Remove AppSnap from ${appName}`}><X size={12} /></button>}
+      </div>
+    );
+  }
   return (
     <div className={`attachment-card-shell ${onRemove ? "removable" : ""}`}>
       <button type="button" className={`attachment-card ${compact ? "compact" : ""}`} onClick={() => onPreview(attachment)} title={`Preview ${attachment.name}`}>
@@ -4337,10 +4365,19 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
       submitInFlightRef.current = false;
     }
   };
-  const addAttachments = (selected: Attachment[]) => {
+  const addAttachments = useCallback((selected: Attachment[]) => {
     setComposerNotice(null);
     setAttachments((current) => [...current, ...selected].filter((file, index, all) => Boolean(file) && all.findIndex((item) => item.path === file.path) === index).slice(0, MAX_ATTACHMENT_COUNT));
-  };
+  }, []);
+  useEffect(() => {
+    const onAttach = (event: Event) => {
+      const detail = (event as CustomEvent<AppSnapAttachDetail>).detail;
+      if (!detail || detail.threadId !== thread.id || !detail.attachment) return;
+      addAttachments([detail.attachment]);
+    };
+    window.addEventListener(APP_SNAP_ATTACH_EVENT, onAttach);
+    return () => window.removeEventListener(APP_SNAP_ATTACH_EVENT, onAttach);
+  }, [addAttachments, thread.id]);
   const removeAttachment = useCallback((file: Attachment) => {
     setAttachments((items) => items.filter((item) => item.path !== file.path));
   }, []);
@@ -5227,7 +5264,7 @@ function RetentionCard({ threads }: { threads: Thread[] }) {
   return <section className="settings-card"><h2>Conversation storage</h2><p>Keep the app fast when you have many chats. Archiving hides chats from the sidebar but keeps them restorable.</p><div className="settings-row"><span><strong>Inactive chats</strong><small>{inactiveCount === 0 ? "No chats older than 30 days." : `${inactiveCount} chat${inactiveCount === 1 ? "" : "s"} older than 30 days · not running`}</small></span><button type="button" className="settings-action" disabled={busy || inactiveCount === 0} onClick={() => void run()}><Archive size={12} />{busy ? "Archiving…" : "Archive inactive"}</button></div>{notice && <p className="settings-notification-status" role="status">{notice}</p>}</section>;
 }
 
-type EnhancedSettingsSectionId = "general" | "profile" | "appearance" | "behavior" | "shortcuts" | "defaults" | "models" | "skills" | "notifications" | "account" | "browser" | "integrations" | "engine" | "advanced" | "archived";
+type EnhancedSettingsSectionId = "general" | "profile" | "appearance" | "behavior" | "shortcuts" | "defaults" | "models" | "skills" | "notifications" | "appsnap" | "account" | "browser" | "integrations" | "engine" | "advanced" | "archived";
 
 function EnhancedSettingsModal({ state, engine, models, modelOptions, account, usage, appVersion, appDataPath, skills, initialSection = "general", onClose, onSave, onRepair, onAccount, onUsage, onRefreshSkills, onResetProvider, onRevealDataPath, onRestoreThread, onDeleteArchivedThread, updateState, onCheckForUpdates, onOpenUpdateDownload, onOpenWhatsNew }: {
   state: AppState;
@@ -5278,6 +5315,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     { id: "appearance" as const, group: "Personal", label: "Appearance", description: "Theme, typography, density, terminal, and time format.", icon: <Sun size={14} /> },
     { id: "behavior" as const, group: "Personal", label: "Chat behavior", description: "Follow-ups, streaming, review defaults, and safety confirmations.", icon: <SlidersHorizontal size={14} /> },
     { id: "notifications" as const, group: "Personal", label: "Notifications", description: "Choose how Maximo tells you when work finishes or needs attention.", icon: <Bell size={14} /> },
+    { id: "appsnap" as const, group: "Personal", label: "AppSnap", description: "Capture another app's window and attach it to the current chat.", icon: <Camera size={14} /> },
     { id: "shortcuts" as const, group: "Personal", label: "Keyboard shortcuts", description: "Reference the commands available throughout the desktop app.", icon: <Keyboard size={14} /> },
     { id: "defaults" as const, group: "Coding", label: "Chat defaults", description: "Model, reasoning effort, and permissions for new chats.", icon: <Bot size={14} /> },
     { id: "models" as const, group: "Coding", label: "Models & writing", description: "Review the live catalog and save custom model slugs.", icon: <Sparkles size={14} /> },
@@ -5308,6 +5346,11 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     { section: "behavior", title: "Safety confirmations", keywords: "delete archive terminal close" },
     { section: "notifications", title: "Activity toasts", keywords: "alerts in-app" },
     { section: "notifications", title: "Desktop notifications", keywords: "operating system background" },
+    { section: "appsnap", title: "Enable AppSnap", keywords: "appsnap appshot snapshot capture window option chord screenshot" },
+    { section: "appsnap", title: "AppSnap shortcut", keywords: "option keys global shortcut hotkey capture" },
+    { section: "appsnap", title: "AppSnap destination", keywords: "attach composer current chat consecutive snaps" },
+    { section: "appsnap", title: "Capture sound", keywords: "shutter cue camera click preview" },
+    { section: "appsnap", title: "AppSnap permissions", keywords: "input monitoring screen recording privacy security recheck grant macos" },
     { section: "shortcuts", title: "Keyboard shortcuts", keywords: "hotkeys keybindings command" },
     { section: "defaults", title: "New chat defaults", keywords: "model effort permissions" },
     { section: "models", title: "Saved model slugs", keywords: "custom model catalog provider" },
@@ -5476,6 +5519,11 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
       <section className="settings-card"><h2>Review</h2>{booleanRow("diffWordWrap", "Diff line wrapping", "Start the diff panel with long lines wrapped.")}</section>
       <section className="settings-card"><h2>Safety confirmations</h2>{booleanRow("confirmThreadDelete", "Delete confirmation", "Ask before deleting a chat and its history.")}{booleanRow("confirmThreadArchive", "Archive confirmation", "Ask before archiving a chat or project chats.")}{booleanRow("confirmTerminalTabClose", "Terminal close confirmation", "Ask before closing a terminal tab and clearing its session output.")}</section>
     </div>;
+
+    if (activeSection === "appsnap") return <>
+      <AppSnapSettingsPanel values={values} onValuesChange={(patch) => setValues((current) => ({ ...current, ...patch }))} onPersist={async (patch) => { await onSave(patch); }} onNotice={(title, description) => setNotificationStatus(`${title}: ${description}`)} />
+      {notificationStatus && <p className="settings-notification-status" role="status">{notificationStatus}</p>}
+    </>;
 
     if (activeSection === "notifications") return <div className="settings-panel-stack"><section className="settings-card"><h2>Activity alerts</h2>{booleanRow("enableTaskCompletionToasts", "Activity toasts", "Show an in-app toast when a background chat finishes or needs attention.")}
       <div className="settings-row"><span><strong>Desktop notifications</strong><small>Show an operating-system notification when a background chat finishes.</small></span><div className="settings-row-actions"><button type="button" className="settings-action" onClick={() => void testNotification()}>Test</button><input type="checkbox" checked={values.enableSystemTaskCompletionNotifications} onChange={(event) => update("enableSystemTaskCompletionNotifications", event.target.checked)} /></div></div>
@@ -7790,6 +7838,41 @@ export default function App() {
       {settingsOpen && <EnhancedSettingsModal state={state} engine={engine} models={engineModels} modelOptions={modelOptions} account={account} usage={usage} appVersion={appVersion} appDataPath={appDataPath} skills={[...discoveredSkills, ...skillCommands]} initialSection={settingsSectionRequest} onClose={() => { setSettingsOpen(false); setSettingsSectionRequest("general"); }} onSave={async (patch) => { const next = await window.maximoDesktop.updateSettings(patch); setState(next); setInspectorVisible(next.settings.showInspector); setEnvironmentOpen(next.settings.environmentPanelDefaultOpen); }} onRepair={async () => { const next = await window.maximoDesktop.updateEngine(); setEngine(next); if (next.available) await refreshEngineModels(); }} onAccount={() => { setSettingsOpen(false); openAccount(); }} onUsage={() => void refreshUsage()} onRefreshSkills={() => refreshDiscoveredSkills(currentProject?.path)} onResetProvider={resetProviderState} onRevealDataPath={() => { if (appDataPath) void window.maximoDesktop.revealPath(appDataPath); }} onRestoreThread={async (threadId) => { setState(await window.maximoDesktop.unarchiveThread(threadId)); }} onDeleteArchivedThread={async (threadId) => { const thread = state.threads.find((item) => item.id === threadId); if (!thread || !window.confirm(`Permanently delete "${thread.title}"? This removes the chat history forever.`)) return; setState(await window.maximoDesktop.deleteThread(threadId)); }} updateState={updateState} onCheckForUpdates={checkForAppUpdates} onOpenUpdateDownload={openAppUpdateDownload} onOpenWhatsNew={() => { void refreshWhatsNew({ forceDialog: true }); }} />}
       {accountOpen && <AccountModal account={account} usage={usage} usageBusy={usageBusy} busy={accountBusy} onClose={() => setAccountOpen(false)} onRefresh={() => void refreshAccount()} onLogin={(method, apiKey, openCodePlan) => loginAccount(method, apiKey, openCodePlan)} onCancelLogin={() => void cancelLoginAccount()} onLogout={() => void logoutAccount()} onUsage={() => void refreshUsage()} />}
       {attachmentPreview && <AttachmentPreviewModal state={attachmentPreview} theme={state.settings.theme} onClose={() => { attachmentPreviewRequestRef.current += 1; setAttachmentPreview(null); }} />}
+      <AppSnapCoordinator
+        enableAppSnap={state.settings.enableAppSnap}
+        shortcut={state.settings.appSnapShortcut}
+        playSound={state.settings.appSnapPlaySound}
+        selectedThreadId={state.selectedThreadId ?? null}
+        threadIds={state.threads.map((thread) => thread.id)}
+        getDrafts={() => composerDraftsRef.current}
+        onAttachToDraft={(threadId, attachment) => {
+          const existing = composerDraftsRef.current[threadId]?.attachments ?? [];
+          if (existing.some((item) => item.path === attachment.path || (attachment.source?.captureId && item.source?.captureId === attachment.source.captureId))) {
+            updateComposerDraft(threadId, {
+              attachments: existing.map((item) => item.path === attachment.path || item.source?.captureId === attachment.source?.captureId ? attachment : item),
+            });
+            return true;
+          }
+          if (existing.length >= MAX_ATTACHMENT_COUNT) return false;
+          updateComposerDraft(threadId, { attachments: [...existing, attachment] });
+          return true;
+        }}
+        onActivateThread={(threadId) => selectThread(threadId)}
+        onCreateThread={async () => {
+          if (!currentProject) return null;
+          try {
+            const next = await window.maximoDesktop.createThread(currentProject.id);
+            setState(next);
+            rememberThread(next.selectedThreadId);
+            setActiveSurface("chat");
+            return next.selectedThreadId ?? null;
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : "Unable to create a chat for this AppSnap.");
+            return null;
+          }
+        }}
+      />
+      <AppSnapWelcomeDialog onSetup={() => { setSettingsSectionRequest("appsnap"); setSettingsOpen(true); }} />
       {whatsNewPopoutVisible && whatsNew?.currentEntry && (
         <WhatsNewPopoutCard
           entry={whatsNew.currentEntry}

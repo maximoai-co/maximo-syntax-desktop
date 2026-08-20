@@ -7,6 +7,8 @@ dist-electron/
 dist-renderer/
 release/
 .electron-dev/
+.electron-runtime/
+desktop/native/appsnap/build/
 .icon-render/
 vendor/maximo-syntax-cli/
 

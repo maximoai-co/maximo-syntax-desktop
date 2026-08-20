@@ -4020,3 +4020,51 @@ html[data-theme-variant="dark"] .workspace-diff-code .diff-line .diff-number { c
   .workspace-browser-toolbar > button:first-child, .workspace-browser-toolbar > button:nth-child(2) { display: none; }
   .workspace-environment { right: 8px; width: min(292px, calc(100% - 16px)); }
 }
+
+.appsnap-intro-card { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; }
+.appsnap-intro-icon { width: 32px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); }
+.appsnap-intro-card strong { display: block; color: var(--text-strong); font-size: 11px; }
+.appsnap-intro-card small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.appsnap-unsupported { color: var(--faint) !important; }
+.appsnap-shortcut-settings-row { align-items: flex-start; }
+.appsnap-shortcut-control { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; min-width: 220px; }
+.appsnap-shortcut-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.appsnap-shortcut-record { min-height: 32px; padding: 0 8px; display: flex; align-items: center; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); }
+.appsnap-shortcut-record:hover { background: var(--surface-hover); }
+.appsnap-shortcut-record.capturing { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
+.appsnap-kbd-group { display: flex; align-items: center; gap: 5px; }
+.appsnap-kbd-group kbd { padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-solid); font-size: 10px; }
+.appsnap-shortcut-pulse { font-size: 10px; color: var(--muted); animation: appsnap-pulse 1s ease-in-out infinite; }
+.appsnap-shortcut-status { max-width: 280px; color: var(--muted); font-size: 10px; text-align: right; }
+.appsnap-shortcut-status.ok { color: #1f8a6e; }
+.appsnap-shortcut-status.error { color: #c24646; }
+.appsnap-permission-badge { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; font-weight: 600; }
+.appsnap-permission-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--border-strong); }
+.appsnap-permission-dot.granted { background: #22a06b; }
+.appsnap-permission-dot.denied { background: #d45252; }
+@keyframes appsnap-pulse { 50% { opacity: .35; } }
+
+.appsnap-card-shell { min-width: 0; }
+.appsnap-card { width: 208px; height: 128px; padding: 0; overflow: hidden; display: block; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-solid); color: var(--text); text-align: left; position: relative; }
+.appsnap-card:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); }
+.appsnap-card-preview { width: 100%; height: 100%; display: grid; place-items: center; background: color-mix(in srgb, var(--surface-solid) 86%, var(--accent-soft)); }
+.appsnap-card-preview img { max-width: calc(100% - 8px); max-height: calc(100% - 8px); border-radius: 6px; object-fit: contain; }
+.appsnap-card-caption { position: absolute; inset: auto 0 0 0; padding: 22px 10px 8px; display: flex; align-items: center; gap: 8px; background: linear-gradient(to top, rgba(0,0,0,.88), rgba(0,0,0,.45), transparent); color: #fff; }
+.appsnap-card-caption img, .appsnap-card-caption svg { width: 18px; height: 18px; flex: 0 0 auto; border-radius: 4px; object-fit: contain; }
+.appsnap-card-caption span { min-width: 0; overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 2px rgb(0 0 0 / .8); }
+.appsnap-card-shell.removable .appsnap-card { padding-right: 0; }
+
+.appsnap-welcome-backdrop { z-index: 120; }
+.appsnap-welcome-sheet { width: min(420px, calc(100% - 32px)); padding: 20px; border-radius: 20px; display: flex; flex-direction: column; }
+.appsnap-welcome-hero { width: 64px; height: 64px; margin-bottom: 32px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 16px; color: var(--text); background: color-mix(in srgb, var(--surface-hover) 70%, transparent); }
+.appsnap-welcome-sheet h2 { margin: 0; color: var(--text-strong); font-size: 19px; line-height: 1.2; }
+.appsnap-welcome-sheet p { margin: 8px 0 0; color: var(--muted); font-size: 14px; line-height: 19.5px; }
+.appsnap-welcome-actions { margin-top: 12px; display: flex; justify-content: flex-end; gap: 8px; }
+
+.appsnap-toast-stack { position: fixed; z-index: 130; left: 50%; bottom: 18px; transform: translateX(-50%); display: grid; gap: 8px; width: min(440px, calc(100% - 24px)); }
+.appsnap-toast { padding: 9px 12px; display: flex; align-items: flex-start; gap: 8px; border-radius: 10px; background: var(--surface-solid); border: 1px solid var(--border-strong); box-shadow: var(--shadow); color: var(--text); }
+.appsnap-toast strong { display: block; font-size: 11px; color: var(--text-strong); }
+.appsnap-toast small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.appsnap-toast button { flex: 0 0 auto; margin-left: auto; padding: 3px 8px; border-radius: 7px; border: 1px solid var(--border); background: transparent; color: var(--text); font-size: 10px; }
+.appsnap-toast.success svg { color: #1f8a6e; }
+.appsnap-toast.error svg, .appsnap-toast.warning svg { color: #c24646; }

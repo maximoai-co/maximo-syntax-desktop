@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { AppUpdateState, AutomationSnapshot, BrowserState, DesktopApi, RunEvent, TerminalEvent } from "./types.js";
+import type { AppUpdateState, AutomationSnapshot, BrowserState, DesktopApi, DesktopAppSnapCapture, DesktopAppSnapErrorEvent, DesktopAppSnapState, RunEvent, TerminalEvent } from "./types.js";
 
 const api: DesktopApi = {
   appInfo: () => ipcRenderer.invoke("app:info"),
@@ -77,6 +77,33 @@ const api: DesktopApi = {
       };
       ipcRenderer.on("notification:open-thread", listener);
       return () => ipcRenderer.removeListener("notification:open-thread", listener);
+    },
+  },
+  appSnap: {
+    getState: () => ipcRenderer.invoke("appsnap:get-state"),
+    setEnabled: (enabled) => ipcRenderer.invoke("appsnap:set-enabled", enabled),
+    checkShortcut: (shortcut) => ipcRenderer.invoke("appsnap:check-shortcut", shortcut),
+    setShortcut: (shortcut) => ipcRenderer.invoke("appsnap:set-shortcut", shortcut),
+    requestPermissions: () => ipcRenderer.invoke("appsnap:request-permissions"),
+    requestInputMonitoring: () => ipcRenderer.invoke("appsnap:request-input-monitoring"),
+    triggerCapture: () => ipcRenderer.invoke("appsnap:trigger-capture"),
+    openPrivacySettings: (pane) => ipcRenderer.invoke("appsnap:open-privacy-settings", pane),
+    listPendingCaptures: () => ipcRenderer.invoke("appsnap:list-pending-captures"),
+    acknowledgeCapture: (captureId) => ipcRenderer.invoke("appsnap:acknowledge-capture", captureId),
+    onCaptured: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, capture: DesktopAppSnapCapture) => listener(capture);
+      ipcRenderer.on("appsnap:captured", wrapped);
+      return () => ipcRenderer.removeListener("appsnap:captured", wrapped);
+    },
+    onError: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, error: DesktopAppSnapErrorEvent) => listener(error);
+      ipcRenderer.on("appsnap:error", wrapped);
+      return () => ipcRenderer.removeListener("appsnap:error", wrapped);
+    },
+    onState: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, state: DesktopAppSnapState) => listener(state);
+      ipcRenderer.on("appsnap:state", wrapped);
+      return () => ipcRenderer.removeListener("appsnap:state", wrapped);
     },
   },
   automations: {

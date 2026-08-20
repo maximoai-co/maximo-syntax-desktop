@@ -78,7 +78,86 @@ export const DEFAULT_THEME_PACKS: Record<ThemeVariant, ThemePack> = {
 
 export const MAX_ATTACHMENT_COUNT = 10;
 export const MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024;
+export const MAX_APPSNAP_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_PROJECT_SOURCE_COUNT = 5;
+
+export type DesktopAppSnapPlatform = "macos" | "windows" | "linux" | "other";
+export type DesktopAppSnapPermission =
+  | "granted"
+  | "denied"
+  | "not-determined"
+  | "restricted"
+  | "unknown";
+export type DesktopAppSnapStatus =
+  | "unsupported"
+  | "disabled"
+  | "permission-required"
+  | "starting"
+  | "ready"
+  | "error";
+
+export type DesktopAppSnapShortcutModifier = "command" | "control" | "option" | "shift";
+
+export interface DesktopAppSnapKeyChord {
+  kind: "key-chord";
+  modifier: DesktopAppSnapShortcutModifier;
+  /** A physical DOM KeyboardEvent.code, such as `KeyS` or `Space`. */
+  key: string;
+}
+
+export type DesktopAppSnapShortcut = { kind: "both-option-keys" } | DesktopAppSnapKeyChord;
+
+export interface DesktopAppSnapShortcutAvailability {
+  available: boolean;
+  reason: string | null;
+}
+
+export interface DesktopAppSnapShortcutUpdateResult {
+  state: DesktopAppSnapState;
+  availability: DesktopAppSnapShortcutAvailability;
+}
+
+export interface DesktopAppSnapState {
+  platform: DesktopAppSnapPlatform;
+  supported: boolean;
+  enabled: boolean;
+  status: DesktopAppSnapStatus;
+  shortcut: DesktopAppSnapShortcut | null;
+  inputMonitoringPermission: DesktopAppSnapPermission;
+  screenRecordingPermission: DesktopAppSnapPermission;
+  /** Which System Settings pane to open next. Screen first, Input Monitoring after relaunch. */
+  permissionPrompt: "screen" | "input" | null;
+  message: string | null;
+}
+
+export interface DesktopAppSnapCapture {
+  id: string;
+  capturedAt: string;
+  name: string;
+  mimeType: "image/png";
+  sizeBytes: number;
+  bytes: Uint8Array;
+  sourceAppName: string | null;
+  sourceBundleIdentifier: string | null;
+  sourceAppIconDataUrl: string | null;
+  sourceWindowTitle: string | null;
+}
+
+export interface DesktopAppSnapErrorEvent {
+  code: string;
+  message: string;
+  capturedAt: string;
+}
+
+export interface AppSnapSource {
+  kind: "appsnap";
+  captureId: string;
+  capturedAt: string;
+  appName: string | null;
+  bundleIdentifier: string | null;
+  appIconDataUrl: string | null;
+  windowTitle: string | null;
+}
 
 export type ProjectColorName = "default" | "red" | "orange" | "yellow" | "green" | "blue" | "purple" | "pink";
 
@@ -180,6 +259,9 @@ export interface Settings {
   sidebarProjectSortOrder: SidebarProjectSortOrder;
   sidebarThreadSortOrder: SidebarThreadSortOrder;
   customModelSlugs: string[];
+  enableAppSnap: boolean;
+  appSnapShortcut: DesktopAppSnapShortcut;
+  appSnapPlaySound: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -224,6 +306,9 @@ export const DEFAULT_SETTINGS: Settings = {
   sidebarProjectSortOrder: "manual",
   sidebarThreadSortOrder: "updated_at",
   customModelSlugs: [],
+  enableAppSnap: false,
+  appSnapShortcut: { kind: "both-option-keys" },
+  appSnapPlaySound: true,
 };
 
 export interface Space {
@@ -253,6 +338,7 @@ export interface Attachment {
   name: string;
   path: string;
   size: number;
+  source?: AppSnapSource;
 }
 
 export interface AttachmentRejection {
@@ -1212,6 +1298,21 @@ export interface DesktopApi {
     show(input: DesktopNotificationInput): Promise<boolean>;
     playSound(): Promise<boolean>;
     onOpenThread(callback: (threadId: string) => void): () => void;
+  };
+  appSnap: {
+    getState(): Promise<DesktopAppSnapState>;
+    setEnabled(enabled: boolean): Promise<DesktopAppSnapState>;
+    checkShortcut(shortcut: DesktopAppSnapShortcut): Promise<DesktopAppSnapShortcutAvailability>;
+    setShortcut(shortcut: DesktopAppSnapShortcut): Promise<DesktopAppSnapShortcutUpdateResult>;
+    requestPermissions(): Promise<DesktopAppSnapState>;
+    requestInputMonitoring(): Promise<DesktopAppSnapState>;
+    triggerCapture(): Promise<boolean>;
+    openPrivacySettings(pane?: "input" | "screen"): Promise<boolean>;
+    listPendingCaptures(): Promise<DesktopAppSnapCapture[]>;
+    acknowledgeCapture(captureId: string): Promise<void>;
+    onCaptured(listener: (capture: DesktopAppSnapCapture) => void): () => void;
+    onError(listener: (error: DesktopAppSnapErrorEvent) => void): () => void;
+    onState(listener: (state: DesktopAppSnapState) => void): () => void;
   };
   startRun(request: RunRequest): Promise<RunResult>;
   sendToRun(request: RunRequest): Promise<RunResult>;

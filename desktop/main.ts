@@ -3,9 +3,9 @@ import { existsSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, release as osRelease } from "node:os";
-import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, safeStorage, shell } from "electron";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, safeStorage, shell, systemPreferences } from "electron";
 import {
   cancelBrowserLogin,
   clearExtraProviderCredentials,
@@ -35,13 +35,22 @@ import {
   toWhatsNewSnapshot,
 } from "./whats-new.js";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
+import { DesktopAppSnapManager } from "./app-snap-manager.js";
+import { requestHostInputMonitoring } from "./mac-host-tcc.js";
+import { registerAppSnapIpcHandlers, sendAppSnapCaptured, sendAppSnapError, sendAppSnapState } from "./app-snap-ipc.js";
+import { isAppSnapShortcut } from "./app-snap-shortcut.js";
 import { MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_SIZE, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
-import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, AttachmentRejection, AttachmentResolution, AttachmentSelectionResult, AutomationCreateInput, AutomationDefinition, AutomationRun, AutomationUpdateInput, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, ProjectColorName, ProjectIconName, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
+import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, AttachmentRejection, AttachmentResolution, AttachmentSelectionResult, AutomationCreateInput, AutomationDefinition, AutomationRun, AutomationUpdateInput, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopAppSnapCapture, DesktopAppSnapErrorEvent, DesktopAppSnapPermission, DesktopAppSnapState, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, ProjectColorName, ProjectIconName, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 import { launchConfigurationChanged, resolveAsFollowUp, RUN_ALREADY_RUNNING_ERROR, RUN_NOT_RUNNING_ERROR, type RunLaunchConfiguration } from "./run-dispatch.js";
 import { taskCompletionNotification } from "./task-notifications.js";
 import { normalizeRetiredMytabulonModel } from "./model-defaults.js";
 
+const APP_SNAP_PRODUCTION_BUNDLE_ID = "com.maximoai.syntax.desktop";
+const APP_SNAP_DEVELOPMENT_BUNDLE_ID = "com.maximoai.syntax.desktop.dev";
+const APP_SNAP_HELPER_EXECUTABLE_NAME = "maximo-syntax-appsnap-helper";
+
 let mainWindow: BrowserWindow | null = null;
+let appSnapManager: DesktopAppSnapManager | null = null;
 let store: StateStore;
 let runtime: RuntimeManager;
 let terminalManager: TerminalManager;
@@ -228,6 +237,152 @@ if (!hasSingleInstanceLock) {
 
 function send(channel: string, payload: unknown): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+function appSnapHelperCandidates(helpersDirectory: string): string[] {
+  return [
+    join(helpersDirectory, "Maximo Syntax AppSnap.app", "Contents", "MacOS", APP_SNAP_HELPER_EXECUTABLE_NAME),
+    join(helpersDirectory, APP_SNAP_HELPER_EXECUTABLE_NAME),
+  ];
+}
+
+function firstExistingPath(candidates: string[]): string | null {
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function readHostBundleId(): string {
+  try {
+    const plist = readFileSync(join(process.execPath, "..", "..", "Info.plist"), "utf8");
+    const match = /<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/.exec(plist);
+    if (match?.[1]) return match[1];
+  } catch {
+    // Fall through to the packaged/dev defaults.
+  }
+  return app.isPackaged ? APP_SNAP_PRODUCTION_BUNDLE_ID : APP_SNAP_DEVELOPMENT_BUNDLE_ID;
+}
+
+function resolveAppSnapHelperPath(): string {
+  const helperDirectories = [resolve(process.execPath, "..", "..", "Helpers")];
+  if (app.isPackaged) {
+    helperDirectories.push(resolve(process.resourcesPath, "..", "Helpers"));
+  } else {
+    helperDirectories.push(resolve(dirname(fileURLToPath(import.meta.url)), "..", ".electron-runtime", "appsnap"));
+  }
+  const candidates = helperDirectories.flatMap((directory) => appSnapHelperCandidates(directory));
+  return firstExistingPath(candidates) ?? candidates[0]!;
+}
+
+function appSnapExcludedBundleId(): string {
+  return readHostBundleId();
+}
+
+function hostScreenRecordingPermission(): DesktopAppSnapPermission {
+  if (process.platform !== "darwin") return "unknown";
+  try {
+    const status = systemPreferences.getMediaAccessStatus("screen");
+    if (status === "granted") return "granted";
+    if (status === "denied") return "denied";
+    if (status === "restricted") return "restricted";
+    if (status === "not-determined") return "not-determined";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function requestHostScreenRecording(): Promise<DesktopAppSnapPermission> {
+  if (process.platform !== "darwin") return "unknown";
+  try {
+    // Asking from the host app is what puts Maximo Syntax in System Settings
+    // with the app logo. Do this only on an explicit permission request.
+    await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize: { width: 1, height: 1 },
+      fetchWindowIcons: false,
+    });
+  } catch {
+    // Denied or interrupted; still read the TCC status below.
+  }
+  return hostScreenRecordingPermission();
+}
+
+function canSendAppSnapEvent(window: BrowserWindow | null): window is BrowserWindow {
+  return Boolean(
+    window &&
+    !window.isDestroyed() &&
+    !window.webContents.isDestroyed() &&
+    !window.webContents.isLoadingMainFrame(),
+  );
+}
+
+function sendAppSnapEvent(
+  window: BrowserWindow | null,
+  sendEvent: (webContents: BrowserWindow["webContents"]) => void,
+): boolean {
+  if (!canSendAppSnapEvent(window)) return false;
+  sendEvent(window.webContents);
+  return true;
+}
+
+function focusMainWindowForAppSnap(): BrowserWindow | null {
+  if (mainWindow?.isDestroyed()) mainWindow = null;
+  if (!mainWindow) return null;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) mainWindow.show();
+  if (process.platform === "darwin") {
+    // BrowserWindow.focus() alone does not activate an app while another macOS
+    // application owns focus. Only AppSnap is an explicit global user gesture.
+    app.show();
+    app.focus({ steal: true });
+  }
+  mainWindow.focus();
+  return mainWindow;
+}
+
+function initializeDesktopAppSnap(): void {
+  if (appSnapManager) return;
+  appSnapManager = new DesktopAppSnapManager({
+    platform: process.platform,
+    helperPath: resolveAppSnapHelperPath(),
+    captureDirectory: join(app.getPath("userData"), "appsnap", "tmp"),
+    excludedBundleId: appSnapExcludedBundleId(),
+    shortcutRegistry: globalShortcut,
+    requestHostInputMonitoring,
+    getHostScreenRecordingPermission: hostScreenRecordingPermission,
+    requestHostScreenRecording,
+    onPermissionPrompt: (pane) => {
+      showDesktopNotification({
+        title: pane === "input" ? "Turn on Input Monitoring" : "Turn on Screen Recording",
+        body:
+          pane === "input"
+            ? "Enable Maximo Syntax in Input Monitoring, then click Recheck."
+            : "Enable Maximo Syntax in Screen Recording, then quit and reopen the app.",
+      });
+    },
+    onState: (state: DesktopAppSnapState) => {
+      sendAppSnapEvent(mainWindow, (webContents) => sendAppSnapState(webContents, state));
+    },
+    onCaptured: (capture: DesktopAppSnapCapture) => {
+      const window = focusMainWindowForAppSnap();
+      if (sendAppSnapEvent(window, (webContents) => sendAppSnapCaptured(webContents, capture))) {
+        return;
+      }
+      if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
+        window.webContents.once("did-finish-load", () => {
+          sendAppSnapEvent(window, (webContents) => sendAppSnapCaptured(webContents, capture));
+        });
+      }
+    },
+    onError: (error: DesktopAppSnapErrorEvent, focusApp: boolean) => {
+      const window = focusApp ? focusMainWindowForAppSnap() : mainWindow;
+      if (!sendAppSnapEvent(window, (webContents) => sendAppSnapError(webContents, error))) {
+        showDesktopNotification({
+          title: error.code === "pending-capture-overflow" ? "AppSnap discarded" : "AppSnap failed",
+          body: error.message,
+        });
+      }
+    },
+  });
 }
 
 function playDesktopNotificationSound(): Promise<boolean> | boolean {
@@ -898,6 +1053,9 @@ function registerIpc(): void {
     if (["updated_at", "created_at", "manual"].includes(String(patch.sidebarProjectSortOrder))) allowed.sidebarProjectSortOrder = patch.sidebarProjectSortOrder;
     if (["updated_at", "created_at"].includes(String(patch.sidebarThreadSortOrder))) allowed.sidebarThreadSortOrder = patch.sidebarThreadSortOrder;
     if (Array.isArray(patch.customModelSlugs)) allowed.customModelSlugs = patch.customModelSlugs.filter((value): value is string => typeof value === "string").slice(0, 64);
+    if (typeof patch.enableAppSnap === "boolean") allowed.enableAppSnap = patch.enableAppSnap;
+    if (isAppSnapShortcut(patch.appSnapShortcut)) allowed.appSnapShortcut = patch.appSnapShortcut;
+    if (typeof patch.appSnapPlaySound === "boolean") allowed.appSnapPlaySound = patch.appSnapPlaySound;
     const next = await store.updateSettings(allowed);
     nativeTheme.themeSource = next.settings.theme;
     return next;
@@ -1603,6 +1761,8 @@ function registerIpc(): void {
     }
     return shell.openPath(target);
   });
+  if (appSnapManager) registerAppSnapIpcHandlers(ipcMain, appSnapManager);
+
   ipcMain.handle("clipboard:write-image", (_event, requestedBytes: Uint8Array): boolean => {
     if (!(requestedBytes instanceof Uint8Array) || requestedBytes.byteLength === 0 || requestedBytes.byteLength > 8 * 1024 * 1024) return false;
     const image = nativeImage.createFromBuffer(Buffer.from(requestedBytes));
@@ -1812,6 +1972,7 @@ app.whenReady().then(async () => {
     // Background polling is most useful for installed builds; dev can still check manually.
     enableBackgroundChecks: app.isPackaged || process.env.MAXIMO_DESKTOP_UPDATE_CHECKS === "1",
   });
+  initializeDesktopAppSnap();
   registerIpc();
   createApplicationMenu();
   await browserHost.start();
@@ -1838,6 +1999,8 @@ app.on("before-quit", (event) => {
   if (quitCleanupPromise) return;
 
   appUpdater?.dispose();
+  appSnapManager?.dispose();
+  appSnapManager = null;
   runner.stopAll();
   terminalManager?.stopAll();
   quitCleanupPromise = (async () => {

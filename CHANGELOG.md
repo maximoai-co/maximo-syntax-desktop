@@ -4,6 +4,10 @@ All notable changes to Maximo Syntax Desktop are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- **AppSnap**: opt-in macOS capture that attaches the frontmost app window to the current chat when you press both Option keys (or a custom two-key shortcut). Includes a native helper that runs as part of Maximo Syntax (so System Settings shows the Maximo logo for Screen Recording and Input Monitoring), permission setup, a first-run welcome sheet, capture sound, and pending-capture recovery if the composer is unavailable.
+
 ## [0.1.12] - 2026-08-15
 
 - **Sub-agent timeline**: chat timeline rows now use a dedicated sub-agent icon and show `subagent: <task title>` instead of the generic `general-purpose` type name.

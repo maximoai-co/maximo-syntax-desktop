@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { isAppSnapShortcut } from "./app-snap-shortcut.js";
 import { DEFAULT_SETTINGS, DEFAULT_THEME_PACKS, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
 import { normalizeRetiredMytabulonModel } from "./model-defaults.js";
 import { normalizeThemePack } from "./theme.js";
@@ -89,6 +90,9 @@ export function normalizeSettings(input: unknown): Settings {
     sidebarProjectSortOrder: source.sidebarProjectSortOrder === "updated_at" || source.sidebarProjectSortOrder === "created_at" ? source.sidebarProjectSortOrder : "manual",
     sidebarThreadSortOrder: source.sidebarThreadSortOrder === "created_at" ? "created_at" : "updated_at",
     customModelSlugs,
+    enableAppSnap: typeof source.enableAppSnap === "boolean" ? source.enableAppSnap : DEFAULT_SETTINGS.enableAppSnap,
+    appSnapShortcut: isAppSnapShortcut(source.appSnapShortcut) ? source.appSnapShortcut : DEFAULT_SETTINGS.appSnapShortcut,
+    appSnapPlaySound: typeof source.appSnapPlaySound === "boolean" ? source.appSnapPlaySound : DEFAULT_SETTINGS.appSnapPlaySound,
   };
 }
 

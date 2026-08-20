@@ -34,9 +34,10 @@
     "build:icon": "node scripts/build-app-icon.mjs",
     "bundle:local-cli": "node scripts/sync-local-cli.mjs",
     "start": "npm run build && node scripts/start.mjs",
-    "dev": "npm run bundle:local-cli && node scripts/dev.mjs",
+    "dev": "npm run bundle:local-cli && npm run build:appsnap && npm run build:electron && node scripts/dev.mjs",
+    "build:appsnap": "node scripts/build-appsnap-helper.mjs",
     "postinstall": "node scripts/prepare-node-pty.mjs",
-    "build": "npm run bundle:local-cli && npm run build:icon && npm run build:renderer && npm run build:electron",
+    "build": "npm run bundle:local-cli && npm run build:icon && npm run build:appsnap && npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
     "build:electron": "node scripts/clean-electron.mjs && tsc -p tsconfig.electron.json",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
@@ -44,7 +45,7 @@
     "check": "npm run typecheck && npm run test && npm run build",
     "package": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
-    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:mac": "npm run build && node scripts/build-appsnap-helper.mjs --release --required && electron-builder --mac",
     "dist:win": "npm run build && electron-builder --win"
   },
   "dependencies": {
@@ -53,6 +54,7 @@
     "@xterm/xterm": "^6.0.0",
     "diff": "^7.0.0",
     "highlight.js": "^11.11.1",
+    "koffi": "^3.1.6",
     "lucide-react": "^0.468.0",
     "node-pty": "^1.1.0",
     "react": "^19.2.4",
@@ -82,6 +84,8 @@
     "artifactName": "Maximo-Syntax-${version}-${os}-${arch}.${ext}",
     "asar": true,
     "npmRebuild": false,
+    "afterPack": "./scripts/after-pack-mac.mjs",
+    "afterSign": "./scripts/after-pack-mac.mjs",
     "directories": {
       "output": "release",
       "buildResources": "assets"
@@ -114,7 +118,19 @@
         "NSHumanReadableCopyright": "Copyright © 2026 Maximo AI Ltd"
       },
       "hardenedRuntime": true,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "entitlements": "assets/entitlements.mac.plist",
+      "entitlementsInherit": "assets/entitlements.mac.inherit.plist",
+      "binaries": [
+        "Contents/Helpers/Maximo Syntax AppSnap.app/Contents/MacOS/maximo-syntax-appsnap-helper"
+      ],
+      "x64ArchFiles": "Contents/Helpers/Maximo Syntax AppSnap.app",
+      "extraFiles": [
+        {
+          "from": ".electron-runtime/appsnap/Maximo Syntax AppSnap.app",
+          "to": "Helpers/Maximo Syntax AppSnap.app"
+        }
+      ]
     },
     "win": {
       "target": [
