@@ -424,7 +424,8 @@ export class DesktopAppSnapManager {
       return this.getState();
     }
     if (!(await this.#runPermissionCommand("--check-permissions"))) return this.getState();
-    await this.#advancePermissionPrompt();
+    // Restoring a persisted enabled state at app startup must be silent. The
+    // renderer calls requestPermissions() for an explicit user-initiated setup.
     await this.#reconcileWatchProcess();
     return this.getState();
   }

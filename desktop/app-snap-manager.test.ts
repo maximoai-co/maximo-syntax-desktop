@@ -81,7 +81,7 @@ describe("desktop AppSnap platform state", () => {
     });
   });
 
-  it("asks the host app for Screen Recording when enabling AppSnap", async () => {
+  it("keeps startup restoration silent but prompts on an explicit permission request", async () => {
     const requestHostScreenRecording = vi.fn(async () => "denied" as const);
     const checkChild = createFakeChildProcess();
     const screenChild = createFakeChildProcess();
@@ -113,6 +113,13 @@ describe("desktop AppSnap platform state", () => {
     checkChild.stderr.end();
     checkChild.emit("close", 0, null);
     await flushPromises();
+    await enabling;
+
+    expect(requestHostScreenRecording).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledTimes(1);
+
+    const requestingPermissions = manager.requestPermissions();
+    await flushPromises();
     screenChild.stdout.end(
       `${JSON.stringify({
         type: "permissions",
@@ -122,7 +129,7 @@ describe("desktop AppSnap platform state", () => {
     );
     screenChild.stderr.end();
     screenChild.emit("close", 0, null);
-    await enabling;
+    await requestingPermissions;
 
     expect(requestHostScreenRecording).toHaveBeenCalled();
     expect(spawn).toHaveBeenNthCalledWith(
@@ -397,6 +404,7 @@ describe("AppSnap helper protocol", () => {
   });
 
   it("restarts the listener after a revoked permission is granted again", async () => {
+    const captureDirectory = mkdtempSync(join(tmpdir(), "synara-appsnap-revoked-"));
     const checkChild = createFakeChildProcess();
     const watchChild = createFakeChildProcess();
     const requestChild = createFakeChildProcess();
@@ -412,7 +420,7 @@ describe("AppSnap helper protocol", () => {
     const manager = new DesktopAppSnapManager({
       platform: "darwin",
       helperPath: process.execPath,
-      captureDirectory: "/tmp/synara-appsnap-test",
+      captureDirectory,
       excludedBundleId: EXCLUDED_BUNDLE_ID,
       spawn,
       shortcutRegistry: { register, unregister },
@@ -471,6 +479,7 @@ describe("AppSnap helper protocol", () => {
     expect(manager.getState().status).toBe("ready");
     expect(register).toHaveBeenCalledTimes(2);
     manager.dispose();
+    rmSync(captureDirectory, { recursive: true, force: true });
   });
 
   it("ignores buffered listener output after AppSnap is disabled", async () => {
