@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+- **Diff controls**: the workspace diff pane's Collapse/Expand button now collapses or expands every file at once, and the Diff options menu gains matching Expand all / Collapse all entries.
 - **AppSnap**: opt-in macOS capture that attaches the frontmost app window to the current chat when you press both Option keys (or a custom two-key shortcut). Includes a native helper that runs as part of Maximo Syntax (so System Settings shows the Maximo logo for Screen Recording and Input Monitoring), permission setup, a first-run welcome sheet, capture sound, and pending-capture recovery if the composer is unavailable.
 
 ## [0.1.12] - 2026-08-15
