@@ -6,13 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+- **Sub-agent timeline**: chat timeline rows now use a dedicated sub-agent icon and show `subagent: <task title>` instead of the generic `general-purpose` type name. The activity status list and the live "Thinking with…" labels use the same friendly titles, and a dedicated bot badge appears on sub-agent rows.
+- **Honest stop messages**: stopping a run no longer fabricates a "Run stopped." assistant answer — the turn is recorded with an interrupted flag and a **"You stopped after"** disclosure instead, so closing work mid-turn is visibly a stop, not an answer.
+- **Bigger attachments**: the attachment limit rises to **100 MB** (from 25 MB), expanding video type support (mp4, mov, mkv, avi, wmv, mpeg, webm and more) with inline video playback in the preview, and oversized files now surface a **dedicated rejection modal** instead of silently dropping.
+- **Bundled CLI engine**: the desktop build now bundles CLI `v0.1.37`, which uses the same logged-in account catalog as `/model` for sub-agent model/effort (Maximo AI, MyTabulon, Cencori, OpenRouter, OpenCode) and no longer advertises Claude leftovers like `sonnet` / `opus` / `haiku`.
+- **Open-folder icon**: expanded projects in the sidebar now show an open folder icon.
 - **Diff controls**: the workspace diff pane's Collapse/Expand button now collapses or expands every file at once, and the Diff options menu gains matching Expand all / Collapse all entries.
 - **AppSnap**: opt-in macOS capture that attaches the frontmost app window to the current chat when you press both Option keys (or a custom two-key shortcut). Includes a native helper that runs as part of Maximo Syntax (so System Settings shows the Maximo logo for Screen Recording and Input Monitoring), permission setup, a first-run welcome sheet, capture sound, and pending-capture recovery if the composer is unavailable.
-
-## [0.1.12] - 2026-08-15
-
-- **Sub-agent timeline**: chat timeline rows now use a dedicated sub-agent icon and show `subagent: <task title>` instead of the generic `general-purpose` type name.
-- **Bundled CLI engine**: the desktop build now bundles CLI `v0.1.37`, which uses the same logged-in account catalog as `/model` for sub-agent model/effort (Maximo AI, MyTabulon, Cencori, OpenRouter, OpenCode) and no longer advertises Claude leftovers like `sonnet` / `opus` / `haiku`.
 
 ## [0.1.11] - 2026-08-14
 
@@ -99,23 +99,3 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added SEO metadata (description, keywords, Open Graph, Twitter cards) to the renderer shell.
 - Added an **Open Folder…** menu item (⌘⇧O / Ctrl+Shift+O) alongside Open Project.
 - Moved macOS/Linux installer category from developer-tools to productivity.
-- Added open-source housekeeping: `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`.
-
-## [0.1.1] - 2026-08-04
-
-- Matched Synara’s theme-aware sidebar surface so the left navigation rail now shifts with the active Light, Dark, or System appearance while preserving the existing translucent depth.
-- Expanded settings with Synara-inspired profile statistics, activity heatmap, model usage, notifications, integrations, archive management, and shortcut reference.
-- Added functional desktop notifications with click-through, notification sound controls, and in-app attention alerts.
-- Added full workspace keyboard shortcut handling and custom settings selectors.
-- Improved settings layering so native workspace panels are suspended while Settings is open.
-
-## [0.1.0] - 2026-08-04
-
-- Initial release.
-- Agentic chat workspace over the bundled Maximo Syntax CLI engine.
-- Projects, spaces, pinned chats, and work surfaces: chat, activity timeline, kanban, pull requests.
-- Multi-provider sign-in: Maximo AI subscription, API keys, MyTabulon, Cencori, OpenRouter, OpenCode Go/Zen.
-- Built-in PTY terminal, run log, and workspace browser.
-- Inline diff and pull-request review.
-- Granular permission modes including explicit full access.
-- Local-first state with a typed, sandboxed preload bridge.
