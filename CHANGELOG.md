@@ -6,12 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-08-21
+
 - **Browser device view**: new `browser_resize` tool lets the AI view any page as desktop (1440×900), laptop (1280×800), tablet (768×1024), or mobile (390×844) — mobile/tablet presets add touch emulation and an Android Chrome identity — plus custom width/height, portrait/landscape orientation, and a "panel" reset. Emulation survives navigation, so agents can keep working in the emulated view.
 - **Browser stealth & identity**: the shared browser now presents a complete vanilla desktop-Chrome identity — user agent without Electron/app tokens **plus rewritten `Sec-CH-UA` client hints and a consistent `Accept-Language`** — so sites that flag embedded browsers treat it as real Chrome. New `browser_drag` uses eased human-like pointer paths; clicks move along curved multi-step trajectories with sub-pixel jitter and typing uses per-character keystroke cadence for short text; cookie/consent banners are auto-dismissed after navigation so agents see clean pages.
 - **Real browser logs**: `browser_logs` now returns actual bounded console and network diagnostics per tab (previously always empty).
 - **Full-page screenshots**: `browser_screenshot` accepts `fullPage: true` to capture the whole document via CDP (bounded at 16384px, clipping reported).
 - **Browser proxy support**: Settings → Browser gains a Network proxy section (direct or custom HTTP/SOCKS proxy with bypass list and optional credentials, saved locally). Proxy auth challenges are answered automatically; configuration applies to every chat's shared browser.
 - **Navigation resilience**: beforeunload dialogs no longer block AI-driven navigation; unknown resize presets are rejected before touching a live tab.
+- **Failed-load recovery**: a site refusing to load no longer wedges the tab — Chromium error pages are no longer "reconciled" by force-reloading the dead URL (which aborted newer navigations and hung every following browser tool for ~30s), and navigating a tab whose view was destroyed now actually starts the load instead of updating the address bar silently.
 
 - **Sub-agent timeline**: chat timeline rows now use a dedicated sub-agent icon and show `subagent: <task title>` instead of the generic `general-purpose` type name. The activity status list and the live "Thinking with…" labels use the same friendly titles, and a dedicated bot badge appears on sub-agent rows.
 - **Honest stop messages**: stopping a run no longer fabricates a "Run stopped." assistant answer — the turn is recorded with an interrupted flag and a **"You stopped after"** disclosure instead, so closing work mid-turn is visibly a stop, not an answer.

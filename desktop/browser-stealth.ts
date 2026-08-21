@@ -114,18 +114,20 @@ export interface DialogDecision {
  * alert()/confirm()/prompt() immediately without showing a dialog, and
  * beforeunload prompts cannot hang CDP-driven navigation because Chromium
  * treats programmatic closes as confirmed. What CAN stall an agent is a page
- * whose main-frame navigation is intercepted by a beforeunload confirm; we
- * neutralize those by injecting a page-side patch at dom-ready (see
- * STEALTH_INIT_SCRIPT) that drops beforeunload handlers. This host-side hook
- * records such events for browser_logs. Returns a disposer.
+ * whose main-frame navigation is intercepted by a beforeunload confirm; the
+ * host-side hook below tells Chromium to continue that navigation. Returns a
+ * disposer.
  */
 export function attachDialogHandling(
-  _webContents: WebContents,
+  webContents: WebContents,
   _onDialog: (event: BrowserDialogEvent) => void,
 ): () => void {
-  // No host-side event exists for JS dialogs on WebContents; the page-side
-  // patch below is the effective mechanism. Kept as a hook point.
-  return () => undefined;
+  // Electron exposes the beforeunload decision through this event. Preventing
+  // the event here tells Chromium to ignore the page's veto and continue the
+  // requested navigation instead of leaving the tab on the old document.
+  const willPreventUnload = (event: Electron.Event) => event.preventDefault();
+  webContents.on("will-prevent-unload", willPreventUnload);
+  return () => webContents.removeListener("will-prevent-unload", willPreventUnload);
 }
 
 // ---------------------------------------------------------------------------
@@ -268,14 +270,5 @@ export const STEALTH_INIT_SCRIPT = `
     };
   } catch { /* audio unavailable */ }
 
-  try {
-    // Automation safety: a beforeunload confirm can block the next
-    // navigation behind an invisible dialog. Drop the handlers.
-    window.addEventListener("beforeunload", (event) => {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      delete event.returnValue;
-    }, { capture: true });
-  } catch { /* events unavailable */ }
 })();
 `;

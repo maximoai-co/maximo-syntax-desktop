@@ -859,12 +859,18 @@ export class BrowserManager {
     const state = this.ensureWorkspace(threadId);
     const tab = this.resolveTab(state, tabId);
     const runtime = this.ensureRuntime(threadId, tab.id);
-    const expectedUrl = normalizeUrl(tab.lastCommittedUrl ?? tab.url);
     const currentUrl = runtime.webContents.getURL();
-    if (currentUrl !== expectedUrl && expectedUrl !== BROWSER_BLANK_URL) {
-      await this.loadTab(threadId, tab.id, expectedUrl, true);
-    } else if (!currentUrl) {
-      await runtime.webContents.loadURL(BROWSER_BLANK_URL);
+    // Only reconcile when the guest is showing an unexpected *live* page.
+    // Chromium error pages report chrome-error:// URLs; reloading the target
+    // there would abort in-flight navigation and re-trigger the same failure
+    // on every tool call.
+    if (!currentUrl.startsWith("chrome-error://")) {
+      const expectedUrl = normalizeUrl(tab.lastCommittedUrl ?? tab.url);
+      if (currentUrl !== expectedUrl && expectedUrl !== BROWSER_BLANK_URL) {
+        await this.loadTab(threadId, tab.id, expectedUrl, true);
+      } else if (!currentUrl) {
+        await runtime.webContents.loadURL(BROWSER_BLANK_URL);
+      }
     }
     return {
       threadId,
@@ -1349,11 +1355,10 @@ export class BrowserManager {
     if (state.activeTabId === tabId) state.find = null;
     tab.url = url;
     tab.title = defaultTitle(url);
-    tab.lastCommittedUrl = url === BROWSER_BLANK_URL ? null : null;
+    tab.lastCommittedUrl = url === BROWSER_BLANK_URL ? null : url;
     tab.lastError = null;
     if (load) {
-      const runtime = this.runtimes.get(runtimeKey(threadId, tab.id));
-      if (runtime) void this.loadTab(threadId, tab.id, url, true);
+      void this.loadTab(threadId, tab.id, url, true).catch(() => undefined);
     }
     this.changed(threadId);
     this.emitState(threadId);
@@ -1772,9 +1777,12 @@ export class BrowserManager {
     this.window.contentView.addChildView(runtime.view);
     runtime.view.setBounds(this.activeBounds);
     this.attachedRuntimeKey = runtime.key;
-    const expectedUrl = normalizeUrl(tab.lastCommittedUrl ?? tab.url);
-    if (runtime.webContents.getURL() !== expectedUrl) {
-      void this.loadTab(this.activeThreadId, tab.id, expectedUrl, false).catch(() => undefined);
+    const currentUrl = runtime.webContents.getURL();
+    if (!currentUrl.startsWith("chrome-error://")) {
+      const expectedUrl = normalizeUrl(tab.lastCommittedUrl ?? tab.url);
+      if (currentUrl !== expectedUrl) {
+        void this.loadTab(this.activeThreadId, tab.id, expectedUrl, false).catch(() => undefined);
+      }
     }
   }
 
