@@ -5,6 +5,18 @@ import type { WebContents } from "electron";
 import type { BrowserState, BrowserTabState } from "./types.js";
 import type { BrowserAutomationRuntime, BrowserManager } from "./browser-manager.js";
 import { collapseDuplicateBrowserScheme } from "./browser-url.js";
+import {
+  PANEL_DEFAULT_STATE,
+  TabEmulationController,
+  resolveResizeRequest,
+} from "./browser-emulation.js";
+import {
+  BrowserDiagnosticsStore,
+  attachDialogHandling,
+  dismissCookieBanners,
+  humanKeyDelayMs,
+  humanizedPath,
+} from "./browser-stealth.js";
 
 export const BROWSER_TOOL_NAMES = [
   "browser_status",
@@ -14,11 +26,13 @@ export const BROWSER_TOOL_NAMES = [
   "browser_back",
   "browser_forward",
   "browser_reload",
+  "browser_resize",
   "browser_snapshot",
   "browser_screenshot",
   "browser_logs",
   "browser_click",
   "browser_hover",
+  "browser_drag",
   "browser_type",
   "browser_select",
   "browser_upload",
@@ -95,11 +109,13 @@ const TOOL_DESCRIPTIONS: Record<BrowserToolName, string> = {
   browser_back: "Go back in the selected browser tab history.",
   browser_forward: "Go forward in the selected browser tab history.",
   browser_reload: "Reload the selected browser tab.",
+  browser_resize: "Resize the page view: desktop, laptop, tablet, or mobile presets (with touch + mobile emulation), custom width/height, orientation, or reset to panel.",
   browser_snapshot: "Read a bounded semantic snapshot of visible browser controls and text.",
-  browser_screenshot: "Capture a PNG screenshot of the current browser page.",
+  browser_screenshot: "Capture a PNG screenshot of the current browser page, optionally full page.",
   browser_logs: "Read bounded browser diagnostics. Console and network collection is best effort.",
   browser_click: "Click a browser element by snapshot ref, CSS selector, or viewport point.",
   browser_hover: "Move the pointer over a browser element or viewport point.",
+  browser_drag: "Drag from a source to a target element using trusted pointer steps.",
   browser_type: "Focus an editable browser element and insert literal text.",
   browser_select: "Select one or more option values in a browser select element.",
   browser_upload: "Upload workspace-relative files into a browser file input.",
@@ -407,9 +423,11 @@ export function browserToolDefinitions(): Array<Record<string, unknown>> {
     if (name === "browser_navigate") inputSchema = { type: "object", properties: { tabId: { type: "string" }, url: { type: "string" } }, required: ["url"], additionalProperties: false };
     if (["browser_back", "browser_forward", "browser_reload", "browser_close"].includes(name)) inputSchema = { type: "object", properties: { tabId: { type: "string" } }, additionalProperties: false };
     if (["browser_click", "browser_hover", "browser_type", "browser_select", "browser_scroll"].includes(name)) inputSchema = { type: "object", properties: { target, text: { type: "string" }, append: { type: "boolean" }, values: { type: "array", items: { type: "string" } }, direction: { type: "string" }, deltaX: { type: "number" }, deltaY: { type: "number" }, tabId: { type: "string" } }, additionalProperties: true };
+    if (name === "browser_resize") inputSchema = { type: "object", properties: { preset: { type: "string", description: "desktop | laptop | tablet | mobile | panel (reset to the visible panel)" }, width: { type: "number", description: "Custom viewport width 320-3840 when no preset." }, height: { type: "number", description: "Custom viewport height 240-2160 when no preset." }, orientation: { type: "string", description: "portrait or landscape for presets." }, tabId: { type: "string" } }, additionalProperties: false };
+    if (name === "browser_drag") inputSchema = { type: "object", properties: { source: target, target, tabId: { type: "string" } }, required: ["source", "target"], additionalProperties: false };
     if (name === "browser_press") inputSchema = { type: "object", properties: { keys: { type: "array", items: { type: "string" } }, key: { type: "string" }, tabId: { type: "string" } }, additionalProperties: false };
     if (name === "browser_snapshot") inputSchema = { type: "object", properties: { tabId: { type: "string" } }, additionalProperties: false };
-    if (name === "browser_screenshot") inputSchema = { type: "object", properties: { tabId: { type: "string" } }, additionalProperties: false };
+    if (name === "browser_screenshot") inputSchema = { type: "object", properties: { fullPage: { type: "boolean", description: "Capture the bounded full document instead of only the visible viewport; oversized pages clip at 16384px." }, tabId: { type: "string" } }, additionalProperties: false };
     if (name === "browser_evaluate") inputSchema = { type: "object", properties: { expression: { type: "string" }, tabId: { type: "string" } }, required: ["expression"], additionalProperties: false };
     if (name === "browser_wait") inputSchema = { type: "object", properties: { tabId: { type: "string" }, timeoutMs: { type: "number" }, timeMs: { type: "number" }, conditions: { type: "array", items: { type: "object" } } }, additionalProperties: false };
     if (name === "browser_upload") inputSchema = { type: "object", properties: { tabId: { type: "string" }, target, paths: { type: "array", items: { type: "string" } } }, required: ["paths"], additionalProperties: false };
@@ -433,8 +451,21 @@ export class BrowserAutomationHost {
   private readonly locks = new Map<string, Promise<void>>();
   private readonly cursorHideTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly cursorRuntimes = new Map<string, CdpRuntime>();
+  private readonly emulation = new TabEmulationController();
+  private readonly diagnostics = new Map<string, BrowserDiagnosticsStore>();
 
   constructor(private readonly manager: BrowserManager, private readonly options: BrowserAutomationHostOptions = {}) {}
+
+  private diagnosticsFor(runtime: CdpRuntime): BrowserDiagnosticsStore {
+    const key = this.cursorKey(runtime);
+    let store = this.diagnostics.get(key);
+    if (!store) {
+      store = new BrowserDiagnosticsStore();
+      this.diagnostics.set(key, store);
+      this.manager.attachRuntimeDiagnostics(runtime.threadId, runtime.tabId, store);
+    }
+    return store;
+  }
 
   async execute(call: BrowserHostCall): Promise<unknown> {
     if (!call.capability) throw new Error("Browser authorization is required.");
@@ -523,6 +554,30 @@ export class BrowserAutomationHost {
       return this.navigationOutput(state, state.activeTabId, "created");
     }
 
+    if (call.name === "browser_resize") {
+      // Validate before resolving the tab or acquiring a runtime so bad input
+      // never touches a live page.
+      let requested;
+      try {
+        requested = resolveResizeRequest(input as { preset?: string; width?: number; height?: number; orientation?: string });
+      } catch (error) {
+        throw new Error(error instanceof Error ? error.message : "Invalid browser resize request.");
+      }
+      const tabId = this.resolveTabId(call.threadId, affinity, input.tabId);
+      const runtime = await this.manager.getAutomationRuntime(call.threadId, tabId);
+      const key = `${call.threadId}:${tabId}`;
+      const applied = await this.emulation.apply(key, runtime, requested);
+      this.manager.setRuntimeEmulation(call.threadId, tabId, requested);
+      await this.showAutomationCursor(runtime, { x: 28, y: 28 }, requested ? "Resized" : "View reset", signal);
+      return {
+        tabId,
+        preset: applied.preset,
+        viewport: { width: applied.width, height: applied.height, deviceScaleFactor: applied.deviceScaleFactor },
+        mobile: applied.mobile,
+        touch: applied.touch,
+      };
+    }
+
     const tabId = this.resolveTabId(call.threadId, affinity, input.tabId);
     if (call.name === "browser_navigate") {
       const url = normalizeUrl(String(input.url));
@@ -530,20 +585,17 @@ export class BrowserAutomationHost {
       const state = await this.manager.automationNavigate(call.threadId, tabId, url);
       affinity.tabId = tabId;
       const runtime = await this.manager.getAutomationRuntime(call.threadId, tabId);
+      // Emulation overrides reset on cross-document navigation; reapply them
+      // so a resized/emulated view survives browser_navigate.
+      await this.emulation.reapply(`${call.threadId}:${tabId}`, runtime);
+      await dismissCookieBanners((expression) => evaluatePage(runtime, expression, signal));
       await this.showAutomationCursor(runtime, { x: 28, y: 28 }, "Navigated", signal);
-      return this.navigationOutput(state, tabId, "reused");
-    }
-    if (call.name === "browser_back" || call.name === "browser_forward" || call.name === "browser_reload") {
-      const direction = call.name === "browser_back" ? "back" : call.name === "browser_forward" ? "forward" : "reload";
-      const actionLabel = direction === "back" ? "Going back" : direction === "forward" ? "Going forward" : "Reloading";
-      const runtime = await this.manager.getAutomationRuntime(call.threadId, tabId);
-      await this.showAutomationCursor(runtime, { x: 28, y: 28 }, actionLabel, signal);
-      const state = await this.manager.automationHistory({ threadId: call.threadId, tabId }, direction);
-      await this.showAutomationCursor(runtime, { x: 28, y: 28 }, actionLabel, signal);
       return this.navigationOutput(state, tabId, "reused");
     }
     if (call.name === "browser_close") {
       await this.clearAutomationCursors(call.threadId);
+      this.emulation.forget(`${call.threadId}:${tabId}`);
+      this.manager.setRuntimeEmulation(call.threadId, tabId, null);
       const state = await this.manager.automationCloseTab({ threadId: call.threadId, tabId });
       if (affinity.tabId === tabId) affinity.tabId = state.activeTabId;
       return { closedTabId: tabId, activeTabId: state.activeTabId };
@@ -555,11 +607,20 @@ export class BrowserAutomationHost {
     const cursorPoint = await this.resolveCursorPoint(call.sessionId, cdpRuntime, input, signal);
     await this.showAutomationCursor(cdpRuntime, cursorPoint, this.cursorLabel(call.name), signal, false, call.name === "browser_wait");
     if (call.name === "browser_snapshot") return this.snapshot(call.sessionId, cdpRuntime, signal);
-    if (call.name === "browser_screenshot") return this.screenshot(cdpRuntime, signal);
-    if (call.name === "browser_logs") return { tabId, entries: [], droppedCount: 0, truncated: false };
+    if (call.name === "browser_screenshot") return this.screenshot(cdpRuntime, input.fullPage === true, signal);
+    if (call.name === "browser_logs") {
+      const store = this.diagnosticsFor(cdpRuntime);
+      const result = store.list({
+        includeConsole: input.includeConsole !== false,
+        includeNetwork: input.includeNetwork !== false,
+        limit: typeof input.limit === "number" ? input.limit : 100,
+      });
+      return { tabId, ...result };
+    }
     if (call.name === "browser_evaluate") return this.evaluate(cdpRuntime, String(input.expression ?? ""), signal);
     if (call.name === "browser_click") return this.click(call.sessionId, cdpRuntime, input, signal);
     if (call.name === "browser_hover") return this.hover(call.sessionId, cdpRuntime, input, signal);
+    if (call.name === "browser_drag") return this.drag(call.sessionId, cdpRuntime, input, signal);
     if (call.name === "browser_type") return this.type(call.sessionId, cdpRuntime, input, signal);
     if (call.name === "browser_select") return this.select(call.sessionId, cdpRuntime, input, signal);
     if (call.name === "browser_press") return this.press(cdpRuntime, input, signal);
@@ -599,6 +660,7 @@ export class BrowserAutomationHost {
       case "browser_logs": return "Checking logs";
       case "browser_click": return "Clicking";
       case "browser_hover": return "Hovering";
+      case "browser_drag": return "Dragging";
       case "browser_type": return "Typing";
       case "browser_select": return "Selecting";
       case "browser_upload": return "Uploading";
@@ -706,23 +768,42 @@ export class BrowserAutomationHost {
     };
   }
 
-  private async screenshot(runtime: CdpRuntime, signal: AbortSignal) {
+  private async screenshot(runtime: CdpRuntime, fullPage: boolean, signal: AbortSignal) {
     throwIfAborted(signal);
     const metrics: {
       cssVisualViewport?: { clientWidth?: number; clientHeight?: number };
       cssContentSize?: { width?: number; height?: number };
     } = await cdpCommand(runtime, "Page.getLayoutMetrics", {}, signal).catch(() => ({}));
-    const image = (await runtime.webContents.capturePage()).toPNG();
+    const viewWidth = Math.max(1, Math.round(metrics.cssVisualViewport?.clientWidth ?? metrics.cssContentSize?.width ?? 1));
+    const viewHeight = Math.max(1, Math.round(metrics.cssVisualViewport?.clientHeight ?? metrics.cssContentSize?.height ?? 1));
+    let image: Buffer | null = null;
+    let mode: "viewport" | "fullPage" = "viewport";
+    let clipped = false;
+    if (fullPage) {
+      // Bounded full-page capture via CDP; oversized documents clip at 16384px
+      // (Chromium's capture ceiling) and report the clip rather than failing.
+      const contentHeight = Math.round(metrics.cssContentSize?.height ?? viewHeight);
+      const captureHeight = Math.min(contentHeight, 16_384);
+      clipped = contentHeight > captureHeight;
+      const captured = await cdpCommand<{ data?: string }>(runtime, "Page.captureScreenshot", {
+        format: "png",
+        clip: { x: 0, y: 0, width: viewWidth, height: captureHeight, scale: 1 },
+        captureBeyondViewport: true,
+      }, signal).catch(() => null);
+      if (captured?.data) {
+        image = Buffer.from(captured.data, "base64");
+        mode = "fullPage";
+      }
+    }
+    if (!image) image = (await runtime.webContents.capturePage()).toPNG();
     if (image.byteLength > 8 * 1024 * 1024) throw new Error("The browser screenshot is too large.");
-    const width = Math.max(1, Math.round(metrics.cssVisualViewport?.clientWidth ?? metrics.cssContentSize?.width ?? 1));
-    const height = Math.max(1, Math.round(metrics.cssVisualViewport?.clientHeight ?? metrics.cssContentSize?.height ?? 1));
     return {
       tabId: runtime.tabId,
       url: runtime.webContents.getURL(),
       capturedAt: new Date().toISOString(),
-      mode: "viewport",
-      clipped: false,
-      image: { mimeType: "image/png", width, height, byteLength: image.byteLength, data: image.toString("base64") },
+      mode,
+      clipped,
+      image: { mimeType: "image/png", width: mode === "fullPage" ? viewWidth : viewWidth, height: mode === "fullPage" ? Math.round(metrics.cssContentSize?.height ?? viewHeight) : viewHeight, byteLength: image.byteLength, data: image.toString("base64") },
     };
   }
 
@@ -735,10 +816,19 @@ export class BrowserAutomationHost {
     const snapshot = this.snapshotFor(sessionId, runtime.tabId);
     const point = pointForTarget(input, snapshot, runtime.tabId);
     if (point) {
-      const release = runtime.expectAgentInput({ kind: "mouse", type: "mouseDown", x: point.x, y: point.y, button: "left" });
+      const release = runtime.expectAgentInput({ kind: "mouse", type: "mouseDown", x: Math.round(point.x), y: Math.round(point.y), button: "left" });
       try {
-        await cdpCommand(runtime, "Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 }, signal);
-        await cdpCommand(runtime, "Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 }, signal);
+        // Humanized approach: eased multi-step move with slight arc + jitter,
+        // then press/release with sub-pixel landing jitter.
+        const from = { x: Math.max(0, point.x - 90), y: Math.max(0, point.y - 70) };
+        const path = humanizedPath(from, point);
+        for (const step of path) {
+          await cdpCommand(runtime, "Input.dispatchMouseEvent", { type: "mouseMoved", x: step.x, y: step.y }, signal);
+        }
+        const landX = Math.round(point.x), landY = Math.round(point.y);
+        await cdpCommand(runtime, "Input.dispatchMouseEvent", { type: "mousePressed", x: landX, y: landY, button: "left", clickCount: 1 }, signal);
+        await wait(humanKeyDelayMs() / 2, signal).catch(() => undefined);
+        await cdpCommand(runtime, "Input.dispatchMouseEvent", { type: "mouseReleased", x: landX, y: landY, button: "left", clickCount: 1 }, signal);
       } finally {
         release();
       }
@@ -749,6 +839,37 @@ export class BrowserAutomationHost {
     }
     await this.showAutomationCursor(runtime, point ?? await this.resolveCursorPoint(sessionId, runtime, input, signal), "Clicked", signal, true);
     return { tabId: runtime.tabId, target: {}, point: point ?? { x: 0, y: 0 } };
+  }
+
+  private async drag(sessionId: string, runtime: CdpRuntime, input: Record<string, unknown>, signal: AbortSignal) {
+    const snapshot = this.snapshotFor(sessionId, runtime.tabId);
+    const sourceInput = asRecord(input.source);
+    if (!sourceInput) throw new Error("Drag requires a source target.");
+    const destinationInput = asRecord(input.target);
+    if (!destinationInput) throw new Error("Drag requires a target.");
+    const source = pointForTarget(sourceInput, snapshot, runtime.tabId)
+      ?? (selectorForTarget(sourceInput, snapshot, runtime.tabId)
+        ? await evaluatePage<{ x: number; y: number } | null>(runtime, `(function(){const e=document.querySelector(${JSON.stringify(selectorForTarget(sourceInput, snapshot, runtime.tabId))});if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`, signal).catch(() => null)
+        : null);
+    const destination = pointForTarget(destinationInput, snapshot, runtime.tabId)
+      ?? (selectorForTarget(destinationInput, snapshot, runtime.tabId)
+        ? await evaluatePage<{ x: number; y: number } | null>(runtime, `(function(){const e=document.querySelector(${JSON.stringify(selectorForTarget(destinationInput, snapshot, runtime.tabId))});if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`, signal).catch(() => null)
+        : null);
+    if (!source || !destination) throw new Error("Both drag endpoints must resolve to elements or points.");
+    const release = runtime.expectAgentInput({ kind: "mouse", type: "mouseDown", x: Math.round(source.x), y: Math.round(source.y), button: "left" });
+    try {
+      await cdpCommand(runtime, "Input.dispatchMouseEvent", { type: "mousePressed", x: source.x, y: source.y, button: "left", clickCount: 1 }, signal);
+      const steps = humanizedPath(source, destination, { steps: 16 });
+      for (const step of steps) {
+        await cdpCommand(runtime, "Input.dispatchMouseEvent", { type: "mouseMoved", x: step.x, y: step.y, button: "left" }, signal);
+      }
+      await wait(60, signal).catch(() => undefined);
+      await cdpCommand(runtime, "Input.dispatchMouseEvent", { type: "mouseReleased", x: destination.x, y: destination.y, button: "left", clickCount: 1 }, signal);
+    } finally {
+      release();
+    }
+    await this.showAutomationCursor(runtime, destination, "Dragged", signal, true);
+    return { tabId: runtime.tabId, source, point: destination };
   }
 
   private async hover(sessionId: string, runtime: CdpRuntime, input: Record<string, unknown>, signal: AbortSignal) {
@@ -764,7 +885,19 @@ export class BrowserAutomationHost {
     const text = String(input.text ?? "");
     if (text.length > 65_536) throw new Error("Typed browser text is too long.");
     await evaluatePage(runtime, `(function(){const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw new Error("Element not found");e.focus();${input.append === true ? "" : "if(\"value\" in e)e.value=\"\";"}return true})()`, signal);
-    await cdpCommand(runtime, "Input.insertText", { text }, signal);
+    // Short text goes through per-character trusted key events with a
+    // human-like cadence; long text falls back to atomic insert so the tool
+    // stays fast and bounded.
+    if (text.length <= 80 && !/\n/.test(text)) {
+      for (const character of text) {
+        await cdpCommand(runtime, "Input.dispatchKeyEvent", { type: "keyDown", key: character, code: keyCode(character), text: character }, signal).catch(() => undefined);
+        await cdpCommand(runtime, "Input.dispatchKeyEvent", { type: "keyUp", key: character, code: keyCode(character) }, signal).catch(() => undefined);
+        await wait(humanKeyDelayMs(), signal).catch(() => undefined);
+      }
+      await cdpCommand(runtime, "Input.insertText", { text: "" }, signal).catch(() => undefined);
+    } else {
+      await cdpCommand(runtime, "Input.insertText", { text }, signal);
+    }
     return { tabId: runtime.tabId, resultingValue: { kind: "text", length: text.length, value: text.slice(0, 4_096) } };
   }
 

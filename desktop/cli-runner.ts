@@ -209,6 +209,35 @@ function buildInitialContextUsage(model: string, contextWindow = 200_000): Conte
   };
 }
 
+/**
+ * A fresh CLI process has no API usage of its own yet. When the thread already
+ * carries a real reading (follow-ups resume the session), seed the run with it
+ * so the UI keeps showing the last known usage instead of regressing to a
+ * zeroed placeholder until this run's first API response arrives.
+ */
+function seedResumedContextUsage(previous: ContextUsage | null | undefined, model: string, contextWindow: number | undefined): ContextUsage | null {
+  if (!previous) return null;
+  const previousTokens = previous.totalProcessedTokens ?? previous.totalTokens;
+  if (!Number.isFinite(previousTokens) || previousTokens <= 0) return null;
+  const maxTokens = contextWindow !== undefined && contextWindow > 0 ? contextWindow : previous.maxTokens;
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) return null;
+  const boundedUsed = Math.min(maxTokens, previousTokens);
+  return {
+    categories: [
+      { name: "Current context", tokens: boundedUsed, color: "messages" },
+      { name: "Free space", tokens: Math.max(0, maxTokens - boundedUsed), color: "promptBorder" },
+    ],
+    totalTokens: boundedUsed,
+    ...(previous.totalProcessedTokens === undefined ? {} : { totalProcessedTokens: previous.totalProcessedTokens }),
+    maxTokens,
+    rawMaxTokens: maxTokens,
+    percentage: Math.round((boundedUsed / maxTokens) * 100),
+    model: model.trim() || previous.model || "Maximo Syntax",
+    ...(previous.autoCompactThreshold === undefined ? {} : { autoCompactThreshold: previous.autoCompactThreshold }),
+    ...(previous.isAutoCompactEnabled === undefined ? {} : { isAutoCompactEnabled: previous.isAutoCompactEnabled }),
+  };
+}
+
 function mergeContextApiUsage(base: ContextApiUsage | undefined, delta: Partial<ContextApiUsage>): ContextApiUsage {
   return {
     input_tokens: delta.input_tokens ?? base?.input_tokens ?? 0,
@@ -1047,7 +1076,7 @@ export function buildCliArguments(
         },
       }),
       "--append-system-prompt",
-      "Maximo Syntax Desktop provides a shared in-app browser through the Maximo browser_* tools. When a user asks you to open, inspect, navigate, click, type, scroll, screenshot, or otherwise interact with a website, use the available mcp__maximo-browser__browser_* tool directly without requiring the user to mention the tool name. The page is shared with the human in the Browser panel.",
+      "Maximo Syntax Desktop provides a shared in-app browser through the Maximo browser_* tools. When a user asks you to open, inspect, navigate, click, type, scroll, screenshot, or otherwise interact with a website, use the available mcp__maximo-browser__browser_* tool directly without requiring the user to mention the tool name. The page is shared with the human in the Browser panel. Use browser_resize to view pages as desktop, laptop, tablet, or mobile (with touch emulation), or custom width/height; reset with preset \"panel\". browser_screenshot accepts fullPage for whole-document captures. browser_logs returns recent console and network diagnostics.",
     );
   }
   if (previousSessionId) args.push("--resume", previousSessionId);
@@ -1215,6 +1244,7 @@ export class CliRunner {
     previousSessionId: string | undefined,
     callbacks: CliRunCallbacks,
     browserBridge?: CliBrowserBridge,
+    previousContextUsage?: ContextUsage | null,
   ): number {
     if (this.processes.has(request.threadId)) throw new Error("This chat is already running.");
     const args = [...engine.argsPrefix, ...buildCliArguments(request, previousSessionId, browserBridge)];
@@ -1248,7 +1278,8 @@ export class CliRunner {
     }) as Child;
     this.processes.set(request.threadId, child);
     const timestamp = () => Date.now();
-    let latestContextUsage: ContextUsage | null = buildInitialContextUsage(request.model || "CLI default", request.contextWindow);
+    let latestContextUsage: ContextUsage | null = seedResumedContextUsage(previousContextUsage, request.model, request.contextWindow)
+      ?? buildInitialContextUsage(request.model || "CLI default", request.contextWindow);
     callbacks.onEvent({ type: "started", threadId: request.threadId, pid: child.pid ?? -1, timestamp: timestamp() });
     callbacks.onEvent({ type: "context", threadId: request.threadId, context: latestContextUsage, timestamp: timestamp() });
 

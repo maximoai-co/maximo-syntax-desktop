@@ -41,6 +41,13 @@ import type {
 import { BrowserProfileStore, normalizeBrowserOrigin } from "./browser-profile-store.js";
 import { flushPersistentBrowserSession } from "./browser-session-persistence.js";
 import { collapseDuplicateBrowserScheme } from "./browser-url.js";
+import {
+  buildAcceptLanguageHeader,
+  buildChromeClientHints,
+  deriveChromeUserAgent,
+} from "./browser-identity.js";
+import { attachDialogHandling, STEALTH_INIT_SCRIPT } from "./browser-stealth.js";
+import { applyEmulationOverride, type BrowserEmulationState } from "./browser-emulation.js";
 
 export const BROWSER_SESSION_PARTITION = "persist:maximo-browser";
 export const BROWSER_BLANK_URL = "about:blank";
@@ -76,6 +83,14 @@ export interface BrowserAutomationRuntime {
   readonly tabId: string;
   readonly webContents: WebContents;
   expectAgentInput: (signal: ExpectedInput) => () => void;
+}
+
+export interface BrowserProxySettings {
+  mode: "direct" | "custom";
+  url?: string | null;
+  bypass?: string | null;
+  username?: string | null;
+  password?: string | null;
 }
 
 export interface BrowserManagerOptions {
@@ -327,10 +342,38 @@ export class BrowserManager {
   private downloadEmitTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
+  private chromeUserAgent: string | null = null;
+  private proxyAuthHandler: ((authInfo: Electron.AuthInfo, callback: (username?: string, password?: string) => void) => void) | null = null;
+  private stealthEnabled = true;
+  private readonly emulationStates = new Map<string, BrowserEmulationState>();
+
   constructor(private readonly options: BrowserManagerOptions) {
     const baseUserAgent = app.userAgentFallback || "";
-    const userAgent = baseUserAgent.replace(/\sElectron\/\S+/gi, "").replace(/\s{2,}/g, " ").trim();
-    if (userAgent) this.session.setUserAgent(userAgent);
+    // Present a vanilla desktop-Chrome identity to every site: UA without
+    // Electron/app tokens plus matching Sec-CH-UA client hints and a
+    // consistent Accept-Language. Without the hint rewrite, anti-bot stacks
+    // still see the Electron brand even after setUserAgent.
+    const userAgent = deriveChromeUserAgent(baseUserAgent, [app.getName()]);
+    if (userAgent) {
+      this.chromeUserAgent = userAgent;
+      this.session.setUserAgent(userAgent);
+      const clientHints = buildChromeClientHints(userAgent, process.platform);
+      const acceptLanguage = buildAcceptLanguageHeader(app.getPreferredSystemLanguages());
+      this.session.webRequest.onBeforeSendHeaders((details, callback) => {
+        const headers = { ...details.requestHeaders };
+        for (const [name, value] of Object.entries({
+          "User-Agent": userAgent,
+          ...(acceptLanguage ? { "Accept-Language": acceptLanguage } : {}),
+          ...(clientHints ?? {}),
+        })) {
+          for (const existing of Object.keys(headers)) {
+            if (existing.toLowerCase() === name) delete headers[existing];
+          }
+          headers[name] = value;
+        }
+        callback({ requestHeaders: headers });
+      });
+    }
     this.session.spellCheckerEnabled = true;
     this.session.cookies.on("changed", this.handleCookieChanged);
     this.session.on("will-download", this.handleWillDownload);
@@ -578,6 +621,20 @@ export class BrowserManager {
     return this.getProfile();
   }
 
+  async setProxy(proxy: BrowserProxySettings): Promise<void> {
+    const config: Electron.ProxyConfig = proxy.mode === "custom" && proxy.url
+      ? { mode: "fixed_servers", proxyRules: proxy.url, ...(proxy.bypass ? { proxyBypassRules: proxy.bypass } : {}) }
+      : { mode: "direct" };
+    await this.session.setProxy(config);
+    if (proxy.mode === "custom" && proxy.url && proxy.username) {
+      const username = proxy.username;
+      const password = proxy.password ?? "";
+      this.proxyAuthHandler = (_authInfo, callback) => callback(username, password);
+    } else {
+      this.proxyAuthHandler = null;
+    }
+  }
+
   async chooseDownloadDirectory(): Promise<string | null> {
     const options = {
       title: "Choose browser download folder",
@@ -764,6 +821,40 @@ export class BrowserManager {
     return this.closeTabInternal(input.threadId, input.tabId);
   }
 
+  /**
+   * Wires an automation diagnostics store to a tab's console/network events.
+   * The store is owned by the automation host; the manager only attaches the
+   * listeners while the runtime exists.
+   */
+  attachRuntimeDiagnostics(threadId: string, tabId: string, store: { push(entry: { kind: "console" | "exception" | "network"; level: "debug" | "info" | "warning" | "error"; text: string; url: string; metadata?: Record<string, unknown> }): void }): void {
+    const runtime = this.runtimes.get(runtimeKey(threadId, tabId));
+    if (!runtime) return;
+    const webContents = runtime.webContents;
+    const listener = (details: { level: string; message: string }) => {
+      const level = details.level === "error" ? "error" : details.level === "warning" ? "warning" : details.level === "info" ? "info" : "debug";
+      store.push({ kind: "console", level, text: details.message, url: webContents.isDestroyed() ? "" : webContents.getURL() });
+    };
+    (webContents.on as (eventName: string, listener: (...args: unknown[]) => void) => void)("console-message", listener as unknown as (...args: unknown[]) => void);
+    const failed = (_event: Electron.Event, code: number, description: string, validatedUrl: string, isMainFrame: boolean) => {
+      if (code === -3) return;
+      store.push({ kind: "network", level: "error", text: `${isMainFrame ? "Load" : "Resource"} failed (${code}): ${description}`, url: validatedUrl });
+    };
+    webContents.on("did-fail-load", failed);
+    runtime.disposers.push(() => {
+      if (!webContents.isDestroyed()) {
+        (webContents.removeListener as (eventName: string, listener: (...args: unknown[]) => void) => void)("console-message", listener as unknown as (...args: unknown[]) => void);
+        webContents.removeListener("did-fail-load", failed);
+      }
+    });
+  }
+
+  /** Records/clears the device-emulation state the automation host applied to a tab. */
+  setRuntimeEmulation(threadId: string, tabId: string, state: BrowserEmulationState | null): void {
+    const key = runtimeKey(threadId, tabId);
+    if (state === null) this.emulationStates.delete(key);
+    else this.emulationStates.set(key, state);
+  }
+
   async getAutomationRuntime(threadId: string, tabId: string): Promise<BrowserAutomationRuntime> {
     const state = this.ensureWorkspace(threadId);
     const tab = this.resolveTab(state, tabId);
@@ -802,8 +893,10 @@ export class BrowserManager {
     this.downloadEmitTimer = null;
     this.session.cookies.removeListener("changed", this.handleCookieChanged);
     this.session.removeListener("will-download", this.handleWillDownload);
+    this.proxyAuthHandler = null;
     this.session.setPermissionCheckHandler(null);
     this.session.setPermissionRequestHandler(null);
+    this.session.setProxy({ mode: "direct" }).catch(() => undefined);
     for (const pending of this.pendingCredentials.values()) clearTimeout(pending.timeout);
     this.pendingCredentials.clear();
     for (const pending of this.pendingPermissions.values()) {
@@ -824,6 +917,18 @@ export class BrowserManager {
 
   private readonly handleCookieChanged = () => {
     this.scheduleProfileFlush();
+  };
+
+  private readonly handleSessionLogin = (
+    event: Electron.Event,
+    authenticationResponseDetails: Electron.LoginAuthenticationResponseDetails,
+    authInfo: Electron.AuthInfo,
+    callback: (username?: string, password?: string) => void,
+  ) => {
+    // Only answer proxy challenges; website auth keeps the built-in prompt flow.
+    if (!authInfo.isProxy || !this.proxyAuthHandler) return;
+    event.preventDefault();
+    this.proxyAuthHandler(authInfo, callback);
   };
 
   private scheduleProfileFlush(): void {
@@ -1328,6 +1433,36 @@ export class BrowserManager {
     };
     webContents.on("will-navigate", navigationGuard);
     runtime.disposers.push(() => webContents.removeListener("will-navigate", navigationGuard));
+
+    // Auto-accept beforeunload dialogs so automation navigation is never blocked.
+    runtime.disposers.push(attachDialogHandling(webContents, () => undefined));
+    // Authenticating proxies answer their auth challenge with stored credentials.
+    const loginHandler = this.handleSessionLogin;
+    webContents.on("login", loginHandler);
+    runtime.disposers.push(() => webContents.removeListener("login", loginHandler));
+
+    // Stealth patches on every new document (navigator.webdriver, chrome
+    // runtime object, canvas/audio jitter). Kept minimal by design.
+    const domReady = () => {
+      if (this.stealthEnabled && !webContents.isDestroyed()) {
+        void webContents.executeJavaScript(STEALTH_INIT_SCRIPT).catch(() => undefined);
+      }
+    };
+    webContents.on("dom-ready", domReady);
+    runtime.disposers.push(() => webContents.removeListener("dom-ready", domReady));
+
+    // Device emulation overrides reset when the document navigates outside
+    // the automation flow (human typing an address); reapply them.
+    const navigated = () => {
+      const emulationState = this.emulationStates.get(runtime.key);
+      if (emulationState) void applyEmulationOverride(webContents, emulationState).catch(() => undefined);
+    };
+    webContents.on("did-navigate", navigated);
+    webContents.on("did-navigate-in-page", navigated);
+    runtime.disposers.push(() => {
+      webContents.removeListener("did-navigate", navigated);
+      webContents.removeListener("did-navigate-in-page", navigated);
+    });
 
     webContents.setWindowOpenHandler(({ url }) => {
       if (isAllowedNavigation(url)) {

@@ -579,6 +579,7 @@ export class AutomationService {
         definition.destination === "new_chat" ? undefined : thread.cliSessionId,
         callbacks,
         this.options.bridgeFor(thread.id, project.id, workspacePath),
+        definition.destination === "new_chat" ? undefined : thread.contextUsage,
       );
       const timeout = setTimeout(() => {
         run.error = `Stopped after ${definition.maxRuntimeMinutes} minutes.`;

@@ -39,7 +39,7 @@ import { DesktopAppSnapManager } from "./app-snap-manager.js";
 import { requestHostInputMonitoring } from "./mac-host-tcc.js";
 import { registerAppSnapIpcHandlers, sendAppSnapCaptured, sendAppSnapError, sendAppSnapState } from "./app-snap-ipc.js";
 import { isAppSnapShortcut } from "./app-snap-shortcut.js";
-import { MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_SIZE, MAX_PROJECT_SOURCE_COUNT } from "./types.js";
+import { MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_SIZE, MAX_PROJECT_SOURCE_COUNT, browserProxyFromSettings } from "./types.js";
 import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, AttachmentRejection, AttachmentResolution, AttachmentSelectionResult, AutomationCreateInput, AutomationDefinition, AutomationRun, AutomationUpdateInput, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopAppSnapCapture, DesktopAppSnapErrorEvent, DesktopAppSnapPermission, DesktopAppSnapState, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, ProjectColorName, ProjectIconName, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 import { launchConfigurationChanged, resolveAsFollowUp, RUN_ALREADY_RUNNING_ERROR, RUN_NOT_RUNNING_ERROR, type RunLaunchConfiguration } from "./run-dispatch.js";
 import { taskCompletionNotification } from "./task-notifications.js";
@@ -1056,8 +1056,14 @@ function registerIpc(): void {
     if (typeof patch.enableAppSnap === "boolean") allowed.enableAppSnap = patch.enableAppSnap;
     if (isAppSnapShortcut(patch.appSnapShortcut)) allowed.appSnapShortcut = patch.appSnapShortcut;
     if (typeof patch.appSnapPlaySound === "boolean") allowed.appSnapPlaySound = patch.appSnapPlaySound;
+    if (patch.browserProxyMode === "custom" || patch.browserProxyMode === "direct") allowed.browserProxyMode = patch.browserProxyMode;
+    if (typeof patch.browserProxyUrl === "string") allowed.browserProxyUrl = patch.browserProxyUrl.trim().slice(0, 2_048);
+    if (typeof patch.browserProxyBypass === "string") allowed.browserProxyBypass = patch.browserProxyBypass.trim().slice(0, 2_048);
+    if (typeof patch.browserProxyUsername === "string") allowed.browserProxyUsername = patch.browserProxyUsername.slice(0, 512);
+    if (typeof patch.browserProxyPassword === "string") allowed.browserProxyPassword = patch.browserProxyPassword.slice(0, 512);
     const next = await store.updateSettings(allowed);
     nativeTheme.themeSource = next.settings.theme;
+    await browserManager.setProxy(browserProxyFromSettings(next.settings));
     return next;
   });
 
@@ -1335,7 +1341,7 @@ function registerIpc(): void {
         onComplete: async (result) => {
           await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
         },
-      }, desktopBridge(threadId, project.id, project.path));
+      }, desktopBridge(threadId, project.id, project.path), thread.contextUsage);
       runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort, permission: safeRequest.permission });
       return { accepted: true, state: startedState };
     } catch (error) {
@@ -1420,7 +1426,7 @@ function registerIpc(): void {
           onComplete: async (result) => {
             await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
           },
-        }, desktopBridge(threadId, project.id, project.path));
+        }, desktopBridge(threadId, project.id, project.path), latestThread?.contextUsage ?? thread.contextUsage);
         runningModel.set(threadId, { model: resumedRequest.model, effort: resumedRequest.effort, permission: resumedRequest.permission });
         return { accepted: true, state: sentState };
       } catch (error) {
@@ -1542,7 +1548,7 @@ function registerIpc(): void {
         onComplete: async (result) => {
           await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
         },
-      }, desktopBridge(threadId, project.id, project.path));
+      }, desktopBridge(threadId, project.id, project.path), previousSessionId ? thread.contextUsage : undefined);
       runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort, permission: safeRequest.permission });
       return { accepted: true, state: startedState };
     } catch (error) {
@@ -1945,6 +1951,8 @@ app.whenReady().then(async () => {
     defaultDownloadDirectory: app.getPath("downloads"),
     onRequestOpenPanel: (threadId) => send("browser:open-panel-request", { threadId }),
   });
+  // Apply the saved proxy configuration before any tab can load.
+  void browserManager.setProxy(browserProxyFromSettings(store.snapshot().settings)).catch(() => undefined);
   browserManager.subscribe((state) => send("browser:state", state));
   browserManager.subscribeCopyLink((event) => send("browser:copy-link", event));
   browserManager.subscribeCommand((event) => send("browser:command", event));

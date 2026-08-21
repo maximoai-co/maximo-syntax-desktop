@@ -262,6 +262,11 @@ export interface Settings {
   enableAppSnap: boolean;
   appSnapShortcut: DesktopAppSnapShortcut;
   appSnapPlaySound: boolean;
+  browserProxyMode: "direct" | "custom";
+  browserProxyUrl: string;
+  browserProxyBypass: string;
+  browserProxyUsername: string;
+  browserProxyPassword: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -309,7 +314,31 @@ export const DEFAULT_SETTINGS: Settings = {
   enableAppSnap: false,
   appSnapShortcut: { kind: "both-option-keys" },
   appSnapPlaySound: true,
+  browserProxyMode: "direct",
+  browserProxyUrl: "",
+  browserProxyBypass: "",
+  browserProxyUsername: "",
+  browserProxyPassword: "",
 };
+
+export interface BrowserProxySettings {
+  mode: "direct" | "custom";
+  url: string;
+  bypass: string;
+  username: string;
+  password: string;
+}
+
+/** Extracts proxy settings from a Settings snapshot, redacting nothing (host-side only). */
+export function browserProxyFromSettings(settings: Settings): BrowserProxySettings {
+  return {
+    mode: settings.browserProxyMode,
+    url: settings.browserProxyUrl,
+    bypass: settings.browserProxyBypass,
+    username: settings.browserProxyUsername,
+    password: settings.browserProxyPassword,
+  };
+}
 
 export interface Space {
   id: string;

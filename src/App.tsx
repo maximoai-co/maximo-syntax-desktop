@@ -655,6 +655,19 @@ function contextUsagePercent(usage: ContextUsage | null): number {
   return Math.round(Math.max(0, Math.min(100, usage.percentage)));
 }
 
+function isZeroedContextReading(usage: ContextUsage | null | undefined): boolean {
+  if (!usage) return false;
+  return (usage.totalTokens ?? 0) <= 0 && (usage.percentage ?? 0) <= 0;
+}
+
+// A fresh run starts with no API usage of its own and may briefly report a
+// zeroed placeholder. Never let that regress a real reading already cached
+// for the thread; keep the last known value until actual usage arrives.
+function acceptIncomingContextUsage(previous: ContextUsage | null | undefined, next: ContextUsage): boolean {
+  if (!isZeroedContextReading(next)) return true;
+  return !previous || isZeroedContextReading(previous);
+}
+
 function contextCategoryTone(name: string, index: number): string {
   const normalized = name.toLowerCase();
   if (normalized.includes("free space")) return "free";
@@ -5357,6 +5370,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     { section: "skills", title: "Discovered skills", keywords: "SKILL.md workflows commands" },
     { section: "account", title: "Account and usage", keywords: "sign in provider billing limits" },
     { section: "browser", title: "Persistent browser profile", keywords: "browser login signed in sessions cookies across chats remember" },
+    { section: "browser", title: "Network proxy", keywords: "proxy socks http bypass server region connection browser network" },
     { section: "browser", title: "Saved website passwords", keywords: "browser password manager autofill keychain encrypted credentials" },
     { section: "browser", title: "Browsing data", keywords: "browser history cookies cache site data clear privacy permissions" },
     { section: "browser", title: "Downloads", keywords: "browser downloads folder ask where save files" },
@@ -5552,6 +5566,33 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
           <span><strong>Profile location</strong><small>Chromium keeps cookies and website storage in this local app directory.</small></span>
           <code className="browser-settings-path" title={browserProfile.storagePath}>{browserProfile.storagePath}</code>
         </div>}
+      </section>
+
+      <section className="settings-card">
+        <h2>Network proxy</h2>
+        <p>Route the shared browser through an HTTP or SOCKS proxy. Useful for accessing region-locked sites or keeping automation traffic on a dedicated connection.</p>
+        <div className="settings-row">
+          <span><strong>Proxy mode</strong><small>Direct uses your normal network connection.</small></span>
+          <CustomSelect value={values.browserProxyMode} options={[{ value: "direct", label: "Direct connection" }, { value: "custom", label: "Custom proxy" }]} onChange={(mode) => update("browserProxyMode", mode as typeof values.browserProxyMode)} ariaLabel="Browser proxy mode" className="settings-select" />
+        </div>
+        {values.browserProxyMode === "custom" && <>
+          <label className="settings-row">
+            <span><strong>Proxy server</strong><small>For example http://host:8080, host:8080, or socks5://host:1080.</small></span>
+            <input value={values.browserProxyUrl} onChange={(event) => update("browserProxyUrl", event.target.value)} placeholder="http://proxy.example.com:8080" spellCheck={false} />
+          </label>
+          <label className="settings-row">
+            <span><strong>Bypass list</strong><small>Comma-separated hosts that skip the proxy. &lt;local&gt; matches local network names.</small></span>
+            <input value={values.browserProxyBypass} onChange={(event) => update("browserProxyBypass", event.target.value)} placeholder="localhost,127.0.0.1,<local>" spellCheck={false} />
+          </label>
+          <label className="settings-row">
+            <span><strong>Username</strong><small>Optional, for authenticating proxies.</small></span>
+            <input value={values.browserProxyUsername} onChange={(event) => update("browserProxyUsername", event.target.value)} autoComplete="off" spellCheck={false} />
+          </label>
+          <label className="settings-row">
+            <span><strong>Password</strong><small>Saved locally with your other app settings.</small></span>
+            <input type="password" value={values.browserProxyPassword} onChange={(event) => update("browserProxyPassword", event.target.value)} autoComplete="new-password" />
+          </label>
+        </>}
       </section>
 
       <section className="settings-card">
@@ -6403,7 +6444,7 @@ export default function App() {
       const next = await retryWithBackoff(() => window.maximoDesktop.contextUsage(threadId), {
         retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e),
       });
-      if (next) {
+      if (next && acceptIncomingContextUsage(contextUsageByThreadRef.current[threadId], next)) {
         contextUsageByThreadRef.current[threadId] = next;
         if (stateRef.current?.selectedThreadId === threadId) {
           scheduleAfterLiveInteraction(`context-usage:${threadId}`, () => {
@@ -6523,7 +6564,9 @@ export default function App() {
       });
     }
     if (event.type === "context") {
-      contextUsageByThreadRef.current[event.threadId] = event.context;
+      if (acceptIncomingContextUsage(contextUsageByThreadRef.current[event.threadId], event.context)) {
+        contextUsageByThreadRef.current[event.threadId] = event.context;
+      }
       if (stateRef.current?.selectedThreadId === event.threadId) {
         scheduleAfterLiveInteraction(`context-event:${event.threadId}`, () => {
           startTransition(() => setVisibleContextUsageVersion((version) => version + 1));

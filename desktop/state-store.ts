@@ -93,6 +93,11 @@ export function normalizeSettings(input: unknown): Settings {
     enableAppSnap: typeof source.enableAppSnap === "boolean" ? source.enableAppSnap : DEFAULT_SETTINGS.enableAppSnap,
     appSnapShortcut: isAppSnapShortcut(source.appSnapShortcut) ? source.appSnapShortcut : DEFAULT_SETTINGS.appSnapShortcut,
     appSnapPlaySound: typeof source.appSnapPlaySound === "boolean" ? source.appSnapPlaySound : DEFAULT_SETTINGS.appSnapPlaySound,
+    browserProxyMode: source.browserProxyMode === "custom" ? "custom" : "direct",
+    browserProxyUrl: normalizedString(source.browserProxyUrl, "", 2_048).trim(),
+    browserProxyBypass: normalizedString(source.browserProxyBypass, "", 2_048).trim(),
+    browserProxyUsername: normalizedString(source.browserProxyUsername, "", 512),
+    browserProxyPassword: normalizedString(source.browserProxyPassword, "", 512),
   };
 }
 
