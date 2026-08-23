@@ -1061,6 +1061,7 @@ function registerIpc(): void {
     if (typeof patch.browserProxyBypass === "string") allowed.browserProxyBypass = patch.browserProxyBypass.trim().slice(0, 2_048);
     if (typeof patch.browserProxyUsername === "string") allowed.browserProxyUsername = patch.browserProxyUsername.slice(0, 512);
     if (typeof patch.browserProxyPassword === "string") allowed.browserProxyPassword = patch.browserProxyPassword.slice(0, 512);
+    if (typeof patch.autoCompactPercent === "number" && Number.isFinite(patch.autoCompactPercent)) allowed.autoCompactPercent = patch.autoCompactPercent;
     const next = await store.updateSettings(allowed);
     nativeTheme.themeSource = next.settings.theme;
     await browserManager.setProxy(browserProxyFromSettings(next.settings));
@@ -1324,13 +1325,16 @@ function registerIpc(): void {
       // After an edit-and-resend / revert, keep truncating the CLI transcript
       // at the thread's anchor so stale turns never resurface on later sends.
       ...(thread.truncateAtUuid ? { resumeSessionAt: thread.truncateAtUuid } : {}),
+      autoCompactPercent: store.snapshot().settings.autoCompactPercent,
     };
     const status = await runtime.ensure();
     const engine = runtime.currentLaunch();
     if (!status.available || !engine) return { accepted: false, error: status.message };
     const startedState = await store.beginRun(threadId, prompt, safeRequest.attachments, safeRequest.model, safeRequest.effort, permission);
+    const startedThread = store.getThread(threadId);
+    const startedUserMessageUuid = startedThread?.messages.at(-1)?.uuid;
     try {
-      runner.start(engine, safeRequest, project.path, thread.cliSessionId, {
+      runner.start(engine, { ...safeRequest, ...(startedUserMessageUuid ? { userMessageUuid: startedUserMessageUuid } : {}) }, project.path, thread.cliSessionId, {
         onEvent: (event: RunEvent) => {
           sendRunEvent(event);
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);
@@ -1339,7 +1343,7 @@ function registerIpc(): void {
           }
         },
         onComplete: async (result) => {
-          await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
+          await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning, result.assistantUuid);
         },
       }, desktopBridge(threadId, project.id, project.path), thread.contextUsage);
       runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort, permission: safeRequest.permission });
@@ -1373,8 +1377,8 @@ function registerIpc(): void {
         .slice(0, MAX_PROJECT_SOURCE_COUNT - 1),
       ...(typeof request.contextWindow === "number" && Number.isFinite(request.contextWindow) && request.contextWindow > 0 ? { contextWindow: Math.round(Math.min(request.contextWindow, 10_000_000)) } : {}),
       ...(thread.truncateAtUuid ? { resumeSessionAt: thread.truncateAtUuid } : {}),
+      autoCompactPercent: store.snapshot().settings.autoCompactPercent,
     };
-    // Never trust the renderer's possibly stale thread status here. The CLI
     // stays alive between turns, so only its pending-prompt bit can tell an
     // in-turn steer from a new turn after a result.
     const asFollowUp = resolveAsFollowUp(request.asFollowUp, runner.isTurnActive(threadId));
@@ -1399,6 +1403,8 @@ function registerIpc(): void {
       await runner.stopAndWait(threadId);
       runningModel.delete(threadId);
       const sentState = await store.sendRunMessage(threadId, prompt, safeRequest.attachments, safeRequest.model, safeRequest.effort, permission, { asFollowUp });
+      const sentThread = store.getThread(threadId);
+      const sentUserMessageUuid = sentThread?.messages.at(-1)?.uuid;
       const status = await runtime.ensure();
       const engine = runtime.currentLaunch();
       if (!status.available || !engine) {
@@ -1415,7 +1421,7 @@ function registerIpc(): void {
       const latestThread = store.getThread(threadId);
       const previousSessionId = latestThread?.cliSessionId ?? thread.cliSessionId;
       try {
-        runner.start(engine, resumedRequest, project.path, previousSessionId, {
+        runner.start(engine, { ...resumedRequest, ...(sentUserMessageUuid ? { userMessageUuid: sentUserMessageUuid } : {}), ...(effectivePrevModel !== resumedRequest.model ? { skipInitialAutoCompact: true } : {}) }, project.path, previousSessionId, {
           onEvent: (event: RunEvent) => {
             sendRunEvent(event);
             if (event.type === "context") void store.recordContextUsage(threadId, event.context);
@@ -1424,7 +1430,7 @@ function registerIpc(): void {
             }
           },
           onComplete: async (result) => {
-            await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
+            await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning, result.assistantUuid);
           },
         }, desktopBridge(threadId, project.id, project.path), latestThread?.contextUsage ?? thread.contextUsage);
         runningModel.set(threadId, { model: resumedRequest.model, effort: resumedRequest.effort, permission: resumedRequest.permission });
@@ -1436,7 +1442,9 @@ function registerIpc(): void {
       }
     }
     const sentState = await store.sendRunMessage(threadId, prompt, safeRequest.attachments, safeRequest.model, safeRequest.effort, permission, { asFollowUp });
-    const accepted = runner.send(threadId, prompt, safeRequest.attachments);
+    const sentThread = store.getThread(threadId);
+    const sentUserMessageUuid = sentThread?.messages.at(-1)?.uuid;
+    const accepted = runner.send(threadId, prompt, safeRequest.attachments, sentUserMessageUuid);
     if (!accepted) {
       await finishRunAndNotify(threadId, "Unable to send the message; the run stopped.", "error", thread.cliSessionId, true);
       return { accepted: false, error: "Unable to send the message; the run stopped." };
@@ -1491,6 +1499,7 @@ function registerIpc(): void {
       ...(typeof request.editMessageId === "string" && request.editMessageId.trim()
         ? { editMessageId: request.editMessageId.trim().slice(0, 200) }
         : {}),
+      autoCompactPercent: store.snapshot().settings.autoCompactPercent,
     };
   };
 
@@ -1527,7 +1536,7 @@ function registerIpc(): void {
     }
     // The truncated fork ends at the message before the edited one, so the
     // edited turn (fresh uuid) replaces it in the new session.
-    const resumeSessionAt = targetIndex > 0 ? (thread.messages[targetIndex - 1]?.uuid ?? undefined) : undefined;
+    const resumeSessionAt = [...thread.messages.slice(0, targetIndex)].reverse().find((message) => message.uuid)?.uuid;
     await store.rewriteUserMessage(threadId, messageId, prompt);
     const editedMessage = store.getThread(threadId)?.messages.find((message) => message.id === messageId);
     const userMessageUuid = editedMessage?.uuid;
@@ -1537,7 +1546,7 @@ function registerIpc(): void {
     // fresh CLI session instead of resuming the full (pre-edit) transcript.
     const previousSessionId = resumeSessionAt ? thread.cliSessionId : undefined;
     try {
-      runner.start(engine, safeRequest, project.path, previousSessionId, {
+      runner.start(engine, { ...safeRequest, ...(userMessageUuid ? { userMessageUuid } : {}) }, project.path, previousSessionId, {
         onEvent: (event: RunEvent) => {
           sendRunEvent(event);
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);
@@ -1546,7 +1555,7 @@ function registerIpc(): void {
           }
         },
         onComplete: async (result) => {
-          await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning);
+          await finishRunAndNotify(threadId, result.content, result.status, result.sessionId, result.error, result.activity, result.durationMs, result.timeline, result.fileChanges, result.final, result.continueRunning, result.assistantUuid);
         },
       }, desktopBridge(threadId, project.id, project.path), previousSessionId ? thread.contextUsage : undefined);
       runningModel.set(threadId, { model: safeRequest.model, effort: safeRequest.effort, permission: safeRequest.permission });

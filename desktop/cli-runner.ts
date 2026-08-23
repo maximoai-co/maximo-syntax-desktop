@@ -49,6 +49,8 @@ interface ParsedUpdate {
   model?: string;
   modelUsage?: Record<string, { contextWindow?: number; maxOutputTokens?: number }>;
   retrying?: { attempt: number; max: number; delayMs: number; message: string };
+  assistantUuid?: string;
+  compaction?: { phase: "turn_boundary" | "in_turn"; status: "started" | "complete"; trigger?: "auto" | "manual"; preTokens?: number; summary?: string };
 }
 
 export function parseClassifierDenial(result?: string): ClassifierDecision | undefined {
@@ -396,6 +398,7 @@ export function parseCliMessage(value: unknown): ParsedUpdate {
       return {
         sessionId,
         parentToolUseId,
+        ...(typeof message.uuid === "string" ? { assistantUuid: message.uuid } : {}),
         ...usageUpdate,
         ...(text ? { text, textMode: "replace" as const } : {}),
         activities: tools.map((tool) => {
@@ -411,7 +414,7 @@ export function parseCliMessage(value: unknown): ParsedUpdate {
         }),
       };
     }
-    if (text || apiUsage) return { sessionId, parentToolUseId, ...usageUpdate, ...(text ? { text, textMode: "replace" as const } : {}) };
+    if (text || apiUsage) return { sessionId, parentToolUseId, ...(typeof message.uuid === "string" ? { assistantUuid: message.uuid } : {}), ...usageUpdate, ...(text ? { text, textMode: "replace" as const } : {}) };
   }
 
   if (message.type === "user") {
@@ -444,6 +447,23 @@ export function parseCliMessage(value: unknown): ParsedUpdate {
 
   if (message.type === "system") {
     const subtype = String(message.subtype ?? "");
+    if (subtype === "compact_boundary") {
+      // The CLI emits this system message after a successful compaction.
+      // compact_metadata.trigger is "auto" | "manual"; pre_tokens carries the
+      // pre-compaction context size.
+      const metadata = message.compact_metadata && typeof message.compact_metadata === "object" ? message.compact_metadata as Record<string, unknown> : {};
+      const trigger = metadata.trigger === "manual" ? "manual" : "auto";
+      const preTokens = finiteNumber(metadata.pre_tokens) ?? finiteNumber(message.pre_tokens);
+      return {
+        sessionId,
+        compaction: {
+          phase: "turn_boundary",
+          status: "complete",
+          trigger,
+          ...(preTokens !== undefined ? { preTokens } : {}),
+        },
+      };
+    }
     if (subtype === "init") {
       const commands = Array.isArray(message.slash_commands)
         ? message.slash_commands.flatMap((value): SlashCommand[] => typeof value === "string" && value.trim() ? [{ name: value.trim().replace(/^\//, "") }] : [])
@@ -536,6 +556,9 @@ export function parseCliMessage(value: unknown): ParsedUpdate {
       }
     }
     if (subtype === "status") {
+      if (message.status === "compacting") {
+        return { sessionId, activity: "compacting", compaction: { phase: "turn_boundary", status: "started", trigger: "auto" } };
+      }
       if (typeof message.status === "string") return { sessionId, activity: String(message.status) };
       // The SDK emits status:null once the active status (e.g. compaction) clears.
       return { sessionId, status: null };
@@ -1029,6 +1052,40 @@ function isAsyncAgentResult(result?: string): boolean {
   return /async_launched/i.test(result ?? "");
 }
 
+function recordCompactionTimeline(turn: { timeline: RunTimelineItem[] }, event: Extract<RunEvent, { type: "compaction" }>): void {
+  if (event.status === "started") {
+    if (turn.timeline.some((item) => item.type === "compaction" && item.status === "started")) return;
+    appendBounded(turn.timeline, {
+      type: "compaction",
+      phase: event.phase,
+      status: "started",
+      trigger: event.trigger ?? "auto",
+      timestamp: event.timestamp,
+    }, MAX_RUN_TIMELINE_ITEMS);
+    return;
+  }
+  let pendingIndex = -1;
+  for (let index = turn.timeline.length - 1; index >= 0; index -= 1) {
+    const item = turn.timeline[index];
+    if (item?.type === "compaction" && item.status === "started") {
+      pendingIndex = index;
+      break;
+    }
+  }
+  const marker: RunTimelineItem = {
+    type: "compaction",
+    phase: event.phase,
+    status: "complete",
+    trigger: event.trigger ?? "auto",
+    ...(event.preTokens === undefined ? {} : { preTokens: event.preTokens }),
+    ...(event.postTokens === undefined ? {} : { postTokens: event.postTokens }),
+    ...(event.summary ? { summary: event.summary } : {}),
+    timestamp: event.timestamp,
+  };
+  if (pendingIndex >= 0) turn.timeline[pendingIndex] = { ...marker, timestamp: turn.timeline[pendingIndex]!.timestamp };
+  else appendBounded(turn.timeline, marker, MAX_RUN_TIMELINE_ITEMS);
+}
+
 export interface CliBrowserBridge {
   command: string;
   args: string[];
@@ -1115,16 +1172,17 @@ export interface PermissionResponse {
 
 export interface CliRunCallbacks {
   onEvent: (event: RunEvent) => void;
-  onComplete: (result: { status: ThreadStatus; content: string; sessionId?: string; exitCode: number | null; error: boolean; final: boolean; continueRunning?: boolean; activity: RunActivity[]; timeline: RunTimelineItem[]; durationMs: number; fileChanges: FileChange[] }) => Promise<void>;
+  onComplete: (result: { status: ThreadStatus; content: string; sessionId?: string; assistantUuid?: string; exitCode: number | null; error: boolean; final: boolean; continueRunning?: boolean; activity: RunActivity[]; timeline: RunTimelineItem[]; durationMs: number; fileChanges: FileChange[] }) => Promise<void>;
 }
 
-type CompletedTurn = { status: ThreadStatus; content: string; sessionId?: string; exitCode: number | null; error: boolean; final: boolean; continueRunning?: boolean; activity: RunActivity[]; timeline: RunTimelineItem[]; durationMs: number; fileChanges: FileChange[] };
+type CompletedTurn = { status: ThreadStatus; content: string; sessionId?: string; assistantUuid?: string; exitCode: number | null; error: boolean; final: boolean; continueRunning?: boolean; activity: RunActivity[]; timeline: RunTimelineItem[]; durationMs: number; fileChanges: FileChange[] };
 
 type ActiveTurn = {
   startedAt: number;
   streamedText: string;
   finalResult: string;
   resultWasError: boolean;
+  assistantUuid?: string;
   activity: RunActivity[];
   timeline: RunTimelineItem[];
   agents: Map<string, AgentRun>;
@@ -1264,6 +1322,10 @@ export class CliRunner {
       // can restore tracked files. Snapshot creation is cheap and only runs
       // when a file edit is observed; it is required for rewind_files to work.
       MAXIMO_SYNTAX_ENABLE_SDK_FILE_CHECKPOINTING: "1",
+      ...(request.autoCompactPercent !== undefined && Number.isFinite(request.autoCompactPercent)
+        ? { MAXIMO_SYNTAX_AUTOCOMPACT_PCT: String(Math.round(request.autoCompactPercent)) }
+        : {}),
+      ...(request.skipInitialAutoCompact ? { MAXIMO_SYNTAX_SKIP_FIRST_AUTOCOMPACT: "1" } : {}),
     };
     // Maximo's /models endpoint advertises reasoning as a provider capability,
     // so a desktop-selected effort must reach the OpenAI-compatible shim even
@@ -1320,6 +1382,7 @@ export class CliRunner {
     let stderrBuffer = "";
     let sessionId = previousSessionId;
     let stopped = false;
+    let compactionCompletionEmitted = false;
     let turn: ActiveTurn = {
       startedAt: Date.now(),
       streamedText: "",
@@ -1365,7 +1428,7 @@ export class CliRunner {
       }
       current.completed = true;
       const content = current.finalResult || current.streamedText || (status === "cancelled" ? "" : stderrBuffer.trim() || "The Maximo Syntax engine exited without a response.");
-      const completed: CompletedTurn = { status, content, sessionId, exitCode, error: status === "error", final, ...(continueRunning ? { continueRunning: true } : {}), activity: current.activity, timeline: current.timeline, durationMs: Math.max(0, Date.now() - current.startedAt), fileChanges: [] };
+      const completed: CompletedTurn = { status, content, sessionId, ...(current.assistantUuid ? { assistantUuid: current.assistantUuid } : {}), exitCode, error: status === "error", final, ...(continueRunning ? { continueRunning: true } : {}), activity: current.activity, timeline: current.timeline, durationMs: Math.max(0, Date.now() - current.startedAt), fileChanges: [] };
       return (async () => {
         try { completed.fileChanges = collectFileChanges(current.fileSnapshots); } catch (error) {
           callbacks.onEvent({ type: "log", threadId: request.threadId, level: "warning", text: error instanceof Error ? error.message : String(error), timestamp: timestamp() });
@@ -1434,6 +1497,7 @@ export class CliRunner {
       beginTurn(next.prompt, next.attachments, next.uuid);
     };
     const beginTurn = (prompt: string, attachments: Attachment[], uuid?: string) => {
+      compactionCompletionEmitted = false;
       // Drop any pending coalesced text snapshot — a new turn resets the text.
       if (pendingTextFlush) pendingTextFlush = null;
       pendingAgentTextFlushes.clear();
@@ -1477,6 +1541,7 @@ export class CliRunner {
           callbacks.onEvent({ type: "retrying", threadId: request.threadId, ...update.retrying, timestamp: timestamp() });
         }
         if (update.model && !update.parentToolUseId) turn.lastModel = update.model;
+        if (update.assistantUuid && !update.parentToolUseId) turn.assistantUuid = update.assistantUuid;
         if (update.apiUsage && !update.parentToolUseId) {
           turn.lastApiUsage = update.apiUsage;
           turn.currentMessageUsage = update.apiUsage;
@@ -1494,13 +1559,52 @@ export class CliRunner {
           publishContextUsage();
         }
         if (update.commands) callbacks.onEvent({ type: "commands", threadId: request.threadId, commands: update.commands, ...(update.skills?.length ? { skills: update.skills } : {}), timestamp: timestamp() });
+        if (update.compaction) {
+          // Durable compaction marker: "started" when the CLI begins compacting,
+          // "complete" from the compact_boundary system message. Phase is
+          // upgraded to in-turn when the current turn already has tool activity.
+          const phase = update.compaction.phase === "turn_boundary" && turn.activity.some((item) => item.toolName || item.toolUseId)
+            ? "in_turn"
+            : update.compaction.phase;
+          const hasPendingCompaction = turn.timeline.some((item) => item.type === "compaction" && item.status === "started");
+          const shouldEmit = update.compaction.status === "started" ? !hasPendingCompaction : !compactionCompletionEmitted;
+          if (update.compaction.status === "started") compactionCompletionEmitted = false;
+          else compactionCompletionEmitted = true;
+          if (shouldEmit) {
+            const compactionEvent = {
+              type: "compaction" as const,
+              threadId: request.threadId,
+              phase,
+              status: update.compaction.status,
+              ...(update.compaction.trigger ? { trigger: update.compaction.trigger } : {}),
+              ...(update.compaction.preTokens !== undefined ? { preTokens: update.compaction.preTokens } : {}),
+              ...(update.compaction.summary ? { summary: update.compaction.summary } : {}),
+              timestamp: timestamp(),
+            };
+            recordCompactionTimeline(turn, compactionEvent);
+            callbacks.onEvent(compactionEvent);
+          }
+        }
         if (update.status !== undefined) {
           const at = timestamp();
           if (update.status === null) {
-            // The CLI cleared its status (e.g. compaction finished): drop the stale
-            // status activity so the UI no longer shows "compacting" as the latest step.
-            const cleared = clearStatusActivity(turn);
-            if (cleared) callbacks.onEvent({ type: "log", threadId: request.threadId, level: "info", text: "Conversation compacted", timestamp: at });
+            // The CLI normally emits compact_boundary before clearing status.
+            // Older builds may omit that boundary, so complete a pending marker
+            // only when no authoritative completion has arrived yet.
+            const hasPendingCompaction = turn.timeline.some((item) => item.type === "compaction" && item.status === "started");
+            clearStatusActivity(turn);
+            if (hasPendingCompaction && !compactionCompletionEmitted) {
+              compactionCompletionEmitted = true;
+              const compactionEvent = {
+                type: "compaction" as const,
+                threadId: request.threadId,
+                phase: turn.activity.some((item) => item.toolName || item.toolUseId) ? "in_turn" as const : "turn_boundary" as const,
+                status: "complete" as const,
+                timestamp: at,
+              };
+              recordCompactionTimeline(turn, compactionEvent);
+              callbacks.onEvent(compactionEvent);
+            }
           }
           callbacks.onEvent({ type: "status", threadId: request.threadId, status: update.status, timestamp: at });
         }

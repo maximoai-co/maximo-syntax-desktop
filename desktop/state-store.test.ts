@@ -15,6 +15,16 @@ describe("StateStore", () => {
     expect(normalizeSettings({ defaultModel: "maximo-atlas-preview" }).defaultModel).toBe("maximo-atlas-1.2");
   });
 
+  it("defaults and clamps the auto-compact threshold to 10-70 percent", () => {
+    expect(normalizeSettings({}).autoCompactPercent).toBe(40);
+    expect(normalizeSettings({ autoCompactPercent: 55 }).autoCompactPercent).toBe(55);
+    expect(normalizeSettings({ autoCompactPercent: 5 }).autoCompactPercent).toBe(10);
+    expect(normalizeSettings({ autoCompactPercent: 95 }).autoCompactPercent).toBe(70);
+    expect(normalizeSettings({ autoCompactPercent: Number.NaN }).autoCompactPercent).toBe(40);
+    // Fractional values are rounded
+    expect(normalizeSettings({ autoCompactPercent: 42.6 }).autoCompactPercent).toBe(43);
+  });
+
   it("persists settings atomically", async () => {
     const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
     temporaryDirectories.push(directory);
@@ -247,6 +257,37 @@ describe("StateStore", () => {
     expect(store.snapshot().profile.threadTokenTotals[threadId]).toBe(4_200);
     const saved = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
     expect(saved.threads[0].contextUsage.totalProcessedTokens).toBe(4_200);
+  });
+
+  it("keeps compaction markers in lightweight chat summaries", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    temporaryDirectories.push(directory);
+    const initial = createInitialState(directory);
+    const project = initial.projects[0]!;
+    initial.threads = [{
+      id: "compacted-thread",
+      projectId: project.id,
+      title: "Compacted chat",
+      createdAt: 1,
+      updatedAt: 2,
+      status: "complete",
+      messages: [{
+        id: "compacted-answer",
+        role: "assistant",
+        content: "Done",
+        createdAt: 2,
+        timeline: [{ type: "compaction", phase: "turn_boundary", status: "complete", trigger: "manual", timestamp: 1_500 }],
+      }],
+    }];
+    initial.selectedThreadId = undefined;
+    const store = new StateStore(directory, initial);
+    await store.initialize();
+
+    const summary = store.snapshotForRenderer().threads[0]!;
+    expect(summary.detailLevel).toBe("summary");
+    expect(summary.messages[0]?.timeline).toEqual([
+      { type: "compaction", phase: "turn_boundary", status: "complete", trigger: "manual", timestamp: 1_500 },
+    ]);
   });
 
   it("sends full detail only for the selected chat and removes duplicate patch history", async () => {
@@ -610,6 +651,28 @@ describe("StateStore", () => {
     expect(userMessageId).not.toBe(assistantMessageId);
   });
 
+  it("stores assistant UUIDs and clears a one-shot edit anchor after completion", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(directory, createInitialState(directory));
+    await store.initialize();
+    const project = store.snapshot().projects[0]!;
+    const created = await store.createThread(project.id);
+    const threadId = created.selectedThreadId!;
+    await store.beginRun(threadId, "Original request", [], "", "", "auto");
+    await store.finishRun(threadId, "Original answer", "complete", "session-1", false, [], 0, [], [], true, false, "assistant-1");
+    await store.update((draft) => {
+      const thread = draft.threads.find((candidate) => candidate.id === threadId);
+      if (thread) thread.truncateAtUuid = "anchor-1";
+    });
+
+    expect(store.getThread(threadId)?.messages.at(-1)?.uuid).toBe("assistant-1");
+    await store.beginRun(threadId, "Replacement request", [], "", "", "auto");
+    await store.finishRun(threadId, "Replacement answer", "complete", "session-2");
+
+    expect(store.getThread(threadId)?.truncateAtUuid).toBeUndefined();
+  });
+
   it("rewrites an edited user message in place, drops later turns, and re-anchors the thread", async () => {
     const directory = await mkdtemp(join(tmpdir(), "maximo-desktop-test-"));
     temporaryDirectories.push(directory);
@@ -649,9 +712,9 @@ describe("StateStore", () => {
     const created = await store.createThread(project.id);
     const threadId = created.selectedThreadId!;
     await store.beginRun(threadId, "First request", [], "", "", "auto");
-    await store.finishRun(threadId, "First answer", "complete");
+    await store.finishRun(threadId, "First answer", "complete", "session-1", false, [], 0, [], [], true, false, "first-assistant");
     await store.beginRun(threadId, "Second request", [], "", "", "auto");
-    await store.finishRun(threadId, "Second answer", "complete");
+    await store.finishRun(threadId, "Second answer", "complete", "session-2", false, [], 0, [], [], true, false, "second-assistant");
     const before = store.getThread(threadId)!;
     const firstAnswer = before.messages[1]!;
     const secondUser = before.messages[2]!;

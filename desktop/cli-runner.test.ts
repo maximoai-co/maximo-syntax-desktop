@@ -188,8 +188,9 @@ describe("parseCliMessage", () => {
   it("reads final assistant text", () => {
     expect(parseCliMessage({
       type: "assistant",
+      uuid: "assistant-1",
       message: { content: [{ type: "text", text: "Finished." }] },
-    })).toMatchObject({ text: "Finished.", textMode: "replace" });
+    })).toMatchObject({ assistantUuid: "assistant-1", text: "Finished.", textMode: "replace" });
   });
 
   it("summarizes tool activity and preserves expandable input", () => {
@@ -463,14 +464,73 @@ describe("parseCliMessage", () => {
     });
   });
 
-  it("maps an active SDK status (compacting) to a status activity", () => {
+  it("maps an active SDK status (compacting) to a status activity plus a compaction start marker", () => {
     expect(parseCliMessage({ type: "system", subtype: "status", session_id: "session-5", status: "compacting" }))
-      .toEqual({ sessionId: "session-5", activity: "compacting" });
+      .toEqual({
+        sessionId: "session-5",
+        activity: "compacting",
+        compaction: { phase: "turn_boundary", status: "started", trigger: "auto" },
+      });
   });
 
   it("surfaces a cleared SDK status (compaction finished) as status null", () => {
     expect(parseCliMessage({ type: "system", subtype: "status", session_id: "session-6", status: null }))
       .toEqual({ sessionId: "session-6", status: null });
+  });
+
+  it("parses a compact_boundary system message into a completed compaction marker", () => {
+    expect(parseCliMessage({
+      type: "system",
+      subtype: "compact_boundary",
+      session_id: "session-7",
+      compact_metadata: { trigger: "auto", pre_tokens: 82_400 },
+    })).toEqual({
+      sessionId: "session-7",
+      compaction: { phase: "turn_boundary", status: "complete", trigger: "auto", preTokens: 82_400 },
+    });
+  });
+
+  it("parses a manual compact_boundary with missing pre_tokens", () => {
+    expect(parseCliMessage({
+      type: "system",
+      subtype: "compact_boundary",
+      session_id: "session-8",
+      compact_metadata: { trigger: "manual" },
+    })).toEqual({
+      sessionId: "session-8",
+      compaction: { phase: "turn_boundary", status: "complete", trigger: "manual" },
+    });
+  });
+});
+
+describe("CliRunner compaction lifecycle", () => {
+  it("emits one completion when boundary and cleared status both arrive", async () => {
+    const runner = new CliRunner();
+    const compactions: Array<{ status: string; trigger?: string }> = [];
+    let resolveDone: (() => void) | undefined;
+    const done = new Promise<void>((resolve) => { resolveDone = resolve; });
+    const messages = [
+      { type: "system", subtype: "status", status: "compacting", session_id: "session-compact-dedupe" },
+      { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual" }, pre_tokens: 500 },
+      { type: "system", subtype: "status", status: null, session_id: "session-compact-dedupe" },
+      { type: "result", subtype: "success", result: "Compacted", is_error: false, session_id: "session-compact-dedupe" },
+    ];
+    const script = `process.stdin.resume();process.stdin.on("end",()=>process.exit(0));for(const item of ${JSON.stringify(messages)})process.stdout.write(JSON.stringify(item)+"\\n");`;
+    runner.start({ source: "development", entryPath: "", command: process.execPath, argsPrefix: ["-e", script, "--"], environment: process.env }, {
+      threadId: "thread-compact-dedupe", prompt: "/compact", attachments: [], model: "", effort: "", permission: "default",
+    }, process.cwd(), undefined, {
+      onEvent: (event) => {
+        if (event.type === "compaction") compactions.push({ status: event.status, trigger: event.trigger });
+        if (event.type === "turn-complete") resolveDone?.();
+      },
+      onComplete: async () => undefined,
+    });
+    await Promise.race([done, new Promise((_, reject) => setTimeout(() => reject(new Error("Compaction did not finish")), 3_000))]);
+    expect(compactions).toEqual([
+      { status: "started", trigger: "auto" },
+      { status: "complete", trigger: "manual" },
+    ]);
+    runner.stop("thread-compact-dedupe");
   });
 });
 
@@ -883,6 +943,7 @@ describe("CliRunner completion lifecycle", () => {
     const turnDone = new Promise<void>((resolve) => { resolveTurn = resolve; });
     const persisted = new Promise<void>((resolve) => { resolvePersisted = resolve; });
     let completedContent = "";
+    let completedTimeline: RunTimelineItem[] = [];
     // Emits a compacting status, then clears it (status:null), then finishes the turn.
     const script = `process.stdin.resume();process.stdin.on("end",()=>process.exit(0));` +
       `process.stdout.write(JSON.stringify({type:"system",subtype:"status",status:"compacting",session_id:"session-compact"})+"\\n");` +
@@ -898,6 +959,7 @@ describe("CliRunner completion lifecycle", () => {
       },
       onComplete: async (result) => {
         completedContent = result.content;
+        completedTimeline = result.timeline;
         resolvePersisted?.();
       },
     });
@@ -907,6 +969,7 @@ describe("CliRunner completion lifecycle", () => {
     expect(statusClears).toEqual([1]);
     await Promise.race([persisted, new Promise((_, reject) => setTimeout(() => reject(new Error("Turn never persisted")), 3_000))]);
     expect(completedContent).toBe("Compacted answer");
+    expect(completedTimeline.filter((item) => item.type === "compaction")).toHaveLength(1);
     runner.stop("thread-compact");
   });
 });

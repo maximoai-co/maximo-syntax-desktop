@@ -51,6 +51,14 @@ describe("workTimelineEntryKeys", () => {
     expect(workTimelineEntryKeys([provisional])).toEqual(workTimelineEntryKeys([started]));
   });
 
+  it("keeps compaction rows stable when their status is upgraded", () => {
+    const pending: RunTimelineItem = { type: "compaction", phase: "turn_boundary", status: "started", timestamp: 5 };
+    const complete: RunTimelineItem = { ...pending, status: "complete", trigger: "manual" };
+
+    expect(workTimelineEntryKeys([pending])).toEqual(["compaction:turn_boundary:5"]);
+    expect(workTimelineEntryKeys([complete])).toEqual(["compaction:turn_boundary:5"]);
+  });
+
   it("disambiguates legacy rows that share a timestamp without using their array position", () => {
     const duplicateRows: RunTimelineItem[] = [
       { type: "text", text: "one", timestamp: 5 },

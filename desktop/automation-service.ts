@@ -531,6 +531,7 @@ export class AutomationService {
         effort: definition.effort,
         permission: definition.permission,
         additionalDirectories: (project.sourcePaths ?? []).filter((path) => resolve(path) !== resolve(project.path)),
+        autoCompactPercent: this.options.store.snapshot().settings.autoCompactPercent,
       };
       let completed = false;
       const callbacks: CliRunCallbacks = {

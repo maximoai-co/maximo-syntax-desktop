@@ -98,6 +98,7 @@ export function normalizeSettings(input: unknown): Settings {
     browserProxyBypass: normalizedString(source.browserProxyBypass, "", 2_048).trim(),
     browserProxyUsername: normalizedString(source.browserProxyUsername, "", 512),
     browserProxyPassword: normalizedString(source.browserProxyPassword, "", 512),
+    autoCompactPercent: finiteInteger(source.autoCompactPercent, DEFAULT_SETTINGS.autoCompactPercent, 10, 70),
   };
 }
 
@@ -258,6 +259,7 @@ function compactStateHistory(state: AppState): boolean {
 }
 
 function summaryMessage(message: ChatMessage): ChatMessage {
+  const compactionTimeline = message.timeline?.filter((item): item is Extract<RunTimelineItem, { type: "compaction" }> => item.type === "compaction");
   return {
     id: message.id,
     role: message.role,
@@ -273,6 +275,7 @@ function summaryMessage(message: ChatMessage): ChatMessage {
     ...(message.interaction ? { interaction: structuredClone(message.interaction) } : {}),
     ...(message.kind ? { kind: message.kind } : {}),
     ...(message.uuid ? { uuid: message.uuid } : {}),
+    ...(compactionTimeline?.length ? { timeline: structuredClone(compactionTimeline) } : {}),
   };
 }
 
@@ -754,7 +757,7 @@ export class StateStore {
       message.uuid = randomUUID();
       // Anchor future runs at the message before the edited one so the edited
       // message replaces it in the CLI transcript rather than being appended.
-      thread.truncateAtUuid = index > 0 ? (thread.messages[index - 1]?.uuid ?? undefined) : undefined;
+      thread.truncateAtUuid = [...thread.messages.slice(0, index)].reverse().find((candidate) => candidate.uuid)?.uuid;
       thread.updatedAt = Date.now();
     });
   }
@@ -1064,7 +1067,7 @@ export class StateStore {
     });
   }
 
-  async finishRun(threadId: string, content: string, status: ThreadStatus, sessionId?: string, error = false, activity: RunActivity[] = [], durationMs = 0, timeline: RunTimelineItem[] = [], fileChanges: FileChange[] = [], final = true, continueRunning = false): Promise<void> {
+  async finishRun(threadId: string, content: string, status: ThreadStatus, sessionId?: string, error = false, activity: RunActivity[] = [], durationMs = 0, timeline: RunTimelineItem[] = [], fileChanges: FileChange[] = [], final = true, continueRunning = false, assistantUuid?: string): Promise<void> {
     const pendingUsage = this.pendingContextUsage.get(threadId);
     await this.commit((draft) => {
       const thread = draft.threads.find((candidate) => candidate.id === threadId);
@@ -1095,6 +1098,7 @@ export class StateStore {
           content: assistantContent,
           createdAt: Date.now(),
           ...(answerModel !== undefined ? { model: answerModel } : {}),
+          ...(assistantUuid ? { uuid: assistantUuid } : {}),
           isError: error,
           activity,
           timeline,
@@ -1115,6 +1119,7 @@ export class StateStore {
       }
       thread.updatedAt = Date.now();
       if (sessionId) thread.cliSessionId = sessionId;
+      if (status === "complete" && thread.truncateAtUuid) delete thread.truncateAtUuid;
     });
     if (this.pendingContextUsage.get(threadId) === pendingUsage) this.pendingContextUsage.delete(threadId);
   }

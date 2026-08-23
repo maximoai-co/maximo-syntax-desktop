@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-08-23
+
+- **Auto-compact threshold setting**: Settings → Chat behavior (Context management) gains an auto-compact slider (10–70%, default 40%) that tells the engine when to summarize older conversation history as a percentage of the model's context window, keeping recent turns verbatim. Higher thresholds keep more context — smoother recall but higher token usage. The context-usage note now shows the threshold as a percentage and points at the setting.
+- **Durable compaction markers**: context compaction now leaves a visible marker in the chat — a centered pill divider between messages ("Context auto-compacted" / "Context compacted") with expandable token counts (before → after) and the model's retained summary, and a step row inside the live work timeline ("Compacting context in turn…"). Markers survive restarts and edits because they are stored with the message history.
+- **Compaction lifecycle fixes**: the desktop now distinguishes the engine's compacting status from a finished compact_boundary event, so a "Conversation compacted" marker is created exactly once per compaction (never duplicated when both signals arrive), and a pending marker is completed when older engines merely clear their status. In-turn compaction is detected when the current turn already has tool activity.
+- **`/compact` is back**: the `/compact` command is enabled again in the desktop (removed from the incompatible-command list), with its own icon and token styling in user messages, alongside the `/goal` command token.
+- **Bundled CLI engine v0.1.39**: the desktop build now bundles CLI `v0.1.39`, which fixes compaction handling and preserves recent context through the summarize boundary.
+- **Edit-anchor fixes**: the thread edit anchor now skips messages without UUIDs instead of truncating at the first UUID-less message, edits re-anchor via the *last* prior message, and the one-shot edit anchor is cleared after a completed run so later sends don't truncate stale turns.
+
 ## [0.1.12] - 2026-08-21
 
 - **Browser device view**: new `browser_resize` tool lets the AI view any page as desktop (1440×900), laptop (1280×800), tablet (768×1024), or mobile (390×844) — mobile/tablet presets add touch emulation and an Android Chrome identity — plus custom width/height, portrait/landscape orientation, and a "panel" reset. Emulation survives navigation, so agents can keep working in the emulated view.

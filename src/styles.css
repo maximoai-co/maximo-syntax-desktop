@@ -1273,8 +1273,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 /* User bubbles inherit themed code block; only constrain width */
 .message.user .md-code-block { max-width: 100%; }
-.chat-command-token { display: inline-flex; align-items: center; gap: 4px; margin: 0 2px; padding: 0; background: transparent; color: var(--link); font-weight: 500; white-space: nowrap; vertical-align: baseline; max-width: 100%; }
+.chat-command-token { display: inline-flex; align-items: center; gap: 5px; margin: 0 3px; padding: 3px 7px 3px 6px; border: 1px solid color-mix(in srgb, var(--link) 26%, var(--border)); border-radius: 999px; background: color-mix(in srgb, var(--link) 10%, transparent); color: color-mix(in srgb, var(--link) 88%, var(--text-strong)); font-size: .9em; font-weight: 600; line-height: 1.1; white-space: nowrap; vertical-align: .04em; max-width: 100%; }
+.chat-command-icon { display: inline-flex; align-items: center; color: currentColor; }
 .chat-command-token svg { flex: 0 0 auto; }
+.chat-command-token.compact-command { border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); background: color-mix(in srgb, var(--accent) 11%, transparent); color: var(--accent-strong); }
+.chat-command-token.goal-command { border-color: color-mix(in srgb, var(--warning) 34%, var(--border)); background: color-mix(in srgb, var(--warning) 10%, transparent); color: color-mix(in srgb, var(--warning) 82%, var(--text-strong)); }
+.chat-command-token.skill-command { color: var(--link); }
+.message.user .chat-command-token { font-size: 11px; }
+.added-context-collapsible .chat-command-token { padding-block: 2px; font-size: 10px; }
 /* Wide GFM tables scroll inside the message instead of blowing out the shell */
 .markdown .table-wrap {
   max-width: 100%;
@@ -1523,8 +1529,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .work-user-context .added-context-actions:focus-within { opacity: 1; }
 .work-user-context-attachments { justify-content: flex-start; align-self: stretch; width: 100%; margin-bottom: 8px; }
 .work-user-context-attachments .attachment-card { width: min(205px, 100%); }
-.work-event { min-width: 0; content-visibility: auto; contain-intrinsic-size: auto 27px; }
-.work-event > summary { min-height: 27px; padding: 0 5px; display: flex; align-items: center; gap: 7px; border-radius: 6px; color: var(--muted); cursor: pointer; list-style: none; user-select: none; }
+.work-event { min-width: 0; content-visibility: auto; contain-intrinsic-size: auto 27px; }.work-event > summary { min-height: 27px; padding: 0 5px; display: flex; align-items: center; gap: 7px; border-radius: 6px; color: var(--muted); cursor: pointer; list-style: none; user-select: none; }
 .work-event > summary::-webkit-details-marker { display: none; }
 .work-event > summary:hover { background: color-mix(in srgb, var(--surface-hover) 55%, transparent); }
 .work-event > summary > span:nth-child(2) { flex: 0 0 auto; color: var(--muted); }
@@ -1572,6 +1577,28 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .work-event.created > summary > span:nth-child(2) { color: var(--accent-strong); }
 .work-event.classifier-allowed .work-event-icon { color: var(--accent); }
 .work-event.classifier-denied .work-event-icon { color: var(--danger); }
+/* Context compaction markers */
+.compaction-divider { margin: 6px 0; display: flex; align-items: flex-start; justify-content: center; gap: 10px; }
+.compaction-divider-hairline { flex: 1 1 30%; max-width: 180px; height: 1px; margin-top: 13px; background: linear-gradient(to right, transparent, var(--border)); }
+.compaction-divider-hairline:last-child { background: linear-gradient(to left, transparent, var(--border)); }
+.compaction-card { min-width: 0; max-width: 100%; display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); backdrop-filter: blur(18px) saturate(140%); box-shadow: inset 0 1px 0 color-mix(in srgb, white 8%, transparent); font-size: 9px; }
+.compaction-card.pending { border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.compaction-card.done { border-color: var(--border); background: color-mix(in srgb, var(--surface-hover) 55%, transparent); }
+.compaction-card-icon { display: grid; place-items: center; flex: 0 0 auto; }
+.compaction-card.pending .compaction-card-icon { color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.compaction-card.done .compaction-card-icon { color: var(--muted); }
+.compaction-card-label { flex: 0 0 auto; color: var(--text); font-size: 9px; font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
+.compaction-card.pending .compaction-card-label { color: var(--accent); }
+.compaction-card-tokens { flex: 0 0 auto; color: var(--faint); font-size: 8px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.compaction-card-toggle { width: 16px; height: 16px; display: grid; place-items: center; padding: 0; border: none; background: transparent; color: var(--faint); cursor: pointer; border-radius: 50%; }
+.compaction-card-toggle:hover { color: var(--text); background: color-mix(in srgb, var(--surface-hover) 70%, transparent); }
+.compaction-card-detail { flex-basis: 100%; margin-top: -2px; padding: 0 14px 8px; display: grid; gap: 5px; }
+.compaction-divider { position: relative; flex-wrap: wrap; }
+.compaction-divider .compaction-card-detail { position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%); width: min(560px, 92%); z-index: 4; padding: 0 0 6px; }
+.compaction-card-detail > small { color: var(--faint); font-size: 8px; text-align: center; }
+.compaction-summary { max-height: 220px; overflow: auto; padding: 8px 10px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); background: color-mix(in srgb, var(--bg-soft) 60%, transparent); font-size: 9.5px; line-height: 1.55; }
+.compaction-step-row { margin: 2px 0 2px 3px; padding-left: 7px; border-left: 1px solid var(--border); display: grid; justify-items: start; gap: 3px; }
+.compaction-step-row .compaction-card { border-radius: 8px; padding: 3px 8px; }
 .classifier-badge {
   flex: 0 0 auto;
   max-width: 42%;
@@ -2842,6 +2869,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .settings-segmented button:hover, .settings-segmented button.active { background: var(--surface-active); color: var(--text-strong); }
 .settings-row-actions, .settings-inline-control { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
 .settings-inline-control { min-width: min(300px, 100%); }
+.compact-threshold-control input[type="range"] { flex: 1 1 150px; accent-color: var(--accent); }
+.compact-threshold-control output { min-width: 38px; text-align: right; color: var(--text); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.settings-row-wide > span:first-child { max-width: 560px; }
+.settings-row-wide > span:first-child small { white-space: normal; }
 .settings-action { min-height: 29px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-hover); color: var(--muted); font-size: 9px; white-space: nowrap; }
 .settings-action:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-active); color: var(--text-strong); }
 .settings-action:disabled { cursor: default; opacity: .45; }

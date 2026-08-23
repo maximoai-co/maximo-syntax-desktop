@@ -267,6 +267,8 @@ export interface Settings {
   browserProxyBypass: string;
   browserProxyUsername: string;
   browserProxyPassword: string;
+  /** Auto-compact trigger threshold as a percentage of the model's max context window. */
+  autoCompactPercent: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -319,6 +321,7 @@ export const DEFAULT_SETTINGS: Settings = {
   browserProxyBypass: "",
   browserProxyUsername: "",
   browserProxyPassword: "",
+  autoCompactPercent: 40,
 };
 
 export interface BrowserProxySettings {
@@ -476,11 +479,23 @@ export interface AgentRun {
   finishedAt?: number;
 }
 
+/** A context compaction event rendered as a durable marker in the thread. */
+export interface CompactionEvent {
+  phase: "turn_boundary" | "in_turn";
+  status: "started" | "complete";
+  trigger?: "auto" | "manual";
+  preTokens?: number;
+  postTokens?: number;
+  summary?: string;
+  timestamp: number;
+}
+
 export type RunTimelineItem =
   | { type: "text"; text: string; timestamp: number }
   | ({ type: "activity" } & RunActivity)
   | { type: "agent"; agent: AgentRun; timestamp: number }
-  | { type: "user-context"; text: string; attachments?: Attachment[]; timestamp: number };
+  | { type: "user-context"; text: string; attachments?: Attachment[]; timestamp: number }
+  | ({ type: "compaction" } & CompactionEvent);
 
 export interface AskUserAnswer {
   question: string;
@@ -1202,6 +1217,13 @@ export interface RunRequest {
   resumeSessionAt?: string;
   /** The CLI uuid to use for this run's first user turn. */
   userMessageUuid?: string;
+  /**
+   * Auto-compact trigger threshold (percent of model context window) from the
+   * desktop settings. Passed to the CLI via MAXIMO_SYNTAX_AUTOCOMPACT_PCT.
+   */
+  autoCompactPercent?: number;
+  /** Skip only the first automatic-compaction check after a model-change restart. */
+  skipInitialAutoCompact?: boolean;
 }
 
 export interface RevertResult {
@@ -1229,6 +1251,7 @@ export type RunEvent =
   | { type: "question"; threadId: string; requestId: string; toolUseId?: string; toolName: string; data: string; timestamp: number }
   | { type: "permission"; threadId: string; requestId: string; toolUseId?: string; toolName: string; data: string; timestamp: number }
   | { type: "log"; threadId: string; level: "info" | "warning" | "error"; text: string; timestamp: number }
+  | ({ type: "compaction"; threadId: string } & CompactionEvent)
   | { type: "status"; threadId: string; status: string | null; timestamp: number }
   | { type: "retrying"; threadId: string; attempt: number; max: number; delayMs: number; message: string; timestamp: number }
   | { type: "turn-started"; threadId: string; timestamp: number }

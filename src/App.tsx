@@ -5,6 +5,7 @@ import {
   File, FileAudio, FileCode2, FileImage, FilePenLine, FilePlus2, FileSearch, FileText, FileVideo, Folder, FolderOpen, Folders, GitBranch, Globe2, HardDrive, Image, LogOut, SquarePen,
   GitPullRequest, Link2, ListChecks, ListTodo, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRight, Paperclip, Pencil, Pin, PinOff, Plus, Plug, RefreshCw, Search, Settings, Share2, SlidersHorizontal,
   Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Undo2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, WrapText, X, Zap,
+  Shrink,
 } from "lucide-react";
 import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_SIZE } from "../desktop/types";
 import type {
@@ -100,6 +101,7 @@ const TRANSCRIPT_INTERACTION_SELECTOR = "summary, .message button, .message a[hr
 type CachedThreadDetail = { thread: Thread; cachedAt: number };
 
 function navigationMessageSummary(message: ChatMessage): ChatMessage {
+  const compactionTimeline = message.timeline?.filter((item): item is Extract<RunTimelineItem, { type: "compaction" }> => item.type === "compaction");
   return {
     id: message.id,
     role: message.role,
@@ -115,6 +117,7 @@ function navigationMessageSummary(message: ChatMessage): ChatMessage {
     ...(message.interaction ? { interaction: message.interaction } : {}),
     ...(message.kind ? { kind: message.kind } : {}),
     ...(message.uuid ? { uuid: message.uuid } : {}),
+    ...(compactionTimeline?.length ? { timeline: compactionTimeline } : {}),
   };
 }
 
@@ -374,6 +377,7 @@ function ModelLogo({ model, className }: { model?: string | null; className?: st
 // User-invocable commands used while the engine catalog is loading. The live
 // CLI catalog and local SKILL.md files replace these as soon as they arrive.
 const fallbackSlashCommands: SlashCommand[] = [
+  { name: "compact", description: "Summarize older conversation history while keeping recent turns", argumentHint: "<optional custom summarization instructions>" },
   { name: "goal", description: "Set or manage an autonomous goal (status | pause | resume | clear)", argumentHint: "<objective> [--budget <tokens>] | status | pause | resume | clear" },
   { name: "update-config", description: "Configure Maximo Syntax via settings.json (permissions, hooks, env vars)" },
   { name: "simplify", description: "Review changed code for reuse, quality, and efficiency, then fix any issues found" },
@@ -400,7 +404,7 @@ function goalStateFromText(statusText: string, timestamp: number): ThreadGoalSta
 // useless (or harmful) inside the desktop app. They are excluded from the
 // desktop "/" menu while supported commands and skills remain available.
 const desktopIncompatibleCommands = new Set([
-  "clear", "compact", "cost", "model", "help", "btw", "theme", "color", "vim",
+  "clear", "cost", "model", "help", "btw", "theme", "color", "vim",
   "keybindings", "exit", "statusline", "stickers", "mobile", "fast", "effort",
   "output-style", "permissions", "plan", "auto", "config", "context", "branch",
   "rename", "resume", "rewind", "summary", "share", "export", "copy", "usage",
@@ -416,7 +420,7 @@ const desktopIncompatibleCommands = new Set([
   "break-cache", "ctx_viz", "env", "oauth-refresh", "debug-tool-call", "perf-issue",
   "onboarding", "autofix-pr", "init-verifiers", "agents-platform", "ant-trace",
   "version", "color", "mobile", "fast", "auto", "plan", "exit", "skills",
-  "help", "compact", "clear", "config", "context", "branch", "statusline",
+  "help", "clear", "config", "context", "branch", "statusline",
   "keybindings", "theme", "vim", "copy", "cost", "usage", "model", "btw",
   "stickers", "feedback", "upgrade", "update", "doctor", "stats", "status",
   "tag", "diff", "files", "memory", "mcp", "ide", "add-dir", "resume",
@@ -774,8 +778,12 @@ const ContextUsageControl = memo(function ContextUsageControl({ usage, loading, 
           })}
         </div>
         {(usage.autoCompactThreshold !== undefined || usage.isAutoCompactEnabled !== undefined) && <div className="context-usage-note">
-          <span>{usage.isAutoCompactEnabled ? "Auto-compacts before the context window is full" : "Manual compaction is available"}</span>
-          {usage.autoCompactThreshold !== undefined && <small>Threshold {formatContextTokens(usage.autoCompactThreshold)}</small>}
+          <span>{usage.isAutoCompactEnabled
+            ? usage.maxTokens > 0 && usage.autoCompactThreshold !== undefined
+              ? `Auto-compacts at ${Math.round((usage.autoCompactThreshold / (usage.rawMaxTokens || usage.maxTokens)) * 100)}% of the context window`
+              : "Auto-compacts before the context window is full"
+            : "Manual compaction is available"}</span>
+          {usage.autoCompactThreshold !== undefined && <small>Threshold {formatContextTokens(usage.autoCompactThreshold)} · adjustable in Settings → Chat behavior</small>}
         </div>}
         <div className="context-usage-foot"><span>{usage.model}</span><button type="button" onClick={() => void onRefresh()} disabled={loading} title="Refresh context usage" aria-label="Refresh context usage"><RefreshCw size={11} className={loading ? "spin" : ""} /></button></div>
       </> : <div className="context-usage-empty"><RefreshCw size={14} className={loading ? "spin" : ""} /><span>{loading ? "Reading the latest context from Syntax…" : "Context usage is available after the first model request."}</span></div>}
@@ -1365,6 +1373,48 @@ function reduceLiveRunEvents(current: Record<string, LiveRun>, events: readonly 
       }
       continue;
     }
+    if (event.type === "compaction") {
+      // Durable compaction markers live in the timeline so they survive into
+      // the saved message history. "started" inserts a pending divider;
+      // "complete" upgrades the newest pending marker (or appends a fresh one).
+      if (event.status === "started") {
+        const hasPending = run.timeline.some((item) => item.type === "compaction" && item.status === "started");
+        if (!hasPending) {
+          run.timeline.push({
+            type: "compaction",
+            phase: event.phase,
+            status: "started",
+            trigger: event.trigger ?? "auto",
+            timestamp: event.timestamp,
+          });
+        }
+      } else {
+        let pendingIndex = -1;
+        for (let index = run.timeline.length - 1; index >= 0; index -= 1) {
+          const item = run.timeline[index];
+          if (item?.type === "compaction" && item.status === "started") {
+            pendingIndex = index;
+            break;
+          }
+        }
+        const marker = {
+          type: "compaction",
+          phase: event.phase,
+          status: "complete",
+          trigger: event.trigger ?? "auto",
+          ...(event.preTokens !== undefined ? { preTokens: event.preTokens } : {}),
+          ...(event.postTokens !== undefined ? { postTokens: event.postTokens } : {}),
+          ...(event.summary ? { summary: event.summary } : {}),
+          timestamp: event.timestamp,
+        } satisfies RunTimelineItem;
+        if (pendingIndex >= 0) run.timeline[pendingIndex] = { ...marker, timestamp: run.timeline[pendingIndex]!.timestamp };
+        else {
+          const last = run.timeline.at(-1);
+          if (last?.type !== "compaction" || last.status !== "complete") run.timeline.push(marker);
+        }
+      }
+      continue;
+    }
     if (event.type === "log") run.logs.push({ level: event.level, text: event.text, timestamp: event.timestamp });
   }
 
@@ -1761,6 +1811,49 @@ function ActivityTimelineEvent({ entry, path, created, reviewable, change, proje
 
 const MemoizedActivityTimelineEvent = memo(ActivityTimelineEvent);
 
+function formatCompactionTokens(value?: number): string | null {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return null;
+  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(value));
+}
+
+/**
+ * Divider shown when context compaction happens.
+ * - In the live work timeline it renders as a compact step row ("in turn").
+ * - Between chat messages it renders as a centered pill divider with an
+ *   expandable summary of what the model retained.
+ */
+const CompactionEventCard = memo(function CompactionEventCard({ entry }: { entry: Extract<RunTimelineItem, { type: "compaction" }> }) {
+  const [expanded, setExpanded] = useState(false);
+  const pending = entry.status === "started";
+  const inTurn = entry.phase === "in_turn";
+  const pre = formatCompactionTokens(entry.preTokens);
+  const post = formatCompactionTokens(entry.postTokens);
+  const label = inTurn
+    ? pending ? "Compacting context in turn…" : "Context compacted in turn"
+    : pending ? "Compacting context…" : entry.trigger === "manual" ? "Context compacted" : "Context auto-compacted";
+  const subtitle = inTurn ? "The same task continues automatically" : "Older history was summarized · recent turns kept";
+
+  const card = <div className={`compaction-card ${pending ? "pending" : "done"} ${inTurn ? "in-turn" : ""}`}>
+    <span className="compaction-card-icon">{pending ? <RefreshCw size={11} className="spin" /> : <Shrink size={11} />}</span>
+    <span className="compaction-card-label">{label}</span>
+    {!pending && pre && <small className="compaction-card-tokens">{post ? `${pre} → ${post}` : `${pre} tokens summarized`}</small>}
+    {(entry.summary || !pending) && <button type="button" className="compaction-card-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} title={expanded ? "Hide details" : "Show details"}>
+      <ChevronDown size={11} style={{ transform: expanded ? "none" : "rotate(-90deg)" }} />
+    </button>}
+  </div>;
+  const body = expanded && !pending && <div className="compaction-card-detail">
+    <small>{subtitle}</small>
+    {entry.summary && <MarkdownContent className="compaction-summary">{entry.summary}</MarkdownContent>}
+  </div>;
+
+  return inTurn
+    ? <div className="compaction-step-row">{card}{body}</div>
+    : <div className="compaction-divider"><span className="compaction-divider-hairline" />{card}{body}<span className="compaction-divider-hairline" /></div>;
+});
+
+const MemoizedCompactionEventCard = memo(CompactionEventCard);
+
 const MemoizedWorkTimeline = memo(function WorkTimeline({ entries, onOpenFile, fileChanges, project, turnId, onPreviewAttachment, streaming = false }: { entries: WorkTimelineEntry[]; onOpenFile?: (path: string, diff?: GitDiff) => void; fileChanges?: FileChange[]; project?: Project; turnId?: string; onPreviewAttachment?: (attachment: Attachment) => void; streaming?: boolean }) {
   const agentRows = useMemo(() => agentTimelineRows(entries), [entries]);
   const rowKeys = useMemo(() => workTimelineEntryKeys(entries), [entries]);
@@ -1788,6 +1881,7 @@ const MemoizedWorkTimeline = memo(function WorkTimeline({ entries, onOpenFile, f
     const rowKey = rowKeys[index];
     if (entry.type === "text") return <MarkdownContent className="work-partial" streaming={streaming} key={rowKey}>{entry.text}</MarkdownContent>;
     if (entry.type === "interaction") return <MemoizedInteractionTimelineEvent interaction={entry.interaction} key={rowKey} />;
+    if (entry.type === "compaction") return <MemoizedCompactionEventCard entry={entry} key={rowKey} />;
     if (entry.type === "agent" || (entry.type === "activity" && isAgentActivity(entry))) return null;
     if (entry.type === "user-context") return <MemoizedUserContextTimelineEvent entry={entry} onPreviewAttachment={onPreviewAttachment} key={rowKey} />;
     const path = activityFilePath(entry);
@@ -2982,7 +3076,7 @@ function questionInteractionAnswers(questions: Question[], answers: Record<strin
  * in an accent-colored span — the same set of names the composer highlights,
  * so a sent skill keeps its highlight in the chat bubble.
  */
-function SkillTokenize({ text, skillNames }: { text: string; skillNames: Set<string> }) {
+function ChatCommandTokenize({ text, skillNames }: { text: string; skillNames: Set<string> }) {
   const parts: ReactNode[] = [];
   const regex = /(^|[\s\n])(\/[a-zA-Z][a-zA-Z0-9:\-_]*)/g;
   let last = 0;
@@ -2992,10 +3086,13 @@ function SkillTokenize({ text, skillNames }: { text: string; skillNames: Set<str
     const precedingChar = match[1] ?? "";
     const token = match[2] ?? "";
     const name = token.slice(1).toLowerCase();
-    if (skillNames.has(name)) {
+    const kind = name === "compact" ? "compact" : name === "goal" ? "goal" : skillNames.has(name) ? "skill" : null;
+    if (kind) {
       if (match.index > last) parts.push(text.slice(last, match.index));
       parts.push(precedingChar);
-      parts.push(<span className="chat-command-token skill-token" key={index++} title={`Skill ${skillDisplayLabel(name)}`}><Boxes size={11} aria-hidden="true" /><span>{skillDisplayLabel(name)}</span></span>);
+      const label = skillDisplayLabel(name);
+      const icon = kind === "compact" ? <Shrink size={11} aria-hidden="true" /> : kind === "goal" ? <Target size={11} aria-hidden="true" /> : <Boxes size={11} aria-hidden="true" />;
+      parts.push(<span className={`chat-command-token ${kind}-command`} key={index++} title={`/${name}`}><span className="chat-command-icon">{icon}</span><span>{label}</span></span>);
       last = match.index + precedingChar.length + token.length;
     }
   }
@@ -3860,7 +3957,7 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
                         }));
                       }}
                     >
-                      {skillNames && skillNames.size > 0 ? <div className="markdown"><SkillTokenize text={extractedPromptText} skillNames={skillNames} /></div> : <MarkdownContent>{extractedPromptText}</MarkdownContent>}
+                      <div className="markdown"><ChatCommandTokenize text={extractedPromptText} skillNames={skillNames ?? new Set<string>()} /></div>
                     </UserMessageCollapsibleText>
                   )}
                 </>
@@ -5354,6 +5451,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     { section: "appearance", title: "Terminal font", keywords: "terminal typeface size monospace" },
     { section: "appearance", title: "Time format", keywords: "timestamp locale 12-hour 24-hour" },
     { section: "behavior", title: "Follow-up behavior", keywords: "queue steer active turn context" },
+    { section: "behavior", title: "Auto-compact threshold", keywords: "compact compaction context window threshold percentage tokens summarize memory usage cost" },
     { section: "behavior", title: "Assistant output", keywords: "streaming response" },
     { section: "behavior", title: "Diff line wrapping", keywords: "review wrap" },
     { section: "behavior", title: "Safety confirmations", keywords: "delete archive terminal close" },
@@ -5530,6 +5628,18 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
 
     if (activeSection === "behavior") return <div className="settings-panel-stack">
       <section className="settings-card"><h2>Conversation</h2><div className="settings-row"><span><strong>Follow-up behavior</strong><small>Choose whether context sent during an active turn steers the current run or waits for the next turn.</small></span><div className="settings-segmented" role="radiogroup" aria-label="Follow-up behavior">{(["steer", "queue"] as FollowUpBehavior[]).map((behavior) => <button type="button" key={behavior} className={values.followUpBehavior === behavior ? "active" : ""} onClick={() => update("followUpBehavior", behavior)}>{behavior === "steer" ? "Steer" : "Queue"}</button>)}</div></div>{booleanRow("enableAssistantStreaming", "Assistant output", "Show token-by-token output while a response is in progress.")}</section>
+      <section className="settings-card"><h2>Context management</h2>
+        <div className="settings-row settings-row-wide">
+          <span>
+            <strong>Auto-compact threshold</strong>
+            <small>Automatically summarize older history when the conversation reaches this percentage of the model's context window, keeping recent turns verbatim. Higher thresholds keep more of the conversation in context — smoother recall, but noticeably higher token usage and cost. Applies to new runs; running chats pick it up on restart.</small>
+          </span>
+          <span className="settings-inline-control compact-threshold-control">
+            <input type="range" min={10} max={70} step={5} value={values.autoCompactPercent} onChange={(event) => update("autoCompactPercent", Number(event.target.value))} aria-label="Auto-compact threshold percentage" />
+            <output>{values.autoCompactPercent}%</output>
+          </span>
+        </div>
+      </section>
       <section className="settings-card"><h2>Review</h2>{booleanRow("diffWordWrap", "Diff line wrapping", "Start the diff panel with long lines wrapped.")}</section>
       <section className="settings-card"><h2>Safety confirmations</h2>{booleanRow("confirmThreadDelete", "Delete confirmation", "Ask before deleting a chat and its history.")}{booleanRow("confirmThreadArchive", "Archive confirmation", "Ask before archiving a chat or project chats.")}{booleanRow("confirmTerminalTabClose", "Terminal close confirmation", "Ask before closing a terminal tab and clearing its session output.")}</section>
     </div>;

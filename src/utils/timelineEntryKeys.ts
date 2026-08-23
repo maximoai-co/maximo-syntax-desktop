@@ -9,6 +9,7 @@ function workTimelineEntryBaseKey(entry: KeyedWorkTimelineEntry): string {
   if (entry.type === "agent") return `agent:${entry.agent.toolUseId ?? entry.agent.taskId}`;
   if (entry.type === "interaction") return `interaction:${entry.interaction.toolUseId ?? `${entry.timestamp}:${entry.interaction.type}`}`;
   if (entry.type === "user-context") return `context:${entry.timestamp}`;
+  if (entry.type === "compaction") return `compaction:${entry.phase}:${entry.timestamp}`;
   return `text:${entry.timestamp}`;
 }
 
