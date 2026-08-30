@@ -99,6 +99,64 @@ describe("provider switching", () => {
     expect((await readLocalAccountStatus())?.authMethod).toBe("mytabulon");
   });
 
+  it("surfaces the signed-in profile photo and username", async () => {
+    writeConfig({
+      maximoApiKey: "mtb_live_key",
+      openAIBaseUrl: "https://api.mytabulon.com/v1",
+      openAIProvider: "mytabulon",
+      mytabulonAccount: {
+        codingPlanTier: "plus",
+        displayName: "Ada Lovelace",
+        username: "ada",
+        emailAddress: "ada@acme.com",
+        profilePhotoUrl: "https://cdn.example.com/ada.png",
+      },
+    });
+    const status = await readLocalAccountStatus();
+    expect(status?.displayName).toBe("Ada Lovelace");
+    expect(status?.username).toBe("ada");
+    expect(status?.photoUrl).toBe("https://cdn.example.com/ada.png");
+    expect(status?.profileEditable).toBe(true);
+  });
+
+  it("reads Maximo API key identity from maximoAccount", async () => {
+    writeConfig({
+      maximoApiKey: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      openAIBaseUrl: "https://api.maximoai.co/v1",
+      openAIProvider: "maximoai",
+      maximoAccount: {
+        emailAddress: "dev@maximoai.co",
+        displayName: "Maximo Dev",
+        username: "maximodev",
+        profilePhotoUrl: "https://api.maximoai.co/uploads/dev.png",
+      },
+    });
+    const status = await readLocalAccountStatus();
+    expect(status?.authMethod).toBe("maximoai_api");
+    expect(status?.displayName).toBe("Maximo Dev");
+    expect(status?.photoUrl).toBe("https://api.maximoai.co/uploads/dev.png");
+    expect(status?.profileEditable).toBe(true);
+  });
+
+  it("reads Maximo OAuth profile photos from oauthAccount", async () => {
+    writeConfig({
+      maximoApiKey: "oauth-token",
+      openAIBaseUrl: "https://api.maximoai.co/v1",
+      openAIProvider: "maximoai",
+      oauthAccount: {
+        emailAddress: "nzube@maximoai.co",
+        displayName: "Nzube Igbozuruike Emmanuel",
+        username: "nzube",
+        profilePhotoUrl: "https://api.maximoai.co/uploads/syntax-profile-1.png",
+        billingType: "subscription",
+      },
+    });
+    const status = await readLocalAccountStatus();
+    expect(status?.authMethod).toBe("maximo.ai");
+    expect(status?.photoUrl).toContain("syntax-profile-1.png");
+    expect(status?.username).toBe("nzube");
+  });
+
   it("trusts the persisted provider field over a stale base URL", async () => {
     writeConfig({
       maximoApiKey: "mtb_live_key",

@@ -761,8 +761,57 @@ export interface AccountStatus {
   apiProvider?: string;
   email?: string;
   displayName?: string;
+  username?: string;
+  photoUrl?: string;
   orgName?: string;
   subscriptionType?: string;
+  profileEditable?: boolean;
+}
+
+export interface AccountProfile {
+  provider: "maximoai" | "mytabulon" | "local";
+  editable: boolean;
+  id?: string;
+  email?: string;
+  username?: string;
+  displayName?: string;
+  firstName?: string;
+  lastName?: string;
+  photoUrl?: string;
+  phone?: string;
+  bio?: string;
+  twitterUsername?: string;
+  telegramUsername?: string;
+  socialLinkedin?: string;
+  socialTwitter?: string;
+  socialFacebook?: string;
+  socialInstagram?: string;
+  socialYoutube?: string;
+  socialTiktok?: string;
+}
+
+export interface AccountProfileUpdate {
+  username?: string;
+  displayName?: string;
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+  bio?: string;
+  twitterUsername?: string;
+  telegramUsername?: string;
+  socialLinkedin?: string;
+  socialTwitter?: string;
+  socialFacebook?: string;
+  socialInstagram?: string;
+  socialYoutube?: string;
+  socialTiktok?: string;
+}
+
+export interface AccountProfileActionResult {
+  ok: boolean;
+  message: string;
+  profile: AccountProfile;
+  status: AccountStatus;
 }
 
 export interface AccountActionResult {
@@ -1345,6 +1394,10 @@ export interface DesktopApi {
   accountCancelLogin(): Promise<{ ok: boolean; message: string }>;
   accountLogout(): Promise<AccountActionResult>;
   accountUsage(): Promise<UsageSnapshot>;
+  accountProfile(): Promise<AccountProfile>;
+  accountUpdateProfile(patch: AccountProfileUpdate): Promise<AccountProfileActionResult>;
+  accountUploadPhoto(name: string, mimeType: string, bytes: Uint8Array): Promise<AccountProfileActionResult>;
+  accountDeletePhoto(): Promise<AccountProfileActionResult>;
   notifications: {
     isSupported(): Promise<boolean>;
     show(input: DesktopNotificationInput): Promise<boolean>;

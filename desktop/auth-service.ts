@@ -56,7 +56,7 @@ function generateState(): string {
   return base64URLEncode(randomBytes(32));
 }
 
-async function readGlobalConfig(): Promise<JsonObject> {
+export async function readGlobalConfig(): Promise<JsonObject> {
   try {
     return JSON.parse(await readFile(GLOBAL_CONFIG_PATH(), "utf8")) as JsonObject;
   } catch {
@@ -64,7 +64,7 @@ async function readGlobalConfig(): Promise<JsonObject> {
   }
 }
 
-async function updateGlobalConfig(mutator: (current: JsonObject) => JsonObject): Promise<void> {
+export async function updateGlobalConfig(mutator: (current: JsonObject) => JsonObject): Promise<void> {
   const current = await readGlobalConfig();
   const next = mutator(current);
   await writeFile(GLOBAL_CONFIG_PATH(), `${JSON.stringify(next, null, 2)}\n`, "utf8");
@@ -82,6 +82,7 @@ export async function clearExtraProviderCredentials(): Promise<void> {
     delete next.openAIBaseUrl;
     delete next.mytabulonDefaultModel;
     delete next.mytabulonAccount;
+    delete next.maximoAccount;
     delete next.oauthAccount;
     return next;
   });
@@ -119,12 +120,14 @@ async function requestJson(url: string, headers: Record<string, string>): Promis
   return data;
 }
 
-async function persistMaximoApiKey(apiKey: string): Promise<void> {
+async function persistMaximoApiKey(apiKey: string, account?: JsonObject): Promise<void> {
   await updateGlobalConfig((current) => {
     const next = { ...current };
     next.maximoApiKey = apiKey;
     next.openAIBaseUrl = MAXIMO_BASE_URL;
     next.openAIProvider = "maximoai";
+    if (account) next.maximoAccount = account;
+    else delete next.maximoAccount;
     delete next.openAIModel;
     delete next.openCodePlan;
     delete next.mytabulonDefaultModel;
@@ -145,6 +148,7 @@ async function persistMyTabulon(apiKey: string, account: JsonObject, defaultMode
     next.mytabulonAccount = account;
     delete next.cencoriApiKey;
     delete next.oauthAccount;
+    delete next.maximoAccount;
     delete next.openAIModel;
     delete next.openCodePlan;
     return next;
@@ -163,6 +167,7 @@ async function persistCencori(apiKey: string, defaultModel?: string): Promise<vo
     delete next.openCodePlan;
     delete next.mytabulonDefaultModel;
     delete next.mytabulonAccount;
+    delete next.maximoAccount;
     delete next.oauthAccount;
     return next;
   });
@@ -217,6 +222,7 @@ async function persistExternalProvider(
     delete next.cencoriApiKey;
     delete next.mytabulonDefaultModel;
     delete next.mytabulonAccount;
+    delete next.maximoAccount;
     delete next.oauthAccount;
     return next;
   });
@@ -287,6 +293,17 @@ async function configureMyTabulonApiKey(apiKey: string): Promise<void> {
     emailAddress: text(user?.email) ?? previous?.emailAddress,
     displayName: text(user?.display_name) ?? previous?.displayName,
     username: text(user?.username) ?? previous?.username,
+    firstName: text(user?.first_name) ?? previous?.firstName,
+    lastName: text(user?.last_name) ?? previous?.lastName,
+    profilePhotoUrl: text(user?.profile_photo_url) ?? previous?.profilePhotoUrl,
+    phone: text(user?.phone) ?? previous?.phone,
+    bio: text(user?.bio) ?? previous?.bio,
+    socialLinkedin: text(user?.social_linkedin) ?? previous?.socialLinkedin,
+    socialTwitter: text(user?.social_twitter) ?? previous?.socialTwitter,
+    socialFacebook: text(user?.social_facebook) ?? previous?.socialFacebook,
+    socialInstagram: text(user?.social_instagram) ?? previous?.socialInstagram,
+    socialYoutube: text(user?.social_youtube) ?? previous?.socialYoutube,
+    socialTiktok: text(user?.social_tiktok) ?? previous?.socialTiktok,
     workspaceId: text(workspace?.id) ?? previous?.workspaceId,
     workspaceName: text(workspace?.name) ?? previous?.workspaceName,
     codingPlanActive: typeof planSource.active === "boolean" ? planSource.active : (previous?.codingPlanActive ?? true),
@@ -305,7 +322,28 @@ async function configureMaximoApiKey(apiKey: string): Promise<void> {
   if (trimmed.length < 32) {
     throw new Error("Invalid API key format. Maximo AI API keys should be at least 32 characters.");
   }
-  await persistMaximoApiKey(trimmed);
+  let account: JsonObject | undefined;
+  try {
+    const payload = await requestJson(`${MAXIMO_BASE_URL.replace(/\/v1$/, "")}/syntax/auth/apikey-user`, {
+      Authorization: `Bearer ${trimmed}`,
+      "x-api-key": trimmed,
+    });
+    const user = payload.user && typeof payload.user === "object" ? (payload.user as JsonObject) : payload;
+    account = {
+      userId: text(user.id),
+      emailAddress: text(user.email),
+      displayName: text(user.display_name) ?? text(user.username),
+      username: text(user.username),
+      profilePhotoUrl: text(user.profile_photo_url),
+      bio: text(user.bio),
+      twitterUsername: text(user.twitter_username),
+      telegramUsername: text(user.telegram_username),
+      updatedAt: new Date().toISOString(),
+    };
+  } catch {
+    account = undefined;
+  }
+  await persistMaximoApiKey(trimmed, account);
 }
 
 async function configureCencoriApiKey(apiKey: string): Promise<void> {
@@ -593,12 +631,24 @@ export async function loginMyTabulonWithBrowser(): Promise<void> {
   await loginMyTabulonBrowser();
 }
 
+function identityFromStoredAccount(account?: JsonObject): Pick<AccountStatus, "email" | "displayName" | "username" | "photoUrl"> {
+  if (!account) return {};
+  return {
+    email: text(account.emailAddress) ?? text(account.email),
+    displayName: text(account.displayName) ?? text(account.display_name),
+    username: text(account.username),
+    photoUrl: text(account.profilePhotoUrl) ?? text(account.profile_photo_url),
+  };
+}
+
 export async function readLocalAccountStatus(): Promise<AccountStatus | null> {
   try {
     const config = await readGlobalConfig();
     const oauthAccount = config.oauthAccount && typeof config.oauthAccount === "object" ? (config.oauthAccount as JsonObject) : undefined;
     const mytabulonAccount =
       config.mytabulonAccount && typeof config.mytabulonAccount === "object" ? (config.mytabulonAccount as JsonObject) : undefined;
+    const maximoAccount =
+      config.maximoAccount && typeof config.maximoAccount === "object" ? (config.maximoAccount as JsonObject) : undefined;
     const baseUrl = text(config.openAIBaseUrl) ?? "";
     const maximoApiKey = text(config.maximoApiKey);
     const cencoriApiKey = text(config.cencoriApiKey);
@@ -613,10 +663,10 @@ export async function readLocalAccountStatus(): Promise<AccountStatus | null> {
         loggedIn: true,
         authMethod: "mytabulon",
         apiProvider: "MyTabulon",
-        email: text(mytabulonAccount?.emailAddress),
-        displayName: text(mytabulonAccount?.displayName),
+        ...identityFromStoredAccount(mytabulonAccount),
         orgName: text(mytabulonAccount?.workspaceName),
         subscriptionType: `Coding ${tier.charAt(0).toUpperCase()}${tier.slice(1)}`,
+        profileEditable: true,
       };
     }
     if (provider === "cencori" && (cencoriApiKey || maximoApiKey)) {
@@ -650,10 +700,10 @@ export async function readLocalAccountStatus(): Promise<AccountStatus | null> {
           loggedIn: true,
           authMethod: "maximo.ai",
           apiProvider: "Maximo AI",
-          email: text(oauthAccount.emailAddress),
-          displayName: text(oauthAccount.displayName),
+          ...identityFromStoredAccount(oauthAccount),
           orgName: text(oauthAccount.organizationName),
           subscriptionType: billingType === "subscription" ? "Subscription" : `${billingType.charAt(0).toUpperCase()}${billingType.slice(1)}`,
+          profileEditable: true,
         };
       }
       if (maximoApiKey) {
@@ -661,7 +711,9 @@ export async function readLocalAccountStatus(): Promise<AccountStatus | null> {
           loggedIn: true,
           authMethod: "maximoai_api",
           apiProvider: "Maximo AI",
+          ...identityFromStoredAccount(maximoAccount),
           subscriptionType: "API key",
+          profileEditable: true,
         };
       }
     }
@@ -700,10 +752,10 @@ export async function readLocalAccountStatus(): Promise<AccountStatus | null> {
         loggedIn: true,
         authMethod: "mytabulon",
         apiProvider: "MyTabulon",
-        email: text(mytabulonAccount?.emailAddress),
-        displayName: text(mytabulonAccount?.displayName),
+        ...identityFromStoredAccount(mytabulonAccount),
         orgName: text(mytabulonAccount?.workspaceName),
         subscriptionType: `Coding ${tier.charAt(0).toUpperCase()}${tier.slice(1)}`,
+        profileEditable: true,
       };
     }
 
@@ -722,10 +774,10 @@ export async function readLocalAccountStatus(): Promise<AccountStatus | null> {
         loggedIn: true,
         authMethod: "maximo.ai",
         apiProvider: "Maximo AI",
-        email: text(oauthAccount.emailAddress),
-        displayName: text(oauthAccount.displayName),
+        ...identityFromStoredAccount(oauthAccount),
         orgName: text(oauthAccount.organizationName),
         subscriptionType: billingType === "subscription" ? "Subscription" : `${billingType.charAt(0).toUpperCase()}${billingType.slice(1)}`,
+        profileEditable: true,
       };
     }
 
@@ -734,7 +786,9 @@ export async function readLocalAccountStatus(): Promise<AccountStatus | null> {
         loggedIn: true,
         authMethod: "maximoai_api",
         apiProvider: "Maximo AI",
+        ...identityFromStoredAccount(maximoAccount),
         subscriptionType: "API key",
+        profileEditable: true,
       };
     }
 

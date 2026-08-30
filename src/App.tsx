@@ -38,6 +38,8 @@ import ProjectEditorModal from "./components/ProjectEditorModal";
 import SpaceEditorModal from "./components/SpaceEditorModal";
 import { ProjectIcon } from "./components/ProjectIcon";
 import { SpaceIcon } from "./components/SpaceIcon";
+import UserAvatar from "./components/UserAvatar";
+import AccountProfileSettings from "./components/AccountProfileSettings";
 import DiffReview, { DiffCode, patchStats, reviewPatch } from "./components/DiffReview";
 import ActivitySidebar from "./components/ActivitySidebar";
 import KanbanView from "./components/KanbanView";
@@ -293,6 +295,10 @@ function providerLabel(account: AccountStatus | null | undefined): string {
   if (method === "maximoai_api" || method === "api_key") return "Maximo AI · API key";
   if (account.apiProvider) return account.apiProvider;
   return "Maximo AI";
+}
+
+function accountName(account: AccountStatus | null | undefined): string {
+  return account?.displayName || account?.username || account?.email || (account?.loggedIn ? "Connected account" : "Account");
 }
 
 function accountDetailText(account: AccountStatus | null | undefined): string {
@@ -2914,7 +2920,7 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
         )}
         <div className="sidebar-footer">
           {accountMenuOpen && <div className="account-quick-menu glass-panel">
-            <button className="account-menu-identity" type="button" onClick={() => { setAccountMenuOpen(false); onAccount(); }}><UserRound size={15} /><span><strong>{account?.displayName || account?.email || (account?.loggedIn ? "Connected account" : "Account")}</strong><small>{account?.email && account.displayName ? account.email : providerLabel(account)}</small></span><ChevronRight size={13} /></button>
+            <button className="account-menu-identity" type="button" onClick={() => { setAccountMenuOpen(false); onAccount(); }}><UserAvatar url={account?.photoUrl} name={accountName(account)} size={28} /><span><strong>{accountName(account)}</strong><small>{account?.email && account.displayName ? account.email : providerLabel(account)}</small></span><ChevronRight size={13} /></button>
             <div className="account-menu-divider" />
             <button type="button" onClick={() => { setAccountMenuOpen(false); onUsage(); }}><Gauge size={14} /><span>Usage remaining</span><ChevronRight size={13} /></button>
             <button type="button" onClick={() => { setAccountMenuOpen(false); onAccount(); }}><UserRound size={14} /><span>Manage account</span></button>
@@ -2934,7 +2940,7 @@ function Sidebar({ state, currentThread, account, timestampFormat, activeSurface
               {updateState?.availableVersion && <small>v{updateState.availableVersion}</small>}
             </button>
           )}
-          <button className="account-button" onClick={() => { setProjectMenu(null); setThreadMenu(null); setNotificationsOpen(false); setAccountMenuOpen((value) => !value); }} aria-expanded={accountMenuOpen}><UserRound size={15} /><span><strong>{account?.displayName || account?.email || (account?.loggedIn ? "Connected account" : "Account")}</strong>{account?.loggedIn && <small>{providerLabel(account)}</small>}</span><ChevronDown size={12} /></button>
+          <button className="account-button" onClick={() => { setProjectMenu(null); setThreadMenu(null); setNotificationsOpen(false); setAccountMenuOpen((value) => !value); }} aria-expanded={accountMenuOpen}><UserAvatar url={account?.photoUrl} name={accountName(account)} size={22} /><span><strong>{accountName(account)}</strong>{account?.loggedIn && <small>{providerLabel(account)}</small>}</span><ChevronDown size={12} /></button>
           <button className="footer-icon-button" onClick={onSettings} title="Settings"><Settings size={15} /></button>
         </div>
        <div className="resize-handle resize-handle-sidebar" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" onPointerDown={onResize} />
@@ -5253,7 +5259,7 @@ function ProfileStatsPanel({ state, account, models, skills }: { state: AppState
     <div className="profile-settings-actions"><button type="button" className="settings-action" onClick={() => setSharing(true)}><Share2 size={13} />Share</button><button type="button" className="settings-action" onClick={() => setEditing(true)}><Pencil size={13} />Edit</button></div>
     <ProfileEditDialog open={editing} meta={meta} onClose={() => setEditing(false)} onSave={saveProfile} />
     <ProfileShareDialog open={sharing} data={shareData} onClose={() => setSharing(false)} />
-    <header className="profile-settings-identity"><span className="profile-avatar" style={{ background: meta.avatarColor }}>{profileInitials(meta.name)}</span><div><h2>{meta.name}</h2><p>{meta.handle}<span aria-hidden="true"> · </span><span className="profile-badge">Maximo</span></p></div></header>
+    <header className="profile-settings-identity">{account?.photoUrl ? <UserAvatar url={account.photoUrl} name={meta.name} size={66} className="profile-avatar-photo" /> : <span className="profile-avatar" style={{ background: meta.avatarColor }}>{profileInitials(meta.name)}</span>}<div><h2>{meta.name}</h2><p>{meta.handle}<span aria-hidden="true"> · </span><span className="profile-badge">Maximo</span></p></div></header>
     <div className="profile-stat-grid"><div><strong>{profileCompactNumber(lifetimeTokens)}</strong><span>Lifetime tokens</span></div><div><strong>{profileCompactNumber(peakDay)}</strong><span>Peak day</span></div><div><strong>{promptCount.toLocaleString()}</strong><span>Total prompts</span></div><div><strong>{streaks.current} {streaks.current === 1 ? "day" : "days"}</strong><span>Current streak</span></div><div><strong>{streaks.longest} {streaks.longest === 1 ? "day" : "days"}</strong><span>Longest streak</span></div></div>
     <section className="profile-section"><h3>Activity</h3><div className="profile-heatmap-wrap"><div className="profile-heatmap-months">{monthLabels.map((item) => <span style={{ gridColumn: item.column }} key={`${item.label}-${item.column}`}>{item.label}</span>)}</div><div className="profile-heatmap" onMouseLeave={() => setHoveredDay(null)}>{heatmapCells.map((date, index) => { const dayKey = date ? profileDateKey(date.getTime()) : ""; const value = date ? activityByDay.get(dayKey) ?? 0 : 0; const level = value === 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((value / maxActivity) * 4))); return <span className={`profile-heatmap-cell level-${level}`} onMouseEnter={(event) => date && setHoveredDay({ date, tokens: derivedDailyTokens[dayKey] ?? 0, activities: promptCountByDay.get(dayKey) ?? 0, rect: event.currentTarget.getBoundingClientRect() })} key={`${date?.toISOString() ?? "empty"}-${index}`} />; })}</div></div>{hoveredDay && createPortal(<div className="profile-heatmap-tooltip profile-heatmap-tooltip-fixed" style={{ left: Math.min(window.innerWidth - 12, Math.max(12, hoveredDay.rect.left + hoveredDay.rect.width / 2)), top: hoveredDay.rect.top < 100 ? hoveredDay.rect.bottom + 9 : hoveredDay.rect.top - 9, transform: hoveredDay.rect.top < 100 ? "translate(-50%, 0)" : "translate(-50%, -100%)" }}><strong>{hoveredDay.date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</strong><span><b>{profileCompactNumber(hoveredDay.tokens)}</b> tokens</span><span><b>{hoveredDay.activities}</b> {hoveredDay.activities === 1 ? "activity" : "activities"}</span></div>, document.body)}</section>
     <div className="profile-insights-grid"><section className="profile-section"><h3>Activity insights</h3><dl><div><dt>Most used provider</dt><dd>{topProvider}{resolvedModelRows.length > 0 ? ` · ${Math.round((resolvedModelRows[0]!.value / safeModelTotal) * 100)}%` : ""}</dd></div><div><dt>Most used reasoning</dt><dd>{topEffort ? effortLabel(topEffort[0]) : "-"}</dd></div><div><dt>Most active hour</dt><dd>{topHour === undefined ? "-" : new Date(2000, 0, 1, topHour).toLocaleTimeString([], { hour: "numeric" })}</dd></div><div><dt>Most worked project</dt><dd title={topProject ? state.projects.find((project) => project.id === topProject[0])?.name : undefined}>{topProject ? `${state.projects.find((project) => project.id === topProject[0])?.name ?? "Project"} · ${topProject[1]} prompts` : "-"}</dd></div><div><dt>Skills explored</dt><dd>{skillCounts.size}</dd></div><div><dt>Total skills used</dt><dd>{[...skillCounts.values()].reduce((sum, value) => sum + value, 0)}</dd></div><div><dt>Total threads</dt><dd>{state.threads.length}</dd></div></dl></section><section className="profile-section"><h3>Most used plugins</h3>{skillCounts.size > 0 ? <ul className="profile-plugin-list">{[...skillCounts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 6).map(([skill, count]) => <li key={skill}><span><Sparkles size={13} />{skill}</span><b>{count} runs</b></li>)}</ul> : <p className="profile-muted">No skills or agents used yet.</p>}</section></div>
@@ -5376,7 +5382,7 @@ function RetentionCard({ threads }: { threads: Thread[] }) {
 
 type EnhancedSettingsSectionId = "general" | "profile" | "appearance" | "behavior" | "shortcuts" | "defaults" | "models" | "skills" | "notifications" | "appsnap" | "account" | "browser" | "integrations" | "engine" | "advanced" | "archived";
 
-function EnhancedSettingsModal({ state, engine, models, modelOptions, account, usage, appVersion, appDataPath, skills, initialSection = "general", onClose, onSave, onRepair, onAccount, onUsage, onRefreshSkills, onResetProvider, onRevealDataPath, onRestoreThread, onDeleteArchivedThread, updateState, onCheckForUpdates, onOpenUpdateDownload, onOpenWhatsNew }: {
+function EnhancedSettingsModal({ state, engine, models, modelOptions, account, usage, appVersion, appDataPath, skills, initialSection = "general", onClose, onSave, onRepair, onAccount, onAccountChanged, onUsage, onRefreshSkills, onResetProvider, onRevealDataPath, onRestoreThread, onDeleteArchivedThread, updateState, onCheckForUpdates, onOpenUpdateDownload, onOpenWhatsNew }: {
   state: AppState;
   engine: EngineStatus | null;
   models: EngineModel[];
@@ -5391,6 +5397,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
   onSave: (patch: Partial<AppState["settings"]>) => Promise<void>;
   onRepair: () => Promise<void>;
   onAccount: () => void;
+  onAccountChanged: (status: AccountStatus) => void;
   onUsage: () => void;
   onRefreshSkills: () => void;
   onResetProvider: () => Promise<void>;
@@ -5421,7 +5428,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     .map((slug) => ({ value: slug, label: slug, description: "Saved custom model slug", icon: <Bot size={13} /> }))];
   const navItems = [
     { id: "general" as const, group: "Personal", label: "General", description: "Workspace defaults, navigation, and the Environment panel.", icon: <Settings size={14} /> },
-    { id: "profile" as const, group: "Personal", label: "Profile & stats", description: "A local snapshot of your Maximo workspace activity.", icon: <UserCircle size={14} /> },
+    { id: "profile" as const, group: "Personal", label: "Profile & stats", description: "Photo, name, username, and a snapshot of your workspace activity.", icon: <UserCircle size={14} /> },
     { id: "appearance" as const, group: "Personal", label: "Appearance", description: "Theme, typography, density, terminal, and time format.", icon: <Sun size={14} /> },
     { id: "behavior" as const, group: "Personal", label: "Chat behavior", description: "Follow-ups, streaming, review defaults, and safety confirmations.", icon: <SlidersHorizontal size={14} /> },
     { id: "notifications" as const, group: "Personal", label: "Notifications", description: "Choose how Maximo tells you when work finishes or needs attention.", icon: <Bell size={14} /> },
@@ -5441,7 +5448,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
     { section: "advanced", title: "Desktop updates", keywords: "update app download release version github check for updates installer" },
     { section: "advanced", title: "What's new", keywords: "changelog release notes whats new dialog history" },
     { section: "general", title: "Workspace dock", keywords: "inspector environment panel right workspace" },
-    { section: "profile", title: "Profile and stats", keywords: "account chats projects prompts activity local" },
+    { section: "profile", title: "Profile and stats", keywords: "account chats projects prompts activity local photo avatar username full name bio social" },
     { section: "general", title: "Project order", keywords: "sidebar recently active recently added manual" },
     { section: "general", title: "Thread order", keywords: "sidebar chats newest first recently active" },
     { section: "general", title: "Environment panel", keywords: "usage servers repository editor pinned markers notepad activity" },
@@ -5609,7 +5616,10 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
       <section className="settings-card"><h2>Safety</h2>{booleanRow("hideFullAccessWarning", "Hide Full Access warning", "Do not show the elevated-access reminder above the composer.")}</section>
     </div>;
 
-    if (activeSection === "profile") return <ProfileStatsPanel state={state} account={account} models={models} skills={skills} />;
+    if (activeSection === "profile") return <div className="settings-panel-stack">
+      <AccountProfileSettings account={account} onAccountChanged={onAccountChanged} />
+      <ProfileStatsPanel state={state} account={account} models={models} skills={skills} />
+    </div>;
 
     if (activeSection === "appearance") return <div className="settings-panel-stack">
       <section className="settings-card"><h2>Theme</h2><p>Choose how Maximo Syntax looks across the app. Light and dark themes can be customized independently.</p><div className="theme-choice-grid">{(["system", "light", "dark"] as ThemeMode[]).map((theme) => <button type="button" className={values.theme === theme ? "active" : ""} onClick={() => update("theme", theme)} key={theme}><span className={`theme-mini-preview ${theme}`}><i /><i /><i /></span><strong>{theme === "system" ? "System" : theme === "light" ? "Light" : "Dark"}</strong>{values.theme === theme && <Check size={13} />}</button>)}</div></section>
@@ -5662,7 +5672,7 @@ function EnhancedSettingsModal({ state, engine, models, modelOptions, account, u
 
     if (activeSection === "skills") return <div className="settings-panel-stack"><section className="settings-card"><h2>Discovered skills</h2><div className="settings-row"><span><strong>Local skill catalog</strong><small>Skills are read from user and project skill folders and remain available in the slash menu.</small></span><div className="settings-row-actions"><span className="setting-value">{allSkills.length} found</span><button type="button" className="settings-action" onClick={onRefreshSkills}><RefreshCw size={12} />Refresh</button></div></div>{allSkills.length > 0 ? <div className="settings-skill-list">{allSkills.map((skill) => <div className="settings-skill-row" key={skill.name}><span className="settings-skill-icon"><Sparkles size={13} /></span><span><strong>{skill.name}</strong><small>{skill.description || "Reusable workflow available from the composer."}</small></span></div>)}</div> : <div className="settings-empty-state">No skills found yet. Add a SKILL.md folder to a supported local skill directory.</div>}</section></div>;
 
-    if (activeSection === "account") return <div className="settings-panel-stack"><section className="settings-card"><h2>Signed in account</h2><div className="settings-account-row"><span className={`account-state ${account?.loggedIn ? "online" : ""}`}><UserRound size={16} /></span><span><strong>{account?.email || account?.displayName || "Not signed in"}</strong><small>{accountDetailText(account)}</small></span><button type="button" onClick={onAccount}>Manage account</button></div></section><section className="settings-card"><h2>Usage and billing</h2><div className="settings-row"><span><strong>{usage?.planName || "Current plan usage"}</strong><small>{usage ? usage.message || `${usage.limits.length} live usage limit${usage.limits.length === 1 ? "" : "s"}` : "View limits and reset times without leaving the app."}</small></span><button type="button" className="settings-action" onClick={onUsage}>{usage ? "Refresh usage" : "View usage"}</button></div>{usage?.limits.map((limit) => <div className="settings-usage-row" key={limit.id}><span>{limit.label}</span><div><i style={{ width: `${limit.utilization ?? 0}%` }} /></div><strong>{limit.utilization === null ? "-" : `${Math.round(limit.utilization)}%`}</strong></div>)}{usage?.provider === "maximoai" && (usage.walletBalance !== undefined || usage.totalSpent !== undefined || usage.totalDeposited !== undefined || usage.balance !== undefined) && <div className="settings-billing"><strong>Billing</strong><div className="settings-billing-grid"><div><span>Billing Wallet Balance:</span><strong>{formatBillingAmount(usage.walletBalance ?? usage.balance, usage.currency)}</strong></div><div><span>Total Spent:</span><strong>{formatBillingAmount(usage.totalSpent, usage.currency)}</strong></div><div><span>Total Deposited:</span><strong>{formatBillingAmount(usage.totalDeposited, usage.currency)}</strong></div></div>{isUsageLowBalance(usage) && <div className="settings-billing-actions"><button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_CREDITS_URL)}>Top up</button><button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_SUBSCRIBE_URL)}>Upgrade</button></div>}</div>}</section></div>;
+    if (activeSection === "account") return <div className="settings-panel-stack"><section className="settings-card"><h2>Signed in account</h2><div className="settings-account-row"><UserAvatar url={account?.photoUrl} name={accountName(account)} size={34} /><span><strong>{accountName(account)}</strong><small>{accountDetailText(account)}</small></span><button type="button" onClick={onAccount}>Manage account</button></div></section><section className="settings-card"><h2>Usage and billing</h2><div className="settings-row"><span><strong>{usage?.planName || "Current plan usage"}</strong><small>{usage ? usage.message || `${usage.limits.length} live usage limit${usage.limits.length === 1 ? "" : "s"}` : "View limits and reset times without leaving the app."}</small></span><button type="button" className="settings-action" onClick={onUsage}>{usage ? "Refresh usage" : "View usage"}</button></div>{usage?.limits.map((limit) => <div className="settings-usage-row" key={limit.id}><span>{limit.label}</span><div><i style={{ width: `${limit.utilization ?? 0}%` }} /></div><strong>{limit.utilization === null ? "-" : `${Math.round(limit.utilization)}%`}</strong></div>)}{usage?.provider === "maximoai" && (usage.walletBalance !== undefined || usage.totalSpent !== undefined || usage.totalDeposited !== undefined || usage.balance !== undefined) && <div className="settings-billing"><strong>Billing</strong><div className="settings-billing-grid"><div><span>Billing Wallet Balance:</span><strong>{formatBillingAmount(usage.walletBalance ?? usage.balance, usage.currency)}</strong></div><div><span>Total Spent:</span><strong>{formatBillingAmount(usage.totalSpent, usage.currency)}</strong></div><div><span>Total Deposited:</span><strong>{formatBillingAmount(usage.totalDeposited, usage.currency)}</strong></div></div>{isUsageLowBalance(usage) && <div className="settings-billing-actions"><button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_CREDITS_URL)}>Top up</button><button type="button" onClick={() => void window.maximoDesktop.openPath(MAXIMO_SUBSCRIBE_URL)}>Upgrade</button></div>}</div>}</section></div>;
 
     if (activeSection === "browser") return <div className="settings-panel-stack">
       <section className="settings-card">
@@ -5902,9 +5912,9 @@ function AccountModal({ account, usage, usageBusy, busy, onClose, onRefresh, onL
       {step === "hub" && (
         <div className="account-step account-step-hub">
           <div className="account-identity">
-            <span className={`account-state ${account?.loggedIn ? "online" : ""}`}><UserRound size={17} /></span>
+            <UserAvatar url={account?.photoUrl} name={accountName(account)} size={38} />
             <div>
-              <strong>{account?.email || account?.displayName || (account?.loggedIn ? "Connected account" : "Not signed in")}</strong>
+              <strong>{accountName(account)}</strong>
               <small>{accountDetailText(account)}</small>
             </div>
             <button type="button" onClick={onRefresh} disabled={busy} title="Refresh account"><RefreshCw size={13} className={busy ? "spin" : ""} /></button>
@@ -6592,9 +6602,23 @@ export default function App() {
       }
        void retryWithBackoff(() => window.maximoDesktop.appInfo(), { retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((info) => { if (active) { setAppVersion(info.version); setAppDataPath(info.dataPath); setTransientRetry(null); } }).catch(() => { if (active) { setAppVersion(""); setAppDataPath(""); setTransientRetry(null); } });
       void retryWithBackoff(() => window.maximoDesktop.getUpdateState(), { retries: 2, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((next) => { if (active) { setUpdateState(next); setTransientRetry(null); } }).catch(() => { if (active) { setUpdateState(null); setTransientRetry(null); } });
-      void retryWithBackoff(() => window.maximoDesktop.accountStatus(), { retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then((status) => {
+      void retryWithBackoff(() => window.maximoDesktop.accountStatus(), { retries: DEFAULT_MAX_RETRIES, isRetryable: isRetryableError, onRetry: (a,m,e) => showTransientRetry(a,m,e) }).then(async (status) => {
         if (!active) return;
-        setAccount(status);
+        try {
+          const profile = await window.maximoDesktop.accountProfile();
+          if (!active) return;
+          setAccount({
+            ...status,
+            email: profile.email ?? status.email,
+            displayName: profile.displayName ?? status.displayName,
+            username: profile.username ?? status.username,
+            photoUrl: profile.photoUrl ?? status.photoUrl,
+            profileEditable: profile.editable || status.profileEditable,
+          });
+        } catch {
+          if (!active) return;
+          setAccount(status);
+        }
         setAccountLoaded(true);
         setTransientRetry(null);
       }).catch(() => {
@@ -7460,7 +7484,20 @@ export default function App() {
   const refreshAccount = async () => {
     setAccountBusy(true);
     try {
-      setAccount(await withSmallRetry(() => window.maximoDesktop.accountStatus()));
+      const status = await withSmallRetry(() => window.maximoDesktop.accountStatus());
+      try {
+        const profile = await window.maximoDesktop.accountProfile();
+        setAccount({
+          ...status,
+          email: profile.email ?? status.email,
+          displayName: profile.displayName ?? status.displayName,
+          username: profile.username ?? status.username,
+          photoUrl: profile.photoUrl ?? status.photoUrl,
+          profileEditable: profile.editable || status.profileEditable,
+        });
+      } catch {
+        setAccount(status);
+      }
       setAccountLoaded(true);
     } catch (e) {
       showToast(getRetryMessage(e) || "Unable to refresh account.");
@@ -7565,6 +7602,19 @@ export default function App() {
       if (result.ok) {
         await refreshEngineModels(true);
         void refreshUsage();
+        try {
+          const profile = await window.maximoDesktop.accountProfile();
+          setAccount({
+            ...result.status,
+            email: profile.email ?? result.status.email,
+            displayName: profile.displayName ?? result.status.displayName,
+            username: profile.username ?? result.status.username,
+            photoUrl: profile.photoUrl ?? result.status.photoUrl,
+            profileEditable: profile.editable || result.status.profileEditable,
+          });
+        } catch {
+          // Keep the login status even if the live profile endpoint is unavailable.
+        }
       }
       return result.ok;
     } finally { setAccountBusy(false); }
@@ -7990,7 +8040,7 @@ export default function App() {
       {createProjectOpen && <CreateProjectModal onClose={() => setCreateProjectOpen(false)} onChooseSources={() => window.maximoDesktop.chooseProjectSources()} onCreate={createProject} />}
       {projectBeingEdited && <ProjectEditorModal key={projectBeingEdited.id} mode="edit" project={projectBeingEdited} onClose={() => setEditProjectId(null)} onChooseSources={() => window.maximoDesktop.chooseProjectSources()} onSave={({ name, sourcePaths, icon, color }) => updateProject(projectBeingEdited.id, name, sourcePaths, icon, color)} />}
       {renameThreadTarget && <RenameThreadModal key={renameThreadTarget.id} thread={renameThreadTarget} theme={state.settings.theme} onClose={() => setRenameThreadId(null)} onRename={(title) => renameThread(renameThreadTarget.id, title)} />}
-      {settingsOpen && <EnhancedSettingsModal state={state} engine={engine} models={engineModels} modelOptions={modelOptions} account={account} usage={usage} appVersion={appVersion} appDataPath={appDataPath} skills={[...discoveredSkills, ...skillCommands]} initialSection={settingsSectionRequest} onClose={() => { setSettingsOpen(false); setSettingsSectionRequest("general"); }} onSave={async (patch) => { const next = await window.maximoDesktop.updateSettings(patch); setState(next); setInspectorVisible(next.settings.showInspector); setEnvironmentOpen(next.settings.environmentPanelDefaultOpen); }} onRepair={async () => { const next = await window.maximoDesktop.updateEngine(); setEngine(next); if (next.available) await refreshEngineModels(); }} onAccount={() => { setSettingsOpen(false); openAccount(); }} onUsage={() => void refreshUsage()} onRefreshSkills={() => refreshDiscoveredSkills(currentProject?.path)} onResetProvider={resetProviderState} onRevealDataPath={() => { if (appDataPath) void window.maximoDesktop.revealPath(appDataPath); }} onRestoreThread={async (threadId) => { setState(await window.maximoDesktop.unarchiveThread(threadId)); }} onDeleteArchivedThread={async (threadId) => { const thread = state.threads.find((item) => item.id === threadId); if (!thread || !window.confirm(`Permanently delete "${thread.title}"? This removes the chat history forever.`)) return; setState(await window.maximoDesktop.deleteThread(threadId)); }} updateState={updateState} onCheckForUpdates={checkForAppUpdates} onOpenUpdateDownload={openAppUpdateDownload} onOpenWhatsNew={() => { void refreshWhatsNew({ forceDialog: true }); }} />}
+      {settingsOpen && <EnhancedSettingsModal state={state} engine={engine} models={engineModels} modelOptions={modelOptions} account={account} usage={usage} appVersion={appVersion} appDataPath={appDataPath} skills={[...discoveredSkills, ...skillCommands]} initialSection={settingsSectionRequest} onClose={() => { setSettingsOpen(false); setSettingsSectionRequest("general"); }} onSave={async (patch) => { const next = await window.maximoDesktop.updateSettings(patch); setState(next); setInspectorVisible(next.settings.showInspector); setEnvironmentOpen(next.settings.environmentPanelDefaultOpen); }} onRepair={async () => { const next = await window.maximoDesktop.updateEngine(); setEngine(next); if (next.available) await refreshEngineModels(); }} onAccount={() => { setSettingsOpen(false); openAccount(); }} onAccountChanged={setAccount} onUsage={() => void refreshUsage()} onRefreshSkills={() => refreshDiscoveredSkills(currentProject?.path)} onResetProvider={resetProviderState} onRevealDataPath={() => { if (appDataPath) void window.maximoDesktop.revealPath(appDataPath); }} onRestoreThread={async (threadId) => { setState(await window.maximoDesktop.unarchiveThread(threadId)); }} onDeleteArchivedThread={async (threadId) => { const thread = state.threads.find((item) => item.id === threadId); if (!thread || !window.confirm(`Permanently delete "${thread.title}"? This removes the chat history forever.`)) return; setState(await window.maximoDesktop.deleteThread(threadId)); }} updateState={updateState} onCheckForUpdates={checkForAppUpdates} onOpenUpdateDownload={openAppUpdateDownload} onOpenWhatsNew={() => { void refreshWhatsNew({ forceDialog: true }); }} />}
       {accountOpen && <AccountModal account={account} usage={usage} usageBusy={usageBusy} busy={accountBusy} onClose={() => setAccountOpen(false)} onRefresh={() => void refreshAccount()} onLogin={(method, apiKey, openCodePlan) => loginAccount(method, apiKey, openCodePlan)} onCancelLogin={() => void cancelLoginAccount()} onLogout={() => void logoutAccount()} onUsage={() => void refreshUsage()} />}
       {attachmentPreview && <AttachmentPreviewModal state={attachmentPreview} theme={state.settings.theme} onClose={() => { attachmentPreviewRequestRef.current += 1; setAttachmentPreview(null); }} />}
       <AppSnapCoordinator

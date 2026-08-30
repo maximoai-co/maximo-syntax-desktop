@@ -67,6 +67,10 @@ const api: DesktopApi = {
   accountCancelLogin: () => ipcRenderer.invoke("account:cancel-login"),
   accountLogout: () => ipcRenderer.invoke("account:logout"),
   accountUsage: () => ipcRenderer.invoke("account:usage"),
+  accountProfile: () => ipcRenderer.invoke("account:profile"),
+  accountUpdateProfile: (patch) => ipcRenderer.invoke("account:update-profile", patch),
+  accountUploadPhoto: (name, mimeType, bytes) => ipcRenderer.invoke("account:upload-photo", name, mimeType, bytes),
+  accountDeletePhoto: () => ipcRenderer.invoke("account:delete-photo"),
   notifications: {
     isSupported: () => ipcRenderer.invoke("notifications:supported"),
     show: (input) => ipcRenderer.invoke("notifications:show", input),

@@ -267,9 +267,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .empty-project { width: 100%; height: 42px; display: flex; align-items: center; gap: 9px; padding: 0 10px; border-radius: 9px; border: 1px dashed var(--border-strong); background: transparent; color: var(--muted); }
 .empty-project:hover { color: var(--accent-strong); border-color: var(--accent); background: var(--accent-soft); }
 .no-results { padding: 8px 10px; color: var(--faint); font-size: 11px; }
+.user-avatar { display: grid; place-items: center; flex: 0 0 auto; overflow: hidden; border-radius: 50%; color: #fff; font-weight: 700; letter-spacing: .02em; line-height: 1; box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-strong) 70%, transparent); }
+.user-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .sidebar-footer { flex: 0 0 auto; min-height: 48px; padding: 7px 9px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 1px solid var(--border); }
 .sidebar-footer button { height: 32px; flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 9px; border-radius: 8px; background: transparent; color: var(--muted); text-align: left; }
 .sidebar-footer button:hover { background: var(--menu-hover); color: var(--text); }
+.sidebar-footer .account-button { min-width: 0; padding-left: 6px; }
+.sidebar-footer .account-button .user-avatar { box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 10%, transparent); }
 .sidebar-footer .account-button > span { min-width: 0; display: grid; flex: 1; line-height: 1.2; }
 .sidebar-footer .account-button strong, .sidebar-footer .account-button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-footer .account-button strong { color: var(--text); font-size: 10px; font-weight: 600; }
@@ -309,6 +313,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .account-quick-menu > button:hover { color: var(--text); background: var(--menu-hover); }
 .account-quick-menu > button > span { min-width: 0; flex: 1; }
 .account-quick-menu .account-menu-identity { min-height: 45px; }
+.account-quick-menu .account-menu-identity .user-avatar { margin-right: 1px; }
 .account-menu-identity > span { display: grid; }
 .account-menu-identity strong, .account-menu-identity small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-menu-identity strong { color: var(--text-strong); font-size: 10px; }
@@ -2838,7 +2843,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .theme-contrast-control output { width: 24px; color: var(--muted); font-size: 9px; text-align: right; }
 .theme-pack-notice { margin: 0; padding: 8px 13px 11px; color: var(--accent-strong); font-size: 9px; }
 .settings-account-row { min-height: 62px; padding: 8px 13px; display: flex; align-items: center; gap: 9px; border-top: 1px solid var(--border); }
+.settings-account-row .user-avatar { flex: 0 0 auto; }
 .settings-account-row > span:nth-child(2) { min-width: 0; flex: 1; display: grid; }
+.account-profile-photo-actions .settings-action { display: inline-flex; align-items: center; gap: 6px; }
 .settings-account-row > button, .settings-action { min-height: 29px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface-hover); color: var(--muted); font-size: 9px; }
 .settings-usage-row { min-height: 38px; padding: 7px 13px; display: grid; grid-template-columns: 120px minmax(80px, 1fr) 36px; align-items: center; gap: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 9px; }
 .settings-usage-row > div { height: 4px; overflow: hidden; border-radius: 999px; background: var(--bg-soft); }
@@ -2873,6 +2880,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .compact-threshold-control output { min-width: 38px; text-align: right; color: var(--text); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .settings-row-wide > span:first-child { max-width: 560px; }
 .settings-row-wide > span:first-child small { white-space: normal; }
+.settings-row-wide .settings-textarea-control { flex: 1; min-width: 180px; }
 .settings-action { min-height: 29px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-hover); color: var(--muted); font-size: 9px; white-space: nowrap; }
 .settings-action:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-active); color: var(--text-strong); }
 .settings-action:disabled { cursor: default; opacity: .45; }
@@ -2919,6 +2927,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .settings-integration-row > span:nth-child(2) { min-width: 0; flex: 1; display: grid; gap: 2px; }
 .settings-integration-row strong { color: var(--text-strong); font-size: 10px; }
 .settings-integration-row small { color: var(--faint); font-size: 8px; line-height: 1.4; }
+.account-profile-hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; padding: 18px 16px 16px; }
+.account-profile-hero-copy { min-width: 0; display: grid; gap: 6px; }
+.account-profile-hero-copy h2 { margin: 0; color: var(--text-strong); font-family: var(--theme-display-font-family, "Space Grotesk"); font-size: 22px; letter-spacing: -.03em; }
+.account-profile-hero-copy p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.account-profile-photo { display: grid; justify-items: center; gap: 10px; }
+.account-profile-photo-mark { box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 16%, transparent); }
+.account-profile-photo-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.account-profile-save-row { display: flex; justify-content: flex-end; }
+.account-profile-save-row .primary-button { display: inline-flex; align-items: center; gap: 7px; }
+.settings-handle-control { width: min(292px, 100%); }
+.settings-textarea-control { width: min(320px, 100%); min-height: 72px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; outline: 0; resize: vertical; background: var(--bg-soft); color: var(--text-strong); font: inherit; font-size: 11px; line-height: 1.45; }
+.settings-textarea-control:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.settings-textarea-control:disabled, .settings-text-control:disabled, .settings-handle-control:has(input:disabled) { opacity: .62; }
+.settings-notification-status.error { color: var(--danger); }
+@media (max-width: 720px) {
+  .account-profile-hero { grid-template-columns: 1fr; justify-items: start; }
+}
+.theme-light .user-avatar, html[data-theme-variant="light"] .user-avatar { box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 12%, transparent); }
 .profile-settings-panel { min-width: 0; display: flex; flex-direction: column; gap: 24px; }
 .profile-settings-actions { display: flex; justify-content: flex-end; gap: 7px; }
 .profile-share-backdrop { position: fixed; z-index: 200; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(8, 22, 24, .22); backdrop-filter: blur(10px) saturate(120%); -webkit-backdrop-filter: blur(10px) saturate(120%); }
@@ -2987,6 +3013,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .profile-edit-footer .secondary-button, .profile-edit-footer .primary-button { min-height: 37px; }
 .profile-settings-identity { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
 .profile-avatar { width: 66px; height: 66px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-size: 21px; font-weight: 700; box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 14%, transparent); }
+.profile-avatar-photo { box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 14%, transparent); }
 .profile-settings-identity h2 { margin: 0; color: var(--text-strong); font-size: 25px; letter-spacing: -.03em; }
 .profile-settings-identity p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
 .profile-badge { padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 9px; }

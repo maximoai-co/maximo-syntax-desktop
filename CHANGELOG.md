@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+- **Account profile photo and settings**: Maximo AI and MyTabulon sign-in (browser OAuth or API key) now load the signed-in user's current profile photo, username, and display name. The left sidebar footer shows a circular photo (or initials) beside the name. Settings → Profile & stats gains a full account editor — photo upload/remove, full name, username, email, phone (MyTabulon), bio, and social links — saved to the signed-in provider. Themes keep using existing color tokens so the new UI holds up in light, dark, and custom packs.
 - **Automatic API retries**: transient provider failures no longer fail the turn on the first error. Rate limits (`429` / `token_limit_exceeded`) and network drops (`fetch failed`) now retry with backoff, and a compact **Retrying 1/N** pill shows the attempt instead of dumping an `API Error` into the chat. The notice clears when the request recovers; only an exhausted retry budget is shown as a final error. Desktop IPC retries (git, models, sending, and similar) now try **5** times before giving up.
 
 ## [0.1.13] - 2026-08-23

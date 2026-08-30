@@ -16,6 +16,7 @@ import {
   loginWithApiKey,
   readLocalAccountStatus,
 } from "./auth-service.js";
+import { deleteAccountPhoto, fetchAccountProfile, updateAccountProfile, uploadAccountPhoto } from "./account-profile.js";
 import { AppUpdater } from "./app-updater.js";
 import { CliRunner, restoreFilesFromChanges } from "./cli-runner.js";
 import { RuntimeManager } from "./runtime-manager.js";
@@ -40,7 +41,7 @@ import { requestHostInputMonitoring } from "./mac-host-tcc.js";
 import { registerAppSnapIpcHandlers, sendAppSnapCaptured, sendAppSnapError, sendAppSnapState } from "./app-snap-ipc.js";
 import { isAppSnapShortcut } from "./app-snap-shortcut.js";
 import { MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_SIZE, MAX_PROJECT_SOURCE_COUNT, browserProxyFromSettings } from "./types.js";
-import type { AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, AttachmentRejection, AttachmentResolution, AttachmentSelectionResult, AutomationCreateInput, AutomationDefinition, AutomationRun, AutomationUpdateInput, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopAppSnapCapture, DesktopAppSnapErrorEvent, DesktopAppSnapPermission, DesktopAppSnapState, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, ProjectColorName, ProjectIconName, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
+import type { AccountProfileUpdate, AccountStatus, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, AttachmentRejection, AttachmentResolution, AttachmentSelectionResult, AutomationCreateInput, AutomationDefinition, AutomationRun, AutomationUpdateInput, BrowserClearDataInput, BrowserCredentialPromptResponse, BrowserDownloadActionInput, BrowserFindInput, BrowserHistorySearchInput, BrowserNewTabInput, BrowserOpenInput, BrowserPermissionPromptResponse, BrowserProfileSettingsInput, BrowserSetPanelBoundsInput, BrowserTabInput, BrowserThreadInput, BrowserZoomInput, DesktopAppSnapCapture, DesktopAppSnapErrorEvent, DesktopAppSnapPermission, DesktopAppSnapState, DesktopNotificationInput, GitFile, GitRemote, GitStatus, LocalServer, LoginMethod, OpenCodePlan, PermissionMode, ProjectColorName, ProjectIconName, RevertResult, RunEvent, RunRequest, Settings, SpaceIconName, WhatsNewSnapshot } from "./types.js";
 import { launchConfigurationChanged, resolveAsFollowUp, RUN_ALREADY_RUNNING_ERROR, RUN_NOT_RUNNING_ERROR, type RunLaunchConfiguration } from "./run-dispatch.js";
 import { taskCompletionNotification } from "./task-notifications.js";
 import { normalizeRetiredMytabulonModel } from "./model-defaults.js";
@@ -565,8 +566,11 @@ async function readAccountStatus(): Promise<AccountStatus> {
       apiProvider: typeof value.apiProvider === "string" ? value.apiProvider : undefined,
       email: typeof value.email === "string" ? value.email : undefined,
       displayName: typeof value.displayName === "string" ? value.displayName : undefined,
+      username: typeof value.username === "string" ? value.username : undefined,
+      photoUrl: typeof value.photoUrl === "string" ? value.photoUrl : undefined,
       orgName: typeof value.orgName === "string" ? value.orgName : undefined,
       subscriptionType: typeof value.subscriptionType === "string" ? value.subscriptionType : undefined,
+      profileEditable: Boolean(value.profileEditable),
     };
   } catch {
     return { loggedIn: false, authMethod: "none" };
@@ -1299,6 +1303,44 @@ function registerIpc(): void {
     };
   });
   ipcMain.handle("account:usage", () => fetchAccountUsage());
+  ipcMain.handle("account:profile", () => fetchAccountProfile());
+  ipcMain.handle("account:update-profile", async (_event, patch: AccountProfileUpdate) => {
+    try {
+      return await updateAccountProfile(patch && typeof patch === "object" ? patch : {});
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : "Could not update your profile.",
+        profile: await fetchAccountProfile(),
+        status: await readAccountStatus(),
+      };
+    }
+  });
+  ipcMain.handle("account:upload-photo", async (_event, name: string, mimeType: string, bytes: Uint8Array) => {
+    try {
+      const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes ?? []);
+      return await uploadAccountPhoto(typeof name === "string" ? name : "profile.png", typeof mimeType === "string" ? mimeType : "image/png", payload);
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : "Could not update your profile photo.",
+        profile: await fetchAccountProfile(),
+        status: await readAccountStatus(),
+      };
+    }
+  });
+  ipcMain.handle("account:delete-photo", async () => {
+    try {
+      return await deleteAccountPhoto();
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : "Could not remove your profile photo.",
+        profile: await fetchAccountProfile(),
+        status: await readAccountStatus(),
+      };
+    }
+  });
 
   ipcMain.handle("run:start", async (_event, request: RunRequest) => {
     const threadId = safeText(request.threadId, 100);
