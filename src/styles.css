@@ -267,8 +267,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .empty-project { width: 100%; height: 42px; display: flex; align-items: center; gap: 9px; padding: 0 10px; border-radius: 9px; border: 1px dashed var(--border-strong); background: transparent; color: var(--muted); }
 .empty-project:hover { color: var(--accent-strong); border-color: var(--accent); background: var(--accent-soft); }
 .no-results { padding: 8px 10px; color: var(--faint); font-size: 11px; }
-.user-avatar { display: grid; place-items: center; flex: 0 0 auto; overflow: hidden; border-radius: 50%; color: #fff; font-weight: 700; letter-spacing: .02em; line-height: 1; box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-strong) 70%, transparent); }
-.user-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.user-avatar { display: grid; place-items: center; flex: 0 0 auto; overflow: hidden; border-radius: 50%; isolation: isolate; min-width: 0; min-height: 0; color: #fff; font-weight: 700; letter-spacing: .02em; line-height: 1; box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-strong) 70%, transparent); }
+.user-avatar img { display: block; width: 100%; height: 100%; max-width: 100%; max-height: 100%; min-width: 0; min-height: 0; object-fit: cover; object-position: center; border-radius: 50%; clip-path: circle(50%); }
 .sidebar-footer { flex: 0 0 auto; min-height: 48px; padding: 7px 9px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 1px solid var(--border); }
 .sidebar-footer button { height: 32px; flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 9px; border-radius: 8px; background: transparent; color: var(--muted); text-align: left; }
 .sidebar-footer button:hover { background: var(--menu-hover); color: var(--text); }

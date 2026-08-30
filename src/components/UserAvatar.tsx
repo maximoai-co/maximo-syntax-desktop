@@ -31,11 +31,20 @@ export default function UserAvatar({
   return (
     <span
       className={`user-avatar ${className}`.trim()}
-      style={{ width: size, height: size, fontSize: Math.max(8, Math.round(size * 0.38)), background: showPhoto ? "transparent" : hueFromName(label) }}
+      style={{
+        width: size,
+        height: size,
+        minWidth: size,
+        minHeight: size,
+        maxWidth: size,
+        maxHeight: size,
+        fontSize: Math.max(8, Math.round(size * 0.38)),
+        background: showPhoto ? "transparent" : hueFromName(label),
+      }}
       aria-hidden="true"
     >
       {showPhoto ? (
-        <img src={url!} alt="" draggable={false} onError={() => setFailed(true)} />
+        <img src={url!} alt="" width={size} height={size} draggable={false} onError={() => setFailed(true)} />
       ) : (
         initialsFromName(label)
       )}
