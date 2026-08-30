@@ -6487,7 +6487,7 @@ export default function App() {
     }
   }, [showTransientRetry]);
   // Fire-and-forget variant that keeps AI work alive: shows small retrying pill
-  // while auto retrying, only surfaces final error as toast after 3 attempts.
+  // while auto retrying, only surfaces final error as toast after the last attempt.
   const runWithSmallRetry = useCallback(<T,>(fn: () => Promise<T>, onSuccess?: (v: T) => void, onFinalError?: (e: unknown) => void) => {
     void retryWithBackoff(fn, {
       retries: DEFAULT_MAX_RETRIES,
@@ -6658,6 +6658,8 @@ export default function App() {
     };
     if (event.type === "retrying") {
       setProviderRetry({ threadId: event.threadId, attempt: event.attempt, max: event.max, message: event.message });
+    } else if (event.type === "text" || event.type === "activity") {
+      setProviderRetry((current) => current?.threadId === event.threadId ? null : current);
     }
     if (event.type === "commands") {
       setSlashCommands(event.commands);

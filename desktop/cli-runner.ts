@@ -84,26 +84,42 @@ function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function friendlyRetryMessage(message: string): string {
+  const trimmed = message.trim();
+  if (!trimmed) return "";
+  if (/^unknown$/i.test(trimmed) || /fetch failed|failed to fetch/i.test(trimmed)) return "Connection issue";
+  if (/^rate_limit$/i.test(trimmed) || /token_limit_exceeded|tokens per minute|rate_limit_error/i.test(trimmed)) {
+    return "Rate limit reached — retrying shortly";
+  }
+  if (/^server_error$/i.test(trimmed)) return "Server error";
+  if (/^authentication_failed$/i.test(trimmed)) return "Authentication issue";
+  const jsonStart = trimmed.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(trimmed.slice(jsonStart)) as Record<string, unknown>;
+      const nested = parsed.error && typeof parsed.error === "object" ? parsed.error as Record<string, unknown> : parsed;
+      const nestedMessage = typeof nested.message === "string" ? nested.message.trim() : "";
+      if (nestedMessage) return friendlyRetryMessage(nestedMessage) || nestedMessage.slice(0, 240);
+    } catch {
+      // keep the original string when the payload is not JSON
+    }
+  }
+  return trimmed.slice(0, 240);
+}
+
 function summarizeRetryError(value: unknown, seen = new Set<unknown>()): string {
   if (value == null || seen.has(value)) return "";
   seen.add(value);
   if (typeof value === "string") {
-    const message = value.trim();
-    const categoryLabels: Record<string, string> = {
-      unknown: "Connection issue",
-      server_error: "Server error",
-      rate_limit: "Rate limit reached",
-      authentication_failed: "Authentication issue",
-    };
-    return (categoryLabels[message] ?? message).slice(0, 240);
+    return friendlyRetryMessage(value);
   }
-  if (value instanceof Error) return value.message.trim().slice(0, 240);
+  if (value instanceof Error) return friendlyRetryMessage(value.message);
   if (typeof value !== "object") return "";
 
   const record = value as Record<string, unknown>;
   for (const key of ["message", "detail", "reason", "description"]) {
     const candidate = record[key];
-    if (typeof candidate === "string" && candidate.trim()) return candidate.trim().slice(0, 240);
+    if (typeof candidate === "string" && candidate.trim()) return friendlyRetryMessage(candidate);
   }
   for (const key of ["error", "cause"]) {
     const nested = summarizeRetryError(record[key], seen);
@@ -474,9 +490,9 @@ export function parseCliMessage(value: unknown): ParsedUpdate {
       return { sessionId, commands, ...(skills.length > 0 ? { skills } : {}) };
     }
     if (subtype === "api_retry" || subtype === "api_error") {
-      const attemptValue = finiteNumber(message.attempt ?? message.retryAttempt);
-      const maxRetriesValue = finiteNumber(message.max_retries ?? message.maxRetries);
-      if (attemptValue !== undefined && maxRetriesValue !== undefined && attemptValue > 0 && maxRetriesValue > 0) {
+      const attemptValue = finiteNumber(message.attempt ?? message.retryAttempt) ?? 1;
+      const maxRetriesValue = finiteNumber(message.max_retries ?? message.maxRetries) ?? 5;
+      if (attemptValue > 0 && maxRetriesValue > 0) {
         const attempt = Math.max(1, Math.round(attemptValue));
         const max = Math.max(attempt, Math.round(maxRetriesValue));
         const delayMsValue = finiteNumber(message.retry_delay_ms ?? message.retryInMs) ?? 0;

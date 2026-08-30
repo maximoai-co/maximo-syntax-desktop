@@ -1,9 +1,7 @@
-// Synara-style retry: small inline retrying, auto retry 3× before surfacing failure.
-// Mirrors synara's HttpClient.retryTransient({ times: 3 }), providerRuntimeEventPump
-// exponential backoff, and workLog "OpenCode retrying" collapse. Shape-agnostic:
-// Maximo AI API can throw errors as string, Error, {message}, {error}, {detail},
-// {cause}, nested JSON, or numeric HTTP status — we extract generically.
-export const DEFAULT_MAX_RETRIES = 3;
+// Small inline retrying: auto retry 5× before surfacing failure.
+// Shape-agnostic: Maximo AI API can throw errors as string, Error, {message},
+// {error}, {detail}, {cause}, nested JSON, or numeric HTTP status.
+export const DEFAULT_MAX_RETRIES = 5;
 export const DEFAULT_BASE_DELAY_MS = 800;
 export const DEFAULT_MAX_DELAY_MS = 5000;
 export const DEFAULT_FACTOR = 2;
@@ -42,6 +40,8 @@ const TRANSIENT_PATTERNS = [
   /gateway/i,
   /overloaded/i,
   /rate limit/i,
+  /rate_limit/i,
+  /token_limit_exceeded/i,
   /429/,
   /5\d\d/,
 ];
@@ -224,12 +224,18 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOp
   throw lastError;
 }
 
-// Convenience: wrap an async IPC/action so callers can show small "retrying 1/3" UI
-// without stopping AI work, matching synara's workLog retry collapse.
+// Convenience: wrap an async IPC/action so callers can show small "retrying 1/5" UI
+// without stopping AI work.
 export type RetryState = { attempt: number; max: number; message: string; delayMs: number } | null;
 
 export function getRetryMessage(error: unknown): string {
   const msg = messageOf(error);
   if (!msg) return "Connection issue — retrying";
+  if (/token_limit_exceeded|tokens per minute|rate_limit_error|rate limit/i.test(msg)) {
+    return "Rate limit reached — retrying shortly";
+  }
+  if (/fetch failed|failed to fetch|network|ECONNRESET|ETIMEDOUT/i.test(msg)) {
+    return "Connection issue — retrying";
+  }
   return msg.slice(0, 140) || "Connection issue — retrying";
 }

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+- **Automatic API retries**: transient provider failures no longer fail the turn on the first error. Rate limits (`429` / `token_limit_exceeded`) and network drops (`fetch failed`) now retry with backoff, and a compact **Retrying 1/N** pill shows the attempt instead of dumping an `API Error` into the chat. The notice clears when the request recovers; only an exhausted retry budget is shown as a final error. Desktop IPC retries (git, models, sending, and similar) now try **5** times before giving up.
+
 ## [0.1.13] - 2026-08-23
 
 - **Auto-compact threshold setting**: Settings → Chat behavior (Context management) gains an auto-compact slider (10–70%, default 40%) that tells the engine when to summarize older conversation history as a percentage of the model's context window, keeping recent turns verbatim. Higher thresholds keep more context — smoother recall but higher token usage. The context-usage note now shows the threshold as a percentage and points at the setting.

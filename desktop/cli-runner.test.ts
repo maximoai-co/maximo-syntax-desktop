@@ -273,6 +273,40 @@ describe("parseCliMessage", () => {
     });
   });
 
+  it("summarizes OpenAI-compatible 429 token limits as a retrying rate-limit notice", () => {
+    expect(parseCliMessage({
+      type: "system",
+      subtype: "api_retry",
+      session_id: "session-429",
+      attempt: 1,
+      max_retries: 10,
+      retry_delay_ms: 2_000,
+      error_status: 429,
+      error: 'OpenAI-compatible API error 429: {"error":{"code":"token_limit_exceeded","message":"Tokens per minute limit (20000000) exceeded for your tier (model weight x10 applied). Reduce batch size or retry shortly.","type":"rate_limit_error"}}',
+    }).retrying).toEqual({
+      attempt: 1,
+      max: 10,
+      delayMs: 2_000,
+      message: "Rate limit reached — retrying shortly",
+    });
+  });
+
+  it("summarizes fetch failed retries as a connection issue", () => {
+    expect(parseCliMessage({
+      type: "system",
+      subtype: "api_error",
+      retryAttempt: 3,
+      maxRetries: 5,
+      retryInMs: 800,
+      error: "fetch failed",
+    }).retrying).toEqual({
+      attempt: 3,
+      max: 5,
+      delayMs: 800,
+      message: "Connection issue",
+    });
+  });
+
   it("summarizes retry errors from the older nested API error shape", () => {
     expect(parseCliMessage({
       type: "system",
