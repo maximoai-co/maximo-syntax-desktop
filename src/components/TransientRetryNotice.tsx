@@ -6,6 +6,19 @@ export type TransientRetryState = {
   message?: string;
 } | null;
 
+export type ProviderRetryState = NonNullable<TransientRetryState> & { threadId: string };
+
+// Provider retries belong to a specific chat turn. Only surface that pill while
+// that session is selected; background IPC retries remain app-wide.
+export function visibleRetryNotice(
+  providerRetry: ProviderRetryState | null,
+  transientRetry: TransientRetryState,
+  selectedThreadId: string | undefined | null,
+): TransientRetryState {
+  if (providerRetry && providerRetry.threadId === selectedThreadId) return providerRetry;
+  return transientRetry;
+}
+
 export function TransientRetryNotice({ state, onDismiss }: { state: TransientRetryState; onDismiss?: () => void }) {
   if (!state) return null;
   const label = `Retrying ${state.attempt}/${state.max}`;

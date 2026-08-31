@@ -76,7 +76,7 @@ import { observeUserMessageOverflow } from "./utils/userMessageOverflowObserver.
 import { splitLiveTimelineTail } from "./utils/liveTimeline.js";
 import { agentWorkItemKeys, workTimelineEntryKeys } from "./utils/timelineEntryKeys.js";
 import { threadMessageWindow } from "./utils/threadWindow.js";
-import { TransientRetryNotice, type TransientRetryState } from "./components/TransientRetryNotice";
+import { TransientRetryNotice, visibleRetryNotice, type ProviderRetryState, type TransientRetryState } from "./components/TransientRetryNotice";
 import { getLiveRun, getLiveRunsSnapshot, isLiveInteractionActive, markLiveInteraction, publishLiveRuns, scheduleAfterLiveInteraction, useLiveRun, type LiveRun } from "./liveRunStore";
 import type { NewChatFlowSelection } from "./newChatFlows";
 
@@ -6221,9 +6221,17 @@ export default function App() {
   const [transientRetry, setTransientRetry] = useState<TransientRetryState>(null);
   // Provider retries belong to the active AI turn. Keep them separate from
   // background IPC retries so an unrelated success cannot hide this notice
-  // while the model request is still alive.
-  const [providerRetry, setProviderRetry] = useState<(NonNullable<TransientRetryState> & { threadId: string }) | null>(null);
-  const visibleTransientRetry = providerRetry ?? transientRetry;
+  // while the model request is still alive. Visibility is scoped to the
+  // selected session so a retry in one chat cannot follow you into another.
+  const [providerRetry, setProviderRetry] = useState<ProviderRetryState | null>(null);
+  const visibleTransientRetry = visibleRetryNotice(providerRetry, transientRetry, state?.selectedThreadId);
+  const dismissVisibleRetry = useCallback(() => {
+    if (providerRetry && providerRetry.threadId === state?.selectedThreadId) {
+      setProviderRetry(null);
+      return;
+    }
+    setTransientRetry(null);
+  }, [providerRetry, state?.selectedThreadId]);
   const transientRetryTimerRef = useRef<number | null>(null);
   const clearTransientRetrySoon = useCallback((delayMs = 1500) => {
     if (transientRetryTimerRef.current !== null) window.clearTimeout(transientRetryTimerRef.current);
@@ -7877,7 +7885,7 @@ export default function App() {
     return (
       <AppErrorBoundary>
         <AccountLoadingGate theme={state.settings.theme} />
-        {visibleTransientRetry && <TransientRetryNotice state={visibleTransientRetry} onDismiss={() => { setProviderRetry(null); setTransientRetry(null); }} />}
+        {visibleTransientRetry && <TransientRetryNotice state={visibleTransientRetry} onDismiss={dismissVisibleRetry} />}
         {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
       </AppErrorBoundary>
     );
@@ -7892,7 +7900,7 @@ export default function App() {
           onCancelLogin={() => void cancelLoginAccount()}
           onRefresh={() => void refreshAccount()}
         />
-        {visibleTransientRetry && <TransientRetryNotice state={visibleTransientRetry} onDismiss={() => { setProviderRetry(null); setTransientRetry(null); }} />}
+        {visibleTransientRetry && <TransientRetryNotice state={visibleTransientRetry} onDismiss={dismissVisibleRetry} />}
         {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
       </AppErrorBoundary>
     );
@@ -8094,7 +8102,7 @@ export default function App() {
         onClose={closeWhatsNewDialog}
         onOpenReleaseUrl={(url) => { void window.maximoDesktop.openPath(url); }}
       />
-      {visibleTransientRetry && <TransientRetryNotice state={visibleTransientRetry} onDismiss={() => { setProviderRetry(null); setTransientRetry(null); }} />}
+      {visibleTransientRetry && <TransientRetryNotice state={visibleTransientRetry} onDismiss={dismissVisibleRetry} />}
       {toast && <div className="toast"><AlertCircle size={15} />{toast}</div>}
     </div>
     </AppErrorBoundary>
