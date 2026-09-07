@@ -524,6 +524,18 @@ describe("parseCliMessage", () => {
     });
   });
 
+  it("parses compact summary and post_tokens from compact_metadata", () => {
+    expect(parseCliMessage({
+      type: "system",
+      subtype: "compact_boundary",
+      session_id: "session-7b",
+      compact_metadata: { trigger: "auto", pre_tokens: 82_400, post_tokens: 12_200, summary: "Kept the last three turns." },
+    })).toEqual({
+      sessionId: "session-7b",
+      compaction: { phase: "turn_boundary", status: "complete", trigger: "auto", preTokens: 82_400, postTokens: 12_200, summary: "Kept the last three turns." },
+    });
+  });
+
   it("parses a manual compact_boundary with missing pre_tokens", () => {
     expect(parseCliMessage({
       type: "system",

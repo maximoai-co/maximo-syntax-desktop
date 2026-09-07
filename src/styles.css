@@ -2048,6 +2048,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .send-button:hover:not(:disabled) { transform: translateY(-1px); }
 .send-button:disabled { opacity: .3; cursor: default; }
 .send-button.stop { background: var(--danger); color: white; }
+
+/* Voice dictation mic button — quiet pill at rest, live indicator while listening. */
+.voice-mic-button { position: relative; width: 31px; height: 31px; display: grid; place-items: center; border-radius: 10px; background: transparent; color: var(--muted); transition: color .15s ease, background .15s ease; }
+.voice-mic-button:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
+.voice-mic-button:disabled { opacity: .35; cursor: default; }
+.voice-mic-button.recording { color: var(--accent); background: var(--accent-soft); }
+.voice-mic-button.recording::after { content: ""; position: absolute; inset: -3px; border-radius: 12px; border: 1.5px solid color-mix(in srgb, var(--accent) 45%, transparent); animation: voice-mic-pulse 1.6s ease-out infinite; pointer-events: none; }
+@keyframes voice-mic-pulse { 0% { transform: scale(.82); opacity: .9; } 70% { transform: scale(1.18); opacity: 0; } 100% { transform: scale(1.18); opacity: 0; } }
+.voice-mic-levels { position: absolute; bottom: 3px; left: 50%; width: 16px; height: 5px; transform: translateX(-50%); display: flex; align-items: flex-end; justify-content: center; gap: 1.5px; }
+.voice-mic-levels i { width: 2px; min-height: 12%; border-radius: 1px; background: var(--accent); transition: height .09s linear; }
+.voice-mic-spinner { animation: voice-mic-spin 1s linear infinite; }
+@keyframes voice-mic-spin { to { transform: rotate(360deg); } }
+.voice-interim { width: min(820px, 100%); margin: 0 auto; padding: 4px 12px; display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; font-style: italic; overflow: hidden; }
+.voice-interim-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: voice-interim-blink 1.1s ease-in-out infinite; }
+@keyframes voice-interim-blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 .composer-hint { width: min(820px, 100%); margin: 5px auto 0; text-align: center; color: var(--faint); font-size: 9px; }
 .run-progress-pill { width: max-content; max-width: min(420px, 90%); height: 27px; margin: 0 auto 7px; padding: 0 10px; display: flex; align-items: center; gap: 7px; border-radius: 999px; background: color-mix(in srgb, var(--surface-solid) 97%, var(--bg)); border: 1px solid var(--border); color: var(--muted); font-size: 9px; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .run-progress-pill.waiting { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 34%, var(--border)); }

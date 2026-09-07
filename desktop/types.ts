@@ -768,6 +768,12 @@ export interface AccountStatus {
   profileEditable?: boolean;
 }
 
+export interface VoiceDictationCredentials {
+  available: boolean;
+  wsUrl?: string;
+  apiKey?: string;
+}
+
 export interface AccountProfile {
   provider: "maximoai" | "mytabulon" | "local";
   editable: boolean;
@@ -1271,7 +1277,7 @@ export interface RunRequest {
    * desktop settings. Passed to the CLI via MAXIMO_SYNTAX_AUTOCOMPACT_PCT.
    */
   autoCompactPercent?: number;
-  /** Skip only the first automatic-compaction check after a model-change restart. */
+  /** Skip autocompact until this CLI process has a fresh API response (resume, edit, model change). */
   skipInitialAutoCompact?: boolean;
 }
 
@@ -1390,6 +1396,8 @@ export interface DesktopApi {
   updateEngine(): Promise<EngineStatus>;
   engineModels(): Promise<EngineModel[]>;
   accountStatus(): Promise<AccountStatus>;
+  voiceCredentials(): Promise<VoiceDictationCredentials>;
+  requestMicPermission(): Promise<"granted" | "denied" | "unknown">;
   accountLogin(method: LoginMethod, apiKey?: string, openCodePlan?: OpenCodePlan): Promise<AccountActionResult>;
   accountCancelLogin(): Promise<{ ok: boolean; message: string }>;
   accountLogout(): Promise<AccountActionResult>;

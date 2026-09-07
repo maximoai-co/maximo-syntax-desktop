@@ -7,6 +7,7 @@ import {
   Download, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Sun, Target, TerminalSquare, Trash2, Undo2, Upload, UserCircle, UserRound, Users, WandSparkles, Wrench, Workflow, WrapText, X, Zap,
   Shrink,
 } from "lucide-react";
+import { VoiceDictationButton } from "./components/VoiceDictationButton.js";
 import { DEFAULT_SETTINGS, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_SIZE } from "../desktop/types";
 import type {
   AccountStatus, AgentRun, AgentStatus, AgentWorkItem, AppState, AppUpdateState, AskUserAnswer, Attachment, AttachmentPreview, AttachmentPreviewKind, AttachmentRejection, AttachmentResolution, BrowserClearDataInput, BrowserProfileSettingsInput, BrowserProfileSnapshot, ChatInteraction, ChatMessage, ContextUsage, EngineModel, EngineStatus, FileChange, FollowUpBehavior, GitDiff, GitStatus, LoginMethod, OpenCodePlan, PermissionMode, ProfileUsage, Project, ProjectColorName, ProjectIconName, RunActivity, RunEvent, RunTimelineItem, SlashCommand, Space, SpaceIconName, ThemeMode, ThemePack, ThemePresetId, ThemeVariant, Thread, ThreadGoalState, TimestampFormat, TodoItem, UsageSnapshot, WhatsNewSnapshot,
@@ -76,6 +77,7 @@ import { observeUserMessageOverflow } from "./utils/userMessageOverflowObserver.
 import { splitLiveTimelineTail } from "./utils/liveTimeline.js";
 import { agentWorkItemKeys, workTimelineEntryKeys } from "./utils/timelineEntryKeys.js";
 import { threadMessageWindow } from "./utils/threadWindow.js";
+import { transcriptAfterCompaction } from "./utils/compactedTranscript.js";
 import { TransientRetryNotice, visibleRetryNotice, type ProviderRetryState, type TransientRetryState } from "./components/TransientRetryNotice";
 import { getLiveRun, getLiveRunsSnapshot, isLiveInteractionActive, markLiveInteraction, publishLiveRuns, scheduleAfterLiveInteraction, useLiveRun, type LiveRun } from "./liveRunStore";
 import type { NewChatFlowSelection } from "./newChatFlows";
@@ -3586,6 +3588,7 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
   // remaining 40 chunk streams in via startTransition in the next rAF (Synara
   // does similar progressive streaming via MAX_VISIBLE_LIVE_WORK_ENTRIES).
   const [visibleMessageCount, setVisibleMessageCount] = useState(40);
+  const [compactExpanded, setCompactExpanded] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const showScrollButtonDebounceRef = useRef<number | null>(null);
   // If the next thread is huge, defer the heavy markdown/code work to idle
@@ -3832,12 +3835,20 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
   // previous pane stays painted at 60fps while the new one hydrates.
   // Guard: deferredThread can be undefined on first mount — fall back to thread.
   const displayThread = isStale && deferredThread ? deferredThread : thread;
+  const liveRun = useLiveRun(displayThread.id);
   // Window the raw records before constructing markdown, diffs, timelines, and
   // React nodes. The previous implementation sliced only after all of that
   // work had already happened, so it reduced DOM size but not switch latency.
+  const compactWindow = useMemo(
+    () => transcriptAfterCompaction(displayThread.messages, liveRun?.timeline),
+    [displayThread.messages, liveRun?.timeline],
+  );
+  useEffect(() => {
+    setCompactExpanded(false);
+  }, [displayThread.id]);
   const renderWindow = useMemo(
-    () => threadMessageWindow(displayThread.messages, visibleMessageCount),
-    [displayThread.messages, visibleMessageCount],
+    () => threadMessageWindow(compactExpanded ? displayThread.messages : compactWindow.messages, visibleMessageCount),
+    [compactExpanded, compactWindow.messages, displayThread.messages, visibleMessageCount],
   );
   const { renderedMessages, streamingInteractions, streamingFollowUps } = useMemo(() => {
     const renderedMessages: ReactNode[] = [];
@@ -4046,6 +4057,7 @@ function MessageView({ thread, project, git, models, waiting, stale = false, ski
               </>}
             </div>
           )}
+          {!compactExpanded && compactWindow.compactHiddenCount > 0 && <button type="button" className="conversation-show-older" onClick={() => setCompactExpanded(true)}>Show {compactWindow.compactHiddenCount} earlier summarized messages</button>}
           {hiddenMessageCount > 0 && <button type="button" className="conversation-show-older" onClick={() => setVisibleMessageCount((c) => c + 80)}>Show {Math.min(80, hiddenMessageCount)} earlier messages · {hiddenMessageCount} hidden</button>}
           {displayedMessages}
           {optimisticQueuedMessages}
@@ -4590,6 +4602,43 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
       editor.focus();
     });
   };
+  // Voice dictation: interim text streams directly INTO the composer (the user
+  // watches their speech appear), and each final replaces the interim tail so
+  // the settled text stays editable while dictation continues.
+  const voiceSealedRef = useRef(true);
+  const promptRef = useRef(prompt);
+  promptRef.current = prompt;
+  const composerVoiceRef = useRef<{ interim: string; base: string }>({ interim: "", base: "" });
+  const appendVoiceText = useCallback((text: string, isInterim: boolean) => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      if (!isInterim) voiceSealedRef.current = true;
+      return;
+    }
+    if (isInterim) {
+      const base = voiceSealedRef.current
+        ? (voiceSealedRef.current = false, promptRef.current)
+        : composerVoiceRef.current.base;
+      const composed = base ? `${base} ${trimmed}` : trimmed;
+      composerVoiceRef.current = { interim: trimmed, base };
+      setPrompt(composed);
+      insertVoiceText(composed);
+      return;
+    }
+    // Final: seal the current base + this text, so the next interim starts from it.
+    voiceSealedRef.current = true;
+    composerVoiceRef.current = { interim: "", base: "" };
+    insertVoiceText(null);
+  }, []);
+  const insertVoiceText = (composed: string | null) => {
+    requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const value = composed ?? promptRef.current;
+      renderHighlighted(value);
+      setCaretOffset(editor, value.length);
+    });
+  };
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Enter" && !prompt.trim() && attachments.length === 0 && pastedTexts.length === 0) {
       event.preventDefault();
@@ -4828,6 +4877,7 @@ const Composer = memo(function Composer({ thread, project, git, settings, models
           <div className="composer-right">
             <ContextUsageControl usage={contextUsage} loading={contextLoading} onRefresh={onRefreshContext} />
             <ModelControl model={model} effort={effort} models={models} modelOptions={modelOptions} disabled={waitingForResponse} onModel={chooseModel} onEffort={chooseEffort} />
+            <VoiceDictationButton disabled={waitingForResponse} onInterim={(text) => appendVoiceText(text, true)} onFinal={(text) => appendVoiceText(text, false)} onError={(message) => showComposerNotice(message)} />
             {running && !prompt.trim() && pastedTexts.length === 0 ? <button className="send-button stop" onClick={onStop} title="Stop run"><CircleStop size={16} /></button> : <button className="send-button" onClick={() => void submit()} disabled={!prompt.trim() && attachments.length === 0 && pastedTexts.length === 0} title={running ? "Add context to current task" : "Send"}><ArrowUp size={17} /></button>}
            </div>
          </div>

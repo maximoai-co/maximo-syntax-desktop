@@ -5,7 +5,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, release as osRelease } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, safeStorage, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, safeStorage, session, shell, systemPreferences } from "electron";
 import {
   cancelBrowserLogin,
   clearExtraProviderCredentials,
@@ -37,6 +37,7 @@ import {
 } from "./whats-new.js";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./workspace-files.js";
 import { DesktopAppSnapManager } from "./app-snap-manager.js";
+import { readVoiceDictationCredentials, requestMicrophonePermission } from "./voice-dictation.js";
 import { requestHostInputMonitoring } from "./mac-host-tcc.js";
 import { registerAppSnapIpcHandlers, sendAppSnapCaptured, sendAppSnapError, sendAppSnapState } from "./app-snap-ipc.js";
 import { isAppSnapShortcut } from "./app-snap-shortcut.js";
@@ -667,6 +668,37 @@ function createApplicationMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// The main window runs on the DEFAULT session, which otherwise has no
+// permission handler: getUserMedia('audio') would then hang or be silently
+// denied in packaged builds. Deferring to macOS TCC via systemPreferences
+// keeps the real prompt/allow/deny behavior in the OS's hands.
+function installDefaultSessionMediaPermissionHandler(): void {
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    if (permission !== "media") {
+      callback(false);
+      return;
+    }
+    if (process.platform !== "darwin") {
+      callback(true);
+      return;
+    }
+    try {
+      const status = systemPreferences.getMediaAccessStatus("microphone");
+      if (status === "granted") {
+        callback(true);
+        return;
+      }
+      if (status === "denied" || status === "restricted") {
+        callback(false);
+        return;
+      }
+      void systemPreferences.askForMediaAccess("microphone").then(callback).catch(() => callback(false));
+    } catch {
+      callback(false);
+    }
+  });
+}
+
 async function loadRendererContents(window: BrowserWindow): Promise<void> {
   const requestedSurface = process.env.MAXIMO_DESKTOP_START_SURFACE;
   const surface = requestedSurface === "chat" || requestedSurface === "activity" || requestedSurface === "kanban" || requestedSurface === "pull-requests" || requestedSurface === "automations"
@@ -782,6 +814,7 @@ async function createWindow(): Promise<void> {
     scheduleRendererRecovery(windowForRendererRecovery, details.reason, details.exitCode);
   });
 
+  installDefaultSessionMediaPermissionHandler();
   await loadRendererContents(mainWindow);
 
   if (process.env.MAXIMO_DESKTOP_SCREENSHOT) {
@@ -1217,6 +1250,8 @@ function registerIpc(): void {
   ipcMain.handle("engine:update", () => runtime.update());
   ipcMain.handle("engine:models", () => runtime.discoverModels());
   ipcMain.handle("account:status", () => readAccountStatus());
+  ipcMain.handle("voice:credentials", () => readVoiceDictationCredentials());
+  ipcMain.handle("voice:mic-permission", () => requestMicrophonePermission());
   ipcMain.handle("account:login", async (_event, requestedMethod: LoginMethod, apiKey?: string, requestedOpenCodePlan?: OpenCodePlan) => {
     const method: LoginMethod = isLoginMethod(requestedMethod) ? requestedMethod : "maximoai";
     try {
@@ -1376,7 +1411,7 @@ function registerIpc(): void {
     const startedThread = store.getThread(threadId);
     const startedUserMessageUuid = startedThread?.messages.at(-1)?.uuid;
     try {
-      runner.start(engine, { ...safeRequest, ...(startedUserMessageUuid ? { userMessageUuid: startedUserMessageUuid } : {}) }, project.path, thread.cliSessionId, {
+      runner.start(engine, { ...safeRequest, ...(startedUserMessageUuid ? { userMessageUuid: startedUserMessageUuid } : {}), ...(thread.cliSessionId ? { skipInitialAutoCompact: true } : {}) }, project.path, thread.cliSessionId, {
         onEvent: (event: RunEvent) => {
           sendRunEvent(event);
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);
@@ -1463,7 +1498,7 @@ function registerIpc(): void {
       const latestThread = store.getThread(threadId);
       const previousSessionId = latestThread?.cliSessionId ?? thread.cliSessionId;
       try {
-        runner.start(engine, { ...resumedRequest, ...(sentUserMessageUuid ? { userMessageUuid: sentUserMessageUuid } : {}), ...(effectivePrevModel !== resumedRequest.model ? { skipInitialAutoCompact: true } : {}) }, project.path, previousSessionId, {
+        runner.start(engine, { ...resumedRequest, ...(sentUserMessageUuid ? { userMessageUuid: sentUserMessageUuid } : {}), ...(previousSessionId ? { skipInitialAutoCompact: true } : {}) }, project.path, previousSessionId, {
           onEvent: (event: RunEvent) => {
             sendRunEvent(event);
             if (event.type === "context") void store.recordContextUsage(threadId, event.context);
@@ -1588,7 +1623,7 @@ function registerIpc(): void {
     // fresh CLI session instead of resuming the full (pre-edit) transcript.
     const previousSessionId = resumeSessionAt ? thread.cliSessionId : undefined;
     try {
-      runner.start(engine, { ...safeRequest, ...(userMessageUuid ? { userMessageUuid } : {}) }, project.path, previousSessionId, {
+      runner.start(engine, { ...safeRequest, ...(userMessageUuid ? { userMessageUuid } : {}), ...(previousSessionId ? { skipInitialAutoCompact: true } : {}) }, project.path, previousSessionId, {
         onEvent: (event: RunEvent) => {
           sendRunEvent(event);
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);

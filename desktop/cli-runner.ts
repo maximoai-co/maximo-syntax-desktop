@@ -50,7 +50,7 @@ interface ParsedUpdate {
   modelUsage?: Record<string, { contextWindow?: number; maxOutputTokens?: number }>;
   retrying?: { attempt: number; max: number; delayMs: number; message: string };
   assistantUuid?: string;
-  compaction?: { phase: "turn_boundary" | "in_turn"; status: "started" | "complete"; trigger?: "auto" | "manual"; preTokens?: number; summary?: string };
+  compaction?: { phase: "turn_boundary" | "in_turn"; status: "started" | "complete"; trigger?: "auto" | "manual"; preTokens?: number; postTokens?: number; summary?: string };
 }
 
 export function parseClassifierDenial(result?: string): ClassifierDecision | undefined {
@@ -470,6 +470,8 @@ export function parseCliMessage(value: unknown): ParsedUpdate {
       const metadata = message.compact_metadata && typeof message.compact_metadata === "object" ? message.compact_metadata as Record<string, unknown> : {};
       const trigger = metadata.trigger === "manual" ? "manual" : "auto";
       const preTokens = finiteNumber(metadata.pre_tokens) ?? finiteNumber(message.pre_tokens);
+      const postTokens = finiteNumber(metadata.post_tokens) ?? finiteNumber(message.post_tokens);
+      const summary = typeof metadata.summary === "string" && metadata.summary.trim() ? metadata.summary.trim().slice(0, 20_000) : undefined;
       return {
         sessionId,
         compaction: {
@@ -477,6 +479,8 @@ export function parseCliMessage(value: unknown): ParsedUpdate {
           status: "complete",
           trigger,
           ...(preTokens !== undefined ? { preTokens } : {}),
+          ...(postTokens !== undefined ? { postTokens } : {}),
+          ...(summary ? { summary } : {}),
         },
       };
     }
@@ -1399,6 +1403,10 @@ export class CliRunner {
     let sessionId = previousSessionId;
     let stopped = false;
     let compactionCompletionEmitted = false;
+    // After compact_boundary the CLI may re-emit the preserved last turns so
+    // the model still has them. Those rows already exist in the chat; ignore
+    // them until the next real streamed generation.
+    let ignoreRestoredTranscript = false;
     let turn: ActiveTurn = {
       startedAt: Date.now(),
       streamedText: "",
@@ -1514,6 +1522,7 @@ export class CliRunner {
     };
     const beginTurn = (prompt: string, attachments: Attachment[], uuid?: string) => {
       compactionCompletionEmitted = false;
+      ignoreRestoredTranscript = false;
       // Drop any pending coalesced text snapshot — a new turn resets the text.
       if (pendingTextFlush) pendingTextFlush = null;
       pendingAgentTextFlushes.clear();
@@ -1594,6 +1603,7 @@ export class CliRunner {
               status: update.compaction.status,
               ...(update.compaction.trigger ? { trigger: update.compaction.trigger } : {}),
               ...(update.compaction.preTokens !== undefined ? { preTokens: update.compaction.preTokens } : {}),
+              ...(update.compaction.postTokens !== undefined ? { postTokens: update.compaction.postTokens } : {}),
               ...(update.compaction.summary ? { summary: update.compaction.summary } : {}),
               timestamp: timestamp(),
             };
@@ -1624,7 +1634,10 @@ export class CliRunner {
           }
           callbacks.onEvent({ type: "status", threadId: request.threadId, status: update.status, timestamp: at });
         }
-        if (update.text !== undefined && update.textMode) {
+        if (update.compaction?.status === "complete") ignoreRestoredTranscript = true;
+        if (update.apiUsageReset || update.textMode === "append") ignoreRestoredTranscript = false;
+        if (ignoreRestoredTranscript) update.toolResults = undefined;
+        if (update.text !== undefined && update.textMode && !ignoreRestoredTranscript) {
           turn.streamedText = update.textMode === "append" ? turn.streamedText + update.text : update.text;
           const at = timestamp();
           // Coalesce append deltas without repeatedly serializing the entire
@@ -1647,7 +1660,7 @@ export class CliRunner {
             }, TEXT_FLUSH_INTERVAL_MS);
           }
         }
-        const parsedActivities = [
+        const parsedActivities = ignoreRestoredTranscript ? [] : [
           ...(update.activity ? [{ activity: update.activity, detail: update.detail, data: update.data, todos: update.todos, toolUseId: update.toolUseId, toolName: update.toolName }] : []),
           ...(update.activities ?? []),
         ];
