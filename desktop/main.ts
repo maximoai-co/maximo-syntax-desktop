@@ -1411,7 +1411,7 @@ function registerIpc(): void {
     const startedThread = store.getThread(threadId);
     const startedUserMessageUuid = startedThread?.messages.at(-1)?.uuid;
     try {
-      runner.start(engine, { ...safeRequest, ...(startedUserMessageUuid ? { userMessageUuid: startedUserMessageUuid } : {}), ...(thread.cliSessionId ? { skipInitialAutoCompact: true } : {}) }, project.path, thread.cliSessionId, {
+      runner.start(engine, { ...safeRequest, ...(startedUserMessageUuid ? { userMessageUuid: startedUserMessageUuid } : {}), skipInitialAutoCompact: true }, project.path, thread.cliSessionId, {
         onEvent: (event: RunEvent) => {
           sendRunEvent(event);
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);
@@ -1498,7 +1498,7 @@ function registerIpc(): void {
       const latestThread = store.getThread(threadId);
       const previousSessionId = latestThread?.cliSessionId ?? thread.cliSessionId;
       try {
-        runner.start(engine, { ...resumedRequest, ...(sentUserMessageUuid ? { userMessageUuid: sentUserMessageUuid } : {}), ...(previousSessionId ? { skipInitialAutoCompact: true } : {}) }, project.path, previousSessionId, {
+        runner.start(engine, { ...resumedRequest, ...(sentUserMessageUuid ? { userMessageUuid: sentUserMessageUuid } : {}), skipInitialAutoCompact: true }, project.path, previousSessionId, {
           onEvent: (event: RunEvent) => {
             sendRunEvent(event);
             if (event.type === "context") void store.recordContextUsage(threadId, event.context);
@@ -1623,7 +1623,7 @@ function registerIpc(): void {
     // fresh CLI session instead of resuming the full (pre-edit) transcript.
     const previousSessionId = resumeSessionAt ? thread.cliSessionId : undefined;
     try {
-      runner.start(engine, { ...safeRequest, ...(userMessageUuid ? { userMessageUuid } : {}), ...(previousSessionId ? { skipInitialAutoCompact: true } : {}) }, project.path, previousSessionId, {
+      runner.start(engine, { ...safeRequest, ...(userMessageUuid ? { userMessageUuid } : {}), skipInitialAutoCompact: true }, project.path, previousSessionId, {
         onEvent: (event: RunEvent) => {
           sendRunEvent(event);
           if (event.type === "context") void store.recordContextUsage(threadId, event.context);
