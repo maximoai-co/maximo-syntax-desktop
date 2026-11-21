@@ -1519,6 +1519,8 @@ function activityTitle(item: RunActivity): string {
   if (path && /edit|notebook|patch/.test(tool)) return `Edited ${shortPath(path)}`;
   if (path && tool === "read") return `Read ${shortPath(path)}`;
   if (tool === "bash") return "Ran command";
+  if (tool === "code") return "Ran Code script";
+  if (tool === "learn") return "Saved lesson";
   if (/image|img/.test(tool)) return "Generated image";
   if (/grep|glob|search/.test(tool)) return "Searched project";
   if (tool === "askuserquestion") return "Asked user";

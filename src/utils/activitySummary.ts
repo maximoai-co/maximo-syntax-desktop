@@ -1,6 +1,6 @@
 import type { RunActivity } from "../../desktop/types.js";
 
-const COMMAND_TOOL_PATTERN = /bash|shell|terminal|command|killshell/i;
+const COMMAND_TOOL_PATTERN = /bash|shell|terminal|command|killshell|code/i;
 const MAX_ACTIVITY_SUMMARY_LENGTH = 160;
 
 function compactDescription(value: string): string {

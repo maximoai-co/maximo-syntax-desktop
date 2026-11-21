@@ -124,6 +124,9 @@ export function parseModel(item: unknown, options: { fallbackEffort?: boolean } 
   const source = item as JsonObject;
   const id = text(source.id);
   if (!id) return null;
+  // Decisions are used by auto-mode classification, not as a coding agent:
+  // they require questions and cannot run the main loop's tool protocol.
+  if (id === "maximo-decisions-1" || text(source.model_type) === "decision") return null;
   const reasoning = source.reasoning && typeof source.reasoning === "object" ? source.reasoning as JsonObject : undefined;
   const advertisedEfforts = uniqueStrings(reasoning?.supported_efforts);
   const efforts = advertisedEfforts.length > 0 ? advertisedEfforts : uniqueStrings(source.reasoning_efforts);

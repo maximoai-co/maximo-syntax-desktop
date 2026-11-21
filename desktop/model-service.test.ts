@@ -38,6 +38,11 @@ describe("parseModel", () => {
       contextWindow: 525_000,
     });
   });
+
+  it("excludes auto-mode classifier decision models from the coding agent catalog", () => {
+    expect(parseModel({ id: "maximo-decisions-1", name: "Maximo AI: Maximo Decisions 1" })).toBeNull();
+    expect(parseModel({ id: "custom-decision-model", model_type: "decision" })).toBeNull();
+  });
 });
 
 describe("OpenCode model catalog", () => {

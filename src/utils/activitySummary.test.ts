@@ -18,6 +18,15 @@ describe("activitySummaryDetail", () => {
     expect(activitySummaryDetail({ ...item, data: JSON.stringify({ command: "npm run build" }) })).toBe("npm run build");
   });
 
+  it("uses a Code tool description instead of the raw script line", () => {
+    expect(activitySummaryDetail({
+      label: "Using Code",
+      toolName: "Code",
+      detail: "const pkg = JSON.parse(await read('package.json'))",
+      data: JSON.stringify({ code: "const pkg = JSON.parse(await read('package.json'))", description: "Inspect package metadata and scripts" }),
+    })).toBe("Inspect package metadata and scripts");
+  });
+
   it("does not treat an unrelated tool description as a command summary", () => {
     expect(activitySummaryDetail({
       label: "Using Agent",

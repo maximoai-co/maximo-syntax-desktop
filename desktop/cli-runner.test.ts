@@ -1051,4 +1051,41 @@ describe("CliRunner context requests", () => {
     expect(await runner.requestContext("thread-context")).toMatchObject({ totalTokens: 270, maxTokens: 1_000, percentage: 27 });
     runner.stop("thread-context");
   });
+
+  it("summarizes Code and Learn tool calls and disables the standalone CLI browser when the desktop bridge is attached", async () => {
+    expect(parseCliMessage({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "code-1", name: "Code", input: { description: "Audit and update package versions", code: "await read('package.json')" } },
+          { type: "tool_use", id: "code-2", name: "Code", input: { code: "\n  const files = await glob('src/**/*.ts');\n  return files.length;" } },
+          { type: "tool_use", id: "learn-1", name: "Learn", input: { lesson: "Run bundle:local-cli before packaging desktop artifacts." } },
+        ],
+      },
+    }).activities).toEqual([
+      expect.objectContaining({ activity: "Using Code", detail: "Audit and update package versions", toolName: "Code", toolUseId: "code-1" }),
+      expect.objectContaining({ activity: "Using Code", detail: "const files = await glob('src/**/*.ts');", toolName: "Code", toolUseId: "code-2" }),
+      expect.objectContaining({ activity: "Using Learn", detail: "Run bundle:local-cli before packaging desktop artifacts.", toolName: "Learn", toolUseId: "learn-1" }),
+    ]);
+
+    const runner = new CliRunner();
+    let capturedBrowserFlag = "";
+    let resolveDone: (() => void) | undefined;
+    const done = new Promise<void>((resolve) => { resolveDone = resolve; });
+    const script = `process.stdin.resume();process.stdout.write(JSON.stringify({type:"result",subtype:"success",result:String(process.env.MAXIMO_SYNTAX_BROWSER||""),is_error:false,session_id:"session-browser-flag"})+"\\n");`;
+    runner.start(
+      { source: "development", entryPath: "", command: process.execPath, argsPrefix: ["-e", script, "--"], environment: {} },
+      { threadId: "thread-browser-flag", prompt: "test", attachments: [], model: "", effort: "", permission: "default" },
+      process.cwd(),
+      undefined,
+      {
+        onEvent: (event) => { if (event.type === "turn-complete") resolveDone?.(); },
+        onComplete: async (result) => { capturedBrowserFlag = result.content; },
+      },
+      { command: process.execPath, args: ["bridge.js"], env: { MAXIMO_BROWSER_IPC: "1" } },
+    );
+    await Promise.race([done, new Promise((_, reject) => setTimeout(() => reject(new Error("Browser flag check timed out")), 3_000))]);
+    expect(capturedBrowserFlag).toBe("0");
+    runner.stop("thread-browser-flag");
+  });
 });

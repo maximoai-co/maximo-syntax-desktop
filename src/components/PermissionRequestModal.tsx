@@ -17,13 +17,16 @@ function summarizeInput(toolName: string, raw: string): string | undefined {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (toolName === "Bash" || toolName === "KillShell") return typeof parsed.command === "string" ? parsed.command : undefined;
+    if (toolName === "Code") return typeof parsed.code === "string" ? parsed.code : typeof parsed.description === "string" ? parsed.description : undefined;
+    if (toolName === "Learn") return typeof parsed.lesson === "string" ? parsed.lesson : undefined;
     if (toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit" || toolName === "NotebookEdit") {
       if (typeof parsed.file_path === "string") return parsed.file_path;
       if (typeof parsed.path === "string") return parsed.path;
     }
-    if (toolName === "WebFetch" || toolName === "WebSearch") {
+    if (toolName === "WebFetch" || toolName === "WebSearch" || toolName === "Browser") {
       if (typeof parsed.url === "string") return parsed.url;
       if (typeof parsed.query === "string") return parsed.query;
+      if (typeof parsed.action === "string") return parsed.action;
     }
     return undefined;
   } catch {
@@ -34,6 +37,9 @@ function summarizeInput(toolName: string, raw: string): string | undefined {
 function toolDescription(toolName: string): string {
   switch (toolName) {
     case "Bash": return "Run a shell command in the project folder.";
+    case "Code": return "Run a Code Mode script that calls project tools.";
+    case "Learn": return "Save a lesson for future sessions.";
+    case "Browser": return "Control the browser.";
     case "Edit": return "Modify an existing file.";
     case "Write": return "Create or overwrite a file.";
     case "MultiEdit": return "Apply multiple edits to one or more files.";

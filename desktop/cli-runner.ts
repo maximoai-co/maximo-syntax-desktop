@@ -612,8 +612,12 @@ export function parseTodoItems(input: unknown): TodoItem[] | undefined {
 function summarizeToolInput(input: unknown): string | undefined {
   if (!input || typeof input !== "object") return undefined;
   const value = input as Record<string, unknown>;
-  for (const key of ["file_path", "path", "command", "query", "pattern", "url"]) {
+  for (const key of ["file_path", "path", "command", "query", "pattern", "url", "description", "lesson"]) {
     if (typeof value[key] === "string") return value[key].slice(0, 160);
+  }
+  if (typeof value.code === "string") {
+    const firstLine = value.code.split(/\r?\n/).find((line) => line.trim())?.trim();
+    if (firstLine) return firstLine.slice(0, 160);
   }
   return undefined;
 }
@@ -1332,7 +1336,10 @@ export class CliRunner {
       // The desktop browser must be visible to the first model request. The
       // fork's deferred tool-search mode can hide MCP tools until the model
       // guesses a search phrase, so desktop runs use the inline MCP catalogue.
-      ...(browserBridge ? { ENABLE_TOOL_SEARCH: "false" } : {}),
+      // Disable the CLI's standalone Chrome Browser tool when the shared in-app
+      // browser bridge is attached so both direct calls and Code Mode's
+      // `browser.<action>` drive the desktop's shared Browser panel.
+      ...(browserBridge ? { ENABLE_TOOL_SEARCH: "false", MAXIMO_SYNTAX_BROWSER: engine.environment.MAXIMO_SYNTAX_BROWSER ?? "0" } : {}),
       MAXIMO_SYNTAX_DESKTOP: "1",
       MAXIMO_SYNTAX_ENVIRONMENT_KIND: "bridge",
       // Keep provider retries bounded while the active turn remains alive.
@@ -1880,7 +1887,7 @@ export class CliRunner {
             timestamp: timestamp(),
           });
         }
-        if (update.toolResults?.length) flushQueued(true);
+        if (update.toolResults?.length && !update.parentToolUseId) flushQueued(true);
         if (update.result !== undefined) {
           // Flush any pending live text before the final result so the renderer
           // shows the last chunk of streamed text before the turn completes.
